@@ -21,6 +21,33 @@
 - **局域网共享**：一条命令开放给同网段设备；每个成员使用独立 API Key，调用与图片素材按 Key 隔离
 - **多账号登录**：控制台内完成 OAuth 授权，支持多账号保存与切换；可配置出网代理适配受限网络
 
+## 架构一览
+
+```mermaid
+flowchart LR
+    A["浏览器<br/>可视控制台"] --> L["启动器 :4173<br/>控制台托管 · API 鉴权 · 管理接口"]
+    C["OpenAI 兼容客户端<br/>WorkBuddy / ChatBox / curl"] --> L
+    L -->|"有效 cgw- Key"| B["内置代理<br/>文本 · 生图 · 视觉"]
+    L -.->|"/__gw 管理（仅本机）"| A
+    B -->|"OAuth 登录态"| U["ChatGPT / Codex 上游"]
+```
+
+一个 Node 进程搞定一切：启动器托管控制台页面、对外提供鉴权后的 OpenAI 兼容 API、内置代理复用你的 ChatGPT 登录态访问上游。无需数据库。
+
+## 界面速览
+
+| 概览 · 用量 | 账号 · 登录态 |
+|---|---|
+| <img src="docs/img/ui-overview.png" width="100%"/> | <img src="docs/img/ui-account.png" width="100%"/> |
+
+| 图片素材 · 生成图库 | API Key 管理 |
+|---|---|
+| <img src="docs/img/ui-images.png" width="100%"/> | <img src="docs/img/ui-apikeys.png" width="100%"/> |
+
+| 局域网接入页 `/setup`（成员零配置入口） | 分用户素材站 `/gallery` |
+|---|---|
+| <img src="docs/img/page-setup.png" width="100%"/> | <img src="docs/img/page-gallery.png" width="100%"/> |
+
 ## 快速开始（宿主机）
 
 前置：本机已安装 **Node.js 18+**（Windows 绿色版发布包用户无需本节，解压后按 `QUICK-START.md` 双击启动）。
@@ -46,6 +73,14 @@ npm start       # 启动并打开控制台 http://127.0.0.1:4173
 - 实际可用清单以 `GET /v1/models` 返回为准（控制台「模型能力」页可视化查看）。
 
 ## 图片生成
+
+```mermaid
+flowchart LR
+    A["客户端 API 调用<br/>或 MCP generate_image"] --> B["对话模型 + 图像工具渲染"]
+    B --> C["自动落盘生成图库<br/>按 API Key 记归属"]
+    C --> D["响应返回 url + local_path"]
+    C --> E["素材站 /gallery<br/>预览 · 复制 · 下载 · 删除"]
+```
 
 - **API 方式**：`POST /v1/images/generations`（标准 images 协议），`size` / `quality` 参数正常生效；未指定时自动使用最高质量档。
 - **MCP 方式**：网关提供 `generate_image` / `list_generated_images` / `delete_generated_image` 三个 MCP 工具，本机（stdio）与局域网（HTTP）两种接入方式可并存，列表/删除按调用 Key 隔离。
@@ -87,6 +122,18 @@ WorkBuddy 模型配置示例（`workbuddy-models-codex-gateway.json`）：
 
 ```bash
 npm run start:lan    # 等价于 cd gateway && node launcher.mjs --lan
+```
+
+```mermaid
+sequenceDiagram
+    participant H as 宿主机
+    participant M as 局域网成员
+    H->>H: 控制台「API Key」页创建独立 Key
+    H->>M: 点「接入」复制邀请信息
+    M->>H: 浏览器打开 /setup 输入 Key
+    H-->>M: 自动生成全部配置（复制 / 下载）
+    M->>H: 调用 API 对话与生图
+    M->>H: 素材站管理自己的图片（按 Key 隔离）
 ```
 
 **推荐流程（全程 GUI，零命令行）：**
