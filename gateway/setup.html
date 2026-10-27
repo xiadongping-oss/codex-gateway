@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex Gateway · 客户端接入</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #e4e7ec; --txt: #1f2430;
+    --sub: #6b7280; --acc: #2563eb; --acc-weak: #eff4ff; --danger: #dc2626;
+    --ok: #16a34a; --shadow: 0 1px 3px rgba(16,24,40,.08), 0 8px 24px rgba(16,24,40,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --panel: #1d2026; --line: #2c313a; --txt: #e7eaf0;
+      --sub: #98a1b0; --acc: #5b8cff; --acc-weak: #1e2635; --danger: #f87171;
+      --ok: #4ade80; --shadow: 0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--txt); font: 14px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; min-height: 100vh; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 18px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header h1 { font-size: 15px; font-weight: 650; }
+  header .tag { font-size: 12px; color: var(--sub); border: 1px solid var(--line); border-radius: 99px; padding: 1px 10px; }
+  header .sp { flex: 1; }
+  header .host { font-size: 12px; color: var(--sub); }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--txt); border-radius: 8px; padding: 5px 12px; cursor: pointer; }
+  button:hover { border-color: var(--acc); color: var(--acc); }
+  button.primary { background: var(--acc); border-color: var(--acc); color: #fff; }
+  button.primary:hover { opacity: .9; color: #fff; }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 18px 60px; }
+  #gate { max-width: 440px; margin: 10vh auto 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 28px; text-align: center; }
+  #gate h2 { font-size: 17px; margin-bottom: 6px; }
+  #gate p { color: var(--sub); font-size: 13px; margin-bottom: 16px; }
+  #gate input { width: 100%; font: inherit; padding: 9px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--txt); margin-bottom: 12px; }
+  #gate input:focus { outline: none; border-color: var(--acc); }
+  #gate .err { color: var(--danger); font-size: 12.5px; min-height: 18px; margin-bottom: 8px; }
+  .step { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 18px 20px; margin-top: 16px; }
+  .step h3 { font-size: 14.5px; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+  .step h3 .no { width: 20px; height: 20px; border-radius: 99px; background: var(--acc); color: #fff; font-size: 12px; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+  .step .desc { color: var(--sub); font-size: 13px; margin-bottom: 10px; }
+  .step code.path { font-size: 12px; background: var(--acc-weak); border-radius: 6px; padding: 1px 7px; color: var(--txt); word-break: break-all; }
+  pre.json { position: relative; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px 12px; font: 12px/1.55 ui-monospace, Consolas, monospace; overflow-x: auto; white-space: pre; }
+  .step .acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  #me { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: var(--acc-weak); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; margin-bottom: 4px; }
+  #me .who { font-weight: 650; }
+  #me .stat { color: var(--sub); font-size: 13px; }
+  #me .sp { flex: 1; }
+  a.btn { display: inline-block; font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--txt); border-radius: 8px; padding: 5px 12px; cursor: pointer; text-decoration: none; }
+  a.btn:hover { border-color: var(--acc); color: var(--acc); }
+  .ok-note { color: var(--ok); font-size: 13px; }
+  .toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); background: var(--txt); color: var(--bg); border-radius: 9px; padding: 8px 16px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 9; }
+  .toast.show { opacity: .95; }
+  footer { text-align: center; color: var(--sub); font-size: 12px; padding: 14px 0 26px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>客户端接入</h1>
+  <span class="tag">分用户 · 零安装</span>
+  <span class="sp"></span>
+  <span class="host" id="hostInfo"></span>
+  <a class="btn" id="lnkGallery" href="/gallery">素材站</a>
+</header>
+
+<div id="gate">
+  <h2>输入你的 API Key</h2>
+  <p>向网关宿主机索取 <code>cgw-</code> 开头的 Key。验证通过后，本页自动填好全部接入配置。</p>
+  <input id="keyInput" type="password" placeholder="cgw-xxxxxxxx" autocomplete="off">
+  <div class="err" id="gateErr"></div>
+  <button class="primary" id="btnVerify" style="width:100%">验证并生成接入配置</button>
+</div>
+
+<main id="app" hidden>
+  <div id="me">
+    <span class="who" id="meName">—</span>
+    <span class="stat" id="meStat"></span>
+    <span class="sp"></span>
+    <button id="btnChangeKey">换 Key</button>
+  </div>
+
+  <div class="step">
+    <h3><span class="no">1</span>接入 MCP（生图等工具能力，推荐）</h3>
+    <div class="desc">把下面的 JSON 合并进 <code class="path" id="mcpPath">~/.workbuddy/mcp.json</code> 的 <code>mcpServers</code> 对象里（其他条目保留），重启 WorkBuddy，并在「连接器」页对 <b>codex-gateway-lan</b> 点一次「信任」。</div>
+    <pre class="json" id="mcpJson"></pre>
+    <div class="acts"><button class="primary" id="btnCopyMcp">复制 MCP JSON</button><span class="ok-note" id="mcpOk"></span></div>
+  </div>
+
+  <div class="step">
+    <h3><span class="no">2</span>接入对话模型（让 WorkBuddy 用宿主机的模型）</h3>
+    <div class="desc">把下面的 JSON 保存为文件，在 WorkBuddy「模型配置」里导入。模型名用 <b>gpt-6.1-sol</b>，或打开 <a id="lnkModels" href="#" target="_blank">模型列表</a> 挑选。</div>
+    <pre class="json" id="modelJson"></pre>
+    <div class="acts"><button class="primary" id="btnCopyModel">复制模型配置 JSON</button><span class="ok-note" id="modelOk"></span></div>
+  </div>
+
+  <div class="step">
+    <h3><span class="no">3</span>安装生图 Skill（可选，让 Agent 生图更可靠）</h3>
+    <div class="desc">下载后放到 <code class="path" id="skillPath">~/.workbuddy/skills/codex-gateway-image/SKILL.md</code>（目录不存在就新建）。MCP 已能生图，这层只是提高触发准确率。</div>
+    <div class="acts"><a class="btn" id="lnkSkill" href="/lan-kit/skills/codex-gateway-image/SKILL.md" download="SKILL.md">下载 SKILL.md</a></div>
+  </div>
+
+  <div class="step">
+    <h3><span class="no">4</span>懒得手动粘贴？用一键脚本（可选，需本机有 Node.js）</h3>
+    <div class="desc">下载脚本（<b>宿主机地址已自动内嵌</b>），在下载目录执行一条命令即可完成第 1、2、3 步。不带参数运行也可以，会逐项询问。</div>
+    <div class="acts"><a class="btn" id="lnkScript" href="/lan-kit/setup-client.mjs" download="setup-client.mjs">下载 setup-client.mjs</a><button id="btnCopyCmd">复制执行命令</button><span class="ok-note">命令已含你的 Key，勿转发给他人</span></div>
+  </div>
+
+  <div class="step">
+    <h3><span class="no">5</span>验证</h3>
+    <div class="desc">重启 WorkBuddy 后对 Agent 说「画一张测试图」；生成成功后 Agent 会给出素材站链接，或直接：</div>
+    <div class="acts"><a class="btn" href="/gallery">打开我的素材站</a><span class="ok-note">✓ 你的 Key 已验证有效</span></div>
+  </div>
+</main>
+
+<footer>接入页由网关宿主机提供 · 你的 Key 仅保存在你自己浏览器的 localStorage · codex-gateway</footer>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id) }
+  var host = location.host
+  $('hostInfo').textContent = host
+  $('lnkGallery').href = '/gallery'
+  var key = ''
+
+  function toast(msg) {
+    var t = $('toast'); t.textContent = msg; t.classList.add('show')
+    clearTimeout(t._h); t._h = setTimeout(function () { t.classList.remove('show') }, 1800)
+  }
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text)
+    return new Promise(function (res, rej) {
+      var ta = document.createElement('textarea'); ta.value = text
+      ta.style.cssText = 'position:fixed;opacity:0'; document.body.appendChild(ta)
+      ta.select(); try { document.execCommand('copy') ? res() : rej(new Error('copy failed')) } catch (e) { rej(e) }
+      document.body.removeChild(ta)
+    })
+  }
+
+  function buildConfigs() {
+    var base = 'http://' + host
+    var mcp = { mcpServers: {} }
+    mcp.mcpServers['codex-gateway-lan'] = { url: base + '/mcp', headers: { Authorization: 'Bearer ' + key } }
+    $('mcpJson').textContent = JSON.stringify(mcp, null, 2)
+    var model = {
+      models: [{
+        id: 'codex-gateway-lan',
+        name: 'Codex (局域网网关)',
+        vendor: 'Custom',
+        url: base + '/v1/chat/completions',
+        apiKey: key,
+        supportsToolCall: true,
+        supportsReasoning: true,
+        extra: { comment: '局域网网关（宿主机 ' + host + '）。模型名默认 gpt-6.1-sol；生图走 MCP 工具 generate_image，素材站 ' + base + '/gallery' }
+      }]
+    }
+    $('modelJson').textContent = JSON.stringify(model, null, 2)
+    $('lnkScript').href = '/lan-kit/setup-client.mjs?host=' + encodeURIComponent(host.split(':')[0])
+    $('lnkModels').href = base + '/v1/models'
+  }
+
+  function showApp(me) {
+    $('gate').hidden = true; $('app').hidden = false
+    $('meName').textContent = '👤 ' + (me.keyName || '(未命名 Key)')
+    var kb = me.bytes >= 1048576 ? (me.bytes / 1048576).toFixed(1) + ' MB' : Math.round(me.bytes / 1024) + ' KB'
+    $('meStat').textContent = '已生成 ' + me.images + ' 张 · 占用 ' + kb + (me.lastUsedAt ? ' · 最近使用 ' + me.lastUsedAt.slice(0, 16).replace('T', ' ') : '')
+    buildConfigs()
+  }
+
+  function verify(v, silent) {
+    $('btnVerify').disabled = true
+    fetch('/v1/gen-images/me', { headers: { Authorization: 'Bearer ' + v } })
+      .then(function (r) {
+        $('btnVerify').disabled = false
+        if (r.status === 401) throw new Error('Key 无效或已被禁用，请找宿主机管理员确认')
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        return r.json()
+      })
+      .then(function (me) { if (!me.ok) throw new Error('响应异常'); key = v; showApp(me) })
+      .catch(function (e) { if (!silent) $('gateErr').textContent = e.message })
+  }
+
+  $('btnVerify').addEventListener('click', function () {
+    var v = $('keyInput').value.trim()
+    if (!v) { $('gateErr').textContent = '请输入 Key'; return }
+    $('gateErr').textContent = ''
+    verify(v, false)
+  })
+  $('keyInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('btnVerify').click() })
+  $('btnChangeKey').addEventListener('click', function () { key = ''; $('app').hidden = true; $('gate').hidden = false; $('keyInput').value = ''; setTimeout(function () { $('keyInput').focus() }, 50) })
+
+  function bindCopy(btnId, okId, getText) {
+    $(btnId).addEventListener('click', function () {
+      copyText(getText()).then(function () { $(okId).textContent = '✓ 已复制'; toast('已复制到剪贴板') }, function () { toast('复制失败，请手动选择文本') })
+    })
+  }
+  bindCopy('btnCopyMcp', 'mcpOk', function () { return $('mcpJson').textContent })
+  bindCopy('btnCopyModel', 'modelOk', function () { return $('modelJson').textContent })
+  $('btnCopyCmd').addEventListener('click', function () {
+    copyText('node setup-client.mjs --key ' + key).then(function () { toast('已复制：node setup-client.mjs --key …') })
+  })
+})()
+</script>
+</body>
+</html>

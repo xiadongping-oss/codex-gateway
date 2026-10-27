@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex Gateway · 素材站</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #e4e7ec; --txt: #1f2430;
+    --sub: #6b7280; --acc: #2563eb; --acc-weak: #eff4ff; --danger: #dc2626;
+    --ok: #16a34a; --shadow: 0 1px 3px rgba(16,24,40,.08), 0 8px 24px rgba(16,24,40,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --panel: #1d2026; --line: #2c313a; --txt: #e7eaf0;
+      --sub: #98a1b0; --acc: #5b8cff; --acc-weak: #1e2635; --danger: #f87171;
+      --ok: #4ade80; --shadow: 0 1px 3px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--txt); font: 14px/1.6 system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; min-height: 100vh; }
+  header { position: sticky; top: 0; z-index: 5; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 18px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header h1 { font-size: 15px; font-weight: 650; letter-spacing: .2px; }
+  header .tag { font-size: 12px; color: var(--sub); border: 1px solid var(--line); border-radius: 99px; padding: 1px 10px; }
+  header .sp { flex: 1; }
+  header .host { font-size: 12px; color: var(--sub); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--txt); border-radius: 8px; padding: 5px 12px; cursor: pointer; }
+  button:hover { border-color: var(--acc); color: var(--acc); }
+  button.primary { background: var(--acc); border-color: var(--acc); color: #fff; }
+  button.primary:hover { opacity: .9; color: #fff; }
+  button.danger:hover { border-color: var(--danger); color: var(--danger); }
+  main { max-width: 1180px; margin: 0 auto; padding: 18px; }
+  /* Key 门禁 */
+  #gate { max-width: 420px; margin: 12vh auto 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 28px; text-align: center; }
+  #gate h2 { font-size: 17px; margin-bottom: 6px; }
+  #gate p { color: var(--sub); font-size: 13px; margin-bottom: 16px; }
+  #gate input { width: 100%; font: inherit; padding: 9px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--txt); margin-bottom: 12px; }
+  #gate input:focus { outline: none; border-color: var(--acc); }
+  #gate .err { color: var(--danger); font-size: 12.5px; min-height: 18px; margin-bottom: 8px; }
+  /* 工具条 */
+  #bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  #bar .count { color: var(--sub); font-size: 13px; }
+  /* 卡片网格 */
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); display: flex; flex-direction: column; }
+  .card .thumb { aspect-ratio: 1 / 1; background: var(--acc-weak); display: flex; align-items: center; justify-content: center; cursor: zoom-in; }
+  .card .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .card .meta { padding: 9px 12px 4px; }
+  .card .name { font-size: 12px; color: var(--sub); word-break: break-all; }
+  .card .info { font-size: 12.5px; color: var(--txt); margin-top: 2px; }
+  .card .acts { display: flex; gap: 6px; padding: 8px 12px 12px; flex-wrap: wrap; }
+  .card .acts button { font-size: 12.5px; padding: 3px 10px; border-radius: 7px; }
+  .empty { text-align: center; color: var(--sub); padding: 60px 0; }
+  .toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); background: var(--txt); color: var(--bg); border-radius: 9px; padding: 8px 16px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 9; }
+  .toast.show { opacity: .95; }
+  footer { text-align: center; color: var(--sub); font-size: 12px; padding: 10px 0 26px; }
+  dialog { border: none; border-radius: 12px; background: var(--panel); color: var(--txt); box-shadow: var(--shadow); padding: 0; max-width: min(92vw, 900px); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog img { display: block; max-width: 100%; max-height: 82vh; }
+  dialog .dacts { display: flex; gap: 8px; padding: 10px; justify-content: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>素材站</h1>
+  <span class="tag">分用户 · 生成图库</span>
+  <span class="tag" id="userChip" hidden></span>
+  <span class="sp"></span>
+  <span class="host" id="hostInfo"></span>
+  <button id="btnRefresh" title="重新拉取列表">刷新</button>
+  <button id="btnKey" title="更换 API Key">换 Key</button>
+</header>
+
+<div id="gate" hidden>
+  <h2>输入你的 API Key</h2>
+  <p>仅显示<b>你自己的 Key</b> 生成的图片。向网关宿主机索取 <code>cgw-</code> 开头的 Key。<br>Key 会保存在本浏览器，下次免输入；换地址（如换网络后 IP 变了）需重输一次。</p>
+  <input id="keyInput" type="password" placeholder="cgw-xxxxxxxx" autocomplete="off">
+  <div class="err" id="gateErr"></div>
+  <button class="primary" id="btnSave" style="width:100%">进入素材站</button>
+</div>
+
+<main id="app" hidden>
+  <div id="bar">
+    <span class="count" id="count"></span>
+    <span class="sp" style="flex:1"></span>
+  </div>
+  <div id="grid"></div>
+  <div class="empty" id="empty" hidden>
+    你的图库还是空的 —— 在 WorkBuddy 里对 Agent 说「生成一张图」即可开始。<br>
+    生成后图片会自动出现在这里（仅限你自己的 Key 生成的内容）。
+  </div>
+</main>
+
+<footer>图片链接可在局域网内直接分享打开 · 宿主机控制台可见全部图片 · codex-gateway</footer>
+<dialog id="viewer"><img id="viewerImg" alt=""><div class="dacts"><button id="viewerCopy">复制链接</button><button id="viewerClose">关闭</button></div></dialog>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+  var KEY_STORE = 'cgw_gallery_key'
+  var $ = function (id) { return document.getElementById(id) }
+  var key = localStorage.getItem(KEY_STORE) || ''
+  $('hostInfo').textContent = location.host
+
+  function toast(msg) {
+    var t = $('toast'); t.textContent = msg; t.classList.add('show')
+    clearTimeout(t._h); t._h = setTimeout(function () { t.classList.remove('show') }, 1800)
+  }
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text)
+    return new Promise(function (res, rej) {
+      var ta = document.createElement('textarea'); ta.value = text
+      ta.style.cssText = 'position:fixed;opacity:0'; document.body.appendChild(ta)
+      ta.select(); try { document.execCommand('copy') ? res() : rej(new Error('copy failed')) } catch (e) { rej(e) }
+      document.body.removeChild(ta)
+    })
+  }
+  function fmtSize(n) {
+    return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'
+  }
+  function fmtTime(ms) {
+    var d = new Date(ms), p = function (x) { return String(x).padStart(2, '0') }
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
+  }
+  function authHeaders() { return { 'Authorization': 'Bearer ' + key } }
+
+  function showGate(err) {
+    $('gate').hidden = false; $('app').hidden = true
+    $('gateErr').textContent = err || ''
+    if (key) $('keyInput').value = key
+    setTimeout(function () { $('keyInput').focus() }, 50)
+  }
+  function showApp() { $('gate').hidden = true; $('app').hidden = false }
+
+  function load() {
+    if (!key) return showGate()
+    fetchMe()
+    fetch('/v1/gen-images/list?limit=200', { headers: authHeaders() })
+      .then(function (r) {
+        if (r.status === 401) { localStorage.removeItem(KEY_STORE); key = ''; throw new Error('Key 无效或已被禁用，请重新输入') }
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        return r.json()
+      })
+      .then(render)
+      .catch(function (e) { showGate(e.message) })
+  }
+
+  function fetchMe() {
+    fetch('/v1/gen-images/me', { headers: authHeaders() })
+      .then(function (r) { return r.ok ? r.json() : null })
+      .then(function (me) {
+        var chip = $('userChip')
+        if (!me || !me.ok) { chip.hidden = true; return }
+        var kb = me.bytes >= 1048576 ? (me.bytes / 1048576).toFixed(1) + ' MB' : Math.max(0, Math.round(me.bytes / 1024)) + ' KB'
+        chip.textContent = '👤 ' + (me.keyName || '未命名') + ' · ' + me.images + ' 张 · ' + kb
+        chip.hidden = false
+      })
+      .catch(function () { $('userChip').hidden = true })
+  }
+
+  function render(data) {
+    showApp()
+    var imgs = data.images || []
+    $('count').textContent = '共 ' + (data.total != null ? data.total : imgs.length) + ' 张'
+    var grid = $('grid'); grid.innerHTML = ''
+    $('empty').hidden = imgs.length > 0
+    imgs.forEach(function (it) {
+      var card = document.createElement('div'); card.className = 'card'
+      var thumb = document.createElement('div'); thumb.className = 'thumb'
+      var img = document.createElement('img'); img.loading = 'lazy'; img.src = it.url; img.alt = it.name
+      thumb.appendChild(img)
+      var meta = document.createElement('div'); meta.className = 'meta'
+      meta.innerHTML = '<div class="name"></div><div class="info"></div>'
+      meta.querySelector('.name').textContent = it.name
+      meta.querySelector('.info').textContent = fmtTime(it.mtime) + ' · ' + fmtSize(it.size)
+      var acts = document.createElement('div'); acts.className = 'acts'
+      function mkBtn(txt, fn, cls) {
+        var b = document.createElement('button'); b.textContent = txt
+        if (cls) b.className = cls; b.addEventListener('click', fn); return b
+      }
+      acts.appendChild(mkBtn('复制链接', function () {
+        copyText(it.url).then(function () { toast('链接已复制，局域网内可直接打开') }, function () { toast('复制失败，请手动选择地址栏') })
+      }))
+      acts.appendChild(mkBtn('下载', function () {
+        var a = document.createElement('a'); a.href = it.url; a.download = it.name
+        document.body.appendChild(a); a.click(); document.body.removeChild(a)
+      }))
+      acts.appendChild(mkBtn('删除', function () {
+        if (!confirm('确定删除 ' + it.name + ' ？删除后不可恢复。')) return
+        fetch('/v1/gen-images/' + encodeURIComponent(it.name), { method: 'DELETE', headers: authHeaders() })
+          .then(function (r) {
+            if (r.status === 403) { toast('删除失败：这张图不属于你'); return null }
+            if (!r.ok) { toast('删除失败：HTTP ' + r.status); return null }
+            toast('已删除'); load()
+          })
+          .catch(function () { toast('删除失败：网络错误') })
+      }, 'danger'))
+      thumb.addEventListener('click', function () {
+        $('viewerImg').src = it.url; $('viewerImg')._url = it.url; $('viewer').showModal()
+      })
+      card.appendChild(thumb); card.appendChild(meta); card.appendChild(acts)
+      grid.appendChild(card)
+    })
+  }
+
+  $('btnSave').addEventListener('click', function () {
+    var v = $('keyInput').value.trim()
+    if (!v) { $('gateErr').textContent = '请输入 Key'; return }
+    key = v; localStorage.setItem(KEY_STORE, v); $('gateErr').textContent = ''
+    load()
+  })
+  $('keyInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('btnSave').click() })
+  $('btnKey').addEventListener('click', function () {
+    if (key && !confirm('更换/退出当前身份？本机保存的 Key 将被清除，需重新输入。')) return
+    localStorage.removeItem(KEY_STORE); key = ''; showGate()
+  })
+  $('btnRefresh').addEventListener('click', function () { load(); toast('已刷新') })
+  $('viewerClose').addEventListener('click', function () { $('viewer').close() })
+  $('viewerCopy').addEventListener('click', function () {
+    copyText($('viewerImg')._url || '').then(function () { toast('链接已复制') })
+  })
+
+  load()
+})()
+</script>
+</body>
+</html>

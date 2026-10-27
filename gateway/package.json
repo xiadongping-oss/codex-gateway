@@ -1,0 +1,16 @@
+{
+  "name": "codex-gateway-launcher",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Codex 网关本地启动器：自动托管 chatgpt-bridge 并托管 Vue 前端（零依赖）",
+  "scripts": {
+    "start": "node launcher.mjs",
+    "start:lan": "node launcher.mjs --lan",
+    "dev": "node launcher.mjs"
+  },
+  "dependencies": {
+    "chatgpt-bridge": "^0.3.0",
+    "undici": "^6.28.0"
+  }
+}

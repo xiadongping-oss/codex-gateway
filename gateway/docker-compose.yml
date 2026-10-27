@@ -1,0 +1,35 @@
+# chatgpt-bridge 网关骨架
+# 薄代理：本地 OpenAI 兼容接口，复用官方 Codex OAuth 登录态，无数据库、无 Redis。
+#
+# 运行：
+#   cd gateway
+#   cp .env.example .env      # 按需改 CODEX_AUTH_DIR 指向你本机的 ~/.codex 目录
+#   docker compose up -d
+#
+# 仅监听 127.0.0.1，请勿将端口暴露到公网。
+
+services:
+  chatgpt-bridge:
+    image: node:20-alpine
+    # 用 npx 直接跑，无需自定义构建；锁定版本避免上游漂移
+    command: npx -y chatgpt-bridge@0.2.0 serve
+    container_name: codex-gateway-bridge
+    restart: unless-stopped
+    ports:
+      - "${CHATGPT_BRIDGE_HOST:-127.0.0.1}:${CHATGPT_BRIDGE_PORT:-10531}:10531"
+    environment:
+      - CHATGPT_BRIDGE_HOST=0.0.0.0
+      - CHATGPT_BRIDGE_PORT=10531
+      # 容器内的 auth.json 路径固定为 /home/node/.codex/auth.json
+      - CHATGPT_BRIDGE_AUTH_FILE=/home/node/.codex/auth.json
+    volumes:
+      # 把本机 Codex 登录态挂载进容器（只读）。Windows 请在 .env 里填绝对路径，
+      # 例如 CODEX_AUTH_DIR=C:/Users/Designer/.codex
+      - "${CODEX_AUTH_DIR:-$HOME/.codex}:/home/node/.codex:ro"
+    # 安全：仅本地回环，且不对公网开放
+    networks:
+      - bridge-local
+
+networks:
+  bridge-local:
+    driver: bridge

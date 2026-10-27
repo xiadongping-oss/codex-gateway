@@ -1,0 +1,43 @@
+# ---------- 运行时机密 / 机器本地状态 ----------
+#   .gw-config.json  含 OpenAI 官方 API Key、出网代理地址
+#   api-keys.json    网关层 cgw- API Key 注册表（密文落盘，但仍是凭据）
+gateway/.gw-config.json
+gateway/api-keys.json
+gateway/api-keys.json.tmp
+
+# 多账号 OAuth 凭据：gateway/accounts/*.json 里是真实的 id_token / refresh_token，
+# gateway/accounts.json 里是账号 ID、邮箱与登录指纹 —— 全部属于凭据，不可入库。
+gateway/accounts/
+gateway/accounts.json
+
+# 网关运行时数据（调用日志 / 配额 / 素材源配置等），由 launcher 按需自建
+gateway/data/
+
+# ---------- 本地开发 / 测试产物 ----------
+# .verify/ 下是回归自检脚本与截图，属于本地开发环境，不随仓库分发
+.verify/
+
+# Vite 临时文件
+*.timestamp-*
+
+# ---------- 依赖 ----------
+# 注：gateway/node_modules 里的 chatgpt-bridge 是**有意 vendored** 的
+# （离线可用、免去 npx 下载），所以这里不忽略 gateway/node_modules。
+frontend/node_modules
+
+# ---------- 构建产物 ----------
+# frontend/dist 是构建输出，但本项目需要它随包分发（启动器直接托管它），
+# 因此保留在版本控制内。
+
+# ---------- 内部文档 ----------
+docs/review-report.html
+
+# ---------- 系统 / 编辑器 ----------
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+
+# 发布产物（zip 与 staging 中间目录不入库；构建方式见 docs/RELEASE.md）
+release/
