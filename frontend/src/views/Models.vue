@@ -49,7 +49,9 @@ async function copyLanText(text, label) {
 }
 
 const lanExample = computed(() => {
-  const a = lan.value.addresses[0]
+  // 用后端排过序的 preferred，不要 addresses[0]：
+  // 装了 Tailscale 或 Docker 的机器上，第一个地址往往局域网同事连不上
+  const a = api.primaryLanAddress(lan.value.addresses)
   if (!a) return ''
   return [
     '接口地址：' + lanBaseUrl(a),
@@ -356,13 +358,18 @@ watch(() => models.value.length, () => {
         <div class="lan-addrs">
           <div v-for="a in lan.addresses" :key="a.address" class="lan-addr">
             <code class="mono">{{ lanBaseUrl(a) }}</code>
+            <span class="lan-kind" :class="a.kind">{{ api.lanKindLabel(a) }}</span>
             <span class="lan-iface">{{ a.name }}</span>
+            <span v-if="a.preferred" class="lan-pick" title="局域网同事优先用这个地址">推荐</span>
             <button class="btn-ghost sm" @click="copyLanText(lanBaseUrl(a), '地址 ' + a.address)">
               {{ lanCopied === '地址 ' + a.address ? '✓ 已复制' : '复制' }}
             </button>
           </div>
           <div v-if="!lan.addresses.length" class="empty">
             未检测到局域网 IPv4 地址，请检查网卡连接状态。
+          </div>
+          <div v-if="lan.addresses.length > 1" class="lan-hint">
+            Tailscale 地址只有在对方也加入同一 tailnet 时可达；虚拟网卡地址通常只有宿主机自己连得上。
           </div>
         </div>
 
@@ -591,6 +598,15 @@ code.hl {
 }
 .lan-addr code { font-size: 12.5px; color: var(--text); flex: 1; }
 .lan-iface { font-size: 11px; color: var(--text-3); }
+.lan-kind {
+  font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; flex: none;
+  color: var(--text-3); background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.lan-kind.lan { color: #34d399; background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.3); }
+.lan-kind.tailscale { color: #a5b4fc; background: rgba(129,140,248,0.12); border-color: rgba(129,140,248,0.35); }
+.lan-pick { font-size: 10.5px; font-weight: 600; color: #34d399; flex: none; cursor: help; }
+.lan-hint { font-size: 11.5px; color: var(--text-3); line-height: 1.6; }
 .lan-form { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 .lan-form-title { font-size: 12.5px; color: var(--text-2); }
 </style>

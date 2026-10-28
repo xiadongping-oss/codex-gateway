@@ -83,6 +83,7 @@ import {
 import { mergeModelList, resolveModelId, defaultChatModel, IMAGE_MODEL } from './model-catalog.mjs'
 import { getAccountQuota, saveAccountQuota, probeQuotaViaBridge } from './account-quota.mjs'
 import { createFailoverPolicy } from './failover.mjs'
+import { sortAddresses, KIND } from './lan-addr.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -300,6 +301,10 @@ function controlPlaneGuard(req, res) {
 }
 
 // 本机所有可用的局域网 IPv4（用于给前端展示「接口地址」）
+// 本机所有可用的 IPv4 接入地址。
+// 枚举顺序在各平台不一致，且一台机器常同时有内网 / Tailscale / Docker 虚拟网卡，
+// 所以交给 lan-addr.mjs 分类排序：真实内网在前，虚拟网卡降权，Tailscale 次之，
+// 第一个标 preferred——前端就不该再拿 addresses[0] 硬猜了。
 function lanAddresses() {
   const out = []
   try {
@@ -313,7 +318,7 @@ function lanAddresses() {
       }
     }
   } catch {}
-  return out
+  return sortAddresses(out)
 }
 
 const MAX_LOG = 800
@@ -2510,8 +2515,23 @@ server.listen(LAUNCHER_PORT, LISTEN_HOST, () => {
     pushLog(`◆ 局域网模式已开启：监听 ${LAN_HOST}:${LAUNCHER_PORT}`)
     pushLog('  · 控制面 /__gw/* 仅限本机访问（账号/密钥/配置不外泄）')
     pushLog('  · /v1/* 强制 cgw- API Key 鉴权')
-    for (const a of lanAddresses()) {
-      pushLog(`  · 局域网接入地址：http://${a.address}:${LAUNCHER_PORT}/v1  (${a.name})`)
+    const addrs = lanAddresses()
+    if (addrs.length) {
+      pushLog('  · 局域网接入地址：')
+      for (const a of addrs) {
+        // 一台机器常同时有内网 + Tailscale + Docker 虚拟网卡，逐个标清谁能连，
+        // 免得用户把 100.x 或 172.17.0.1 发给局域网同事后发现连不上。
+        const note = a.preferred
+          ? '  ← 局域网同事用这个'
+          : a.kind === KIND.TAILSCALE
+            ? '  ← 仅 Tailscale 网络内可达'
+            : a.virtual
+              ? '  ← 虚拟网卡，外部通常不可达'
+              : ''
+        pushLog(`      http://${a.address}:${LAUNCHER_PORT}/v1   (${a.name})${note}`)
+      }
+    } else {
+      pushLog('  · 未发现可用的局域网地址（只有回环接口？用 --lan-host 指定监听地址）')
     }
     pushLog('  · 提醒：Windows 防火墙需放行该端口（首次启动会弹窗询问）')
   }

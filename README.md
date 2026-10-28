@@ -156,6 +156,18 @@ sequenceDiagram
 
 命令行与 Agent 自动化方式（可选）：见 [`docs/lan-kit/INSTALL.md`](docs/lan-kit/INSTALL.md)（含一键脚本与可直接粘贴给 Agent 的 Prompt）。
 
+### 多个网卡时该发哪个地址
+
+一台开发机常同时挂着好几个 IPv4：真实内网、Tailscale（`100.64.0.0/10`）、Docker 或 Hyper-V 的虚拟网卡。控制台和启动日志会把每个地址的类型标出来，**带「局域网同事用这个」的那一个才是该发出去的**：
+
+```text
+http://192.168.1.188:4173/v1   (以太网 2)                       ← 局域网同事用这个
+http://192.168.176.1:4173/v1   (vEthernet (Default Switch))     ← 虚拟网卡，外部通常不可达
+http://100.122.232.106:4173/v1   (Tailscale)                    ← 仅 Tailscale 网络内可达
+```
+
+排序是「真实内网 → 虚拟网卡 → Tailscale → 其它」，所以不给 Tailscale 同事时别顺手复制 `100.x`——那地址只有装了 Tailscale 且加入同一 tailnet 的设备才连得上。
+
 ### 运行平台
 
 | 部分 | 支持 |

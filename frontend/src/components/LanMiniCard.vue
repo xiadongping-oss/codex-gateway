@@ -12,10 +12,13 @@ const lan = ref({ enabled: false, addresses: [], port: 4173 })
 const copied = ref(false)
 const copyErr = ref('')
 
-const firstAddr = computed(() => lan.value.addresses[0] || null)
+const primary = computed(() => api.primaryLanAddress(lan.value.addresses))
 const addrText = computed(() =>
-  firstAddr.value ? `http://${firstAddr.value.address}:${lan.value.port}/v1` : ''
+  primary.value ? `http://${primary.value.address}:${lan.value.port}/v1` : ''
 )
+const kindText = computed(() => api.lanKindLabel(primary.value))
+// 机器上还有别的地址（Tailscale / 虚拟网卡）时提示一句，免得用户以为只有这一个
+const moreCount = computed(() => Math.max(0, lan.value.addresses.length - 1))
 
 async function copyAddr() {
   copyErr.value = ''
@@ -45,6 +48,9 @@ onMounted(async () => {
     </div>
 
     <code v-if="lan.enabled && addrText" class="ls-addr" :title="addrText">{{ addrText }}</code>
+    <span v-if="lan.enabled && kindText" class="ls-kind" :class="primary && primary.kind">
+      {{ kindText }}<template v-if="moreCount > 0"> · 另有 {{ moreCount }} 个</template>
+    </span>
 
     <div class="ls-actions">
       <button v-if="lan.enabled && addrText" class="btn-ghost sm" @click="copyAddr">
@@ -72,6 +78,13 @@ onMounted(async () => {
   flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; color: var(--emerald-light);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.ls-kind {
+  flex: none; font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px;
+  color: var(--text-3); background: rgba(255,255,255,0.05); border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.ls-kind.lan { color: #34d399; background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.3); }
+.ls-kind.tailscale { color: #a5b4fc; background: rgba(129,140,248,0.12); border-color: rgba(129,140,248,0.35); }
 .ls-actions { display: flex; gap: 8px; flex: none; }
 .btn-ghost.sm { padding: 6px 12px; font-size: 12px; }
 .btn-ghost.sm.accent { color: var(--emerald-light); border-color: rgba(16,185,129,0.35); }

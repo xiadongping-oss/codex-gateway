@@ -89,6 +89,22 @@ export async function getAccount() {
 // ---------- 局域网接入（LAN） ----------
 // 网关以 GW_LAN=1 启动时监听 0.0.0.0，局域网内其他主机可用
 // 「接口地址 + cgw- API Key」接入。控制面 /__gw/* 仍仅限本机访问。
+// 一台机器常同时挂着内网 / Tailscale / Docker 虚拟网卡，枚举顺序还各平台不同。
+// 后端 lan-addr.mjs 已按「谁能连上」排好序并给第一个打了 preferred，
+// 前端不该再拿 addresses[0] 硬猜——那正是把 100.x 发给局域网同事的原因。
+export function primaryLanAddress(addresses) {
+  const list = Array.isArray(addresses) ? addresses : []
+  return list.find((a) => a.preferred) || list[0] || null
+}
+
+// 展示用类型标签。判定在后端，这里只管措辞。
+export function lanKindLabel(addr) {
+  if (!addr) return ''
+  if (addr.kind === 'tailscale') return 'Tailscale'
+  if (addr.kind === 'lan') return addr.virtual ? '内网·虚拟网卡' : '内网'
+  return '其它'
+}
+
 export async function getLanInfo() {
   const s = await gwRequest('/__gw/status', 'GET').catch(() => null)
   const lan = s?.lan || {}

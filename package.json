@@ -14,7 +14,7 @@
     "setup": "npm --prefix gateway install",
     "login": "npx @openai/codex login",
     "test": "bash gateway/tests/run.sh",
-    "test:unit": "node --test --test-timeout=15000 gateway/tests/bridge-pool.test.mjs gateway/tests/quota.test.mjs gateway/tests/failover.test.mjs",
+    "test:unit": "node --test --test-timeout=15000 gateway/tests/bridge-pool.test.mjs gateway/tests/quota.test.mjs gateway/tests/failover.test.mjs gateway/tests/lan-addr.test.mjs",
     "test:client": "node --test --test-timeout=60000 gateway/tests/setup-client.test.mjs",
     "test:build": "node --test --test-timeout=60000 gateway/tests/build-release.test.mjs",
     "test:mutate": "node gateway/tests/mutate.mjs",
@@ -23,6 +23,7 @@
     "test:unix": "node --test --test-timeout=120000 gateway/tests/service-unix.test.mjs",
     "test:mutate:unix": "node gateway/tests/mutate-unix.mjs",
     "test:mutate:failover": "node gateway/tests/mutate-failover.mjs",
+    "test:mutate:lanaddr": "node gateway/tests/mutate-lanaddr.mjs",
     "test:attack": "node gateway/tests/pentest.mjs",
     "test:bench": "node gateway/tests/bench-concurrency.mjs"
   }
