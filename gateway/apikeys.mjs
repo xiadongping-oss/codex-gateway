@@ -135,6 +135,13 @@ function sha256(input) {
   return crypto.createHash('sha256').update(String(input)).digest('hex')
 }
 
+// 恒定时间字符串比较（与 admin-auth.mjs 的 safeEqual 同实现）。
+// timingSafeEqual 要求两等长，长度不同时直接判否，不要试图「补长再比」。
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false
+  try { return crypto.timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8')) } catch { return false }
+}
+
 // 生成符合 base62 长度、避免歧义字符的随机串
 // 28 字符 ≈ 164 位熵，远超 uint128 碰撞阈值；token 合计前缀+随机共约 32 字符
 function randomSecret(bytes = 22) {
@@ -316,7 +323,11 @@ export function verifyApiKey(token) {
   if (!token || !token.startsWith(KEY_PREFIX + '-')) return { ok: false, reason: 'bad_prefix' }
   const hash = sha256(token)
   const r = reg()
-  const k = r.keys.find((x) => x.hash === hash)
+  // 与 admin-auth.mjs 那边的做法对齐：比较哈希用恒定时间函数。
+  // 普通 `===` 在第一个不匹配的字节处就返回，比较耗时随「猜对了多少位」变化，
+  // 理论上可以按响应时间逐字节试探出哈希。这里是本地网关、且比较的是
+  // sha256(token) 而非 token 本身，实际利用难度大，但没有理由不做对。
+  const k = r.keys.find((x) => safeEqual(x.hash, hash))
   if (!k) return { ok: false, reason: 'not_found' }
   if (k.disabled) return { ok: false, reason: 'disabled' }
   // 命中后异步更新 lastUsed（不 await，失败也不影响请求）
@@ -375,9 +386,15 @@ export function flushApiKeys() {
   } catch {}
 }
 
+// 退出收尾由 launcher.mjs 的 shutdown() 统一编排（flush keys → flush call logs
+// → 停 bridge 实例池 → exit）。
+//
+// 这里此前除了 flush 还会 process.exit(0)，而本文件的 process.on 在**模块求值期**
+// 注册，必然早于 launcher.mjs 里那两行 process.on('SIGINT')/('SIGTERM')。Node 按注册
+// 顺序回调，于是这里抢先退出，launcher 的 shutdown() 整段成为永不执行的死代码——
+// bridge 子进程只剩 'exit' 里那次 dispose 兜底。所以这里只 flush，不接管退出时机。
 for (const sig of ['exit', 'SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     try { flushApiKeys() } catch {}
-    if (sig !== 'exit') process.exit(0)
   })
 }

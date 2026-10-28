@@ -121,6 +121,11 @@ const MUTANTS = [
 
 // 复制整个 gateway/（排除 node_modules 与运行时数据）：
 // account-quota.mjs 会 import 同目录的其它模块，只复制单个文件跑不起来。
+//
+// tests/sandbox 必须排除：它是 `npm test` 跑沙盒时留下的副本，里面又有整份
+// node_modules（24MB+）。带上它的后果有两个 —— 每个变异体都要多复制 24MB
+// （15 次就是 360MB），而且清理时 Windows 的文件删除延迟会让 rmSync 间歇性
+// 抛 ENOTEMPTY，于是「该绿的测试」变成偶发红。
 function makeCopy() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cgw-mut-failover-'))
   fs.cpSync(GW, dir, {
@@ -128,11 +133,27 @@ function makeCopy() {
     filter: (src) => {
       const rel = path.relative(GW, src)
       if (!rel) return true
-      const top = rel.split(path.sep)[0]
-      return top !== 'node_modules' && top !== 'data' && top !== 'logs'
+      const parts = rel.split(path.sep)
+      const top = parts[0]
+      if (top === 'node_modules' || top === 'data' || top === 'logs') return false
+      if (top === 'tests' && parts[1] === 'sandbox') return false
+      return true
     }
   })
   return dir
+}
+
+// Windows 上删除刚写完的深目录树偶发 ENOTEMPTY（文件句柄释放有延迟）。
+// 清理失败不该让整轮变异测试以「崩溃」收场 —— 那会掩盖真正的盲区。
+function rmQuietly(dir) {
+  for (let i = 0; i < 3; i++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+      return
+    } catch {
+      try { execFileSync(process.execPath, ['-e', `require('fs').rmSync(${JSON.stringify(dir)},{recursive:true,force:true,maxRetries:5,retryDelay:200})`], { stdio: 'ignore' }) } catch {}
+    }
+  }
 }
 
 function runTest(dir, relTest) {
@@ -164,7 +185,7 @@ console.log(`${C.d}被测对象：gateway/failover.mjs · gateway/account-quota.
 // 基线：不改任何东西必须全绿，否则每个变异都「被杀死」，毫无意义
 const baseline = makeCopy()
 const baseOk = runTest(baseline, FAILOVER.test) && runTest(baseline, QUOTA.test)
-fs.rmSync(baseline, { recursive: true, force: true })
+rmQuietly(baseline)
 if (!baseOk) {
   console.error(`${C.r}✗ 基线失败：未变异的源码就过不了测试${C.x}`)
   console.error(`${C.d}  先单独跑：npm run test:unit${C.x}`)
@@ -194,7 +215,7 @@ for (const m of MUTANTS) {
     if (passed) console.log(`${C.r}✗ ${m.id} 存活${C.x}  ${m.desc}`)
     else console.log(`${C.g}✓ ${m.id} 被杀死${C.x}  ${m.desc}`)
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    rmQuietly(dir)
   }
 }
 

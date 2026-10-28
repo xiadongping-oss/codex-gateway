@@ -23,6 +23,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { jwtClaims, loadAccounts, accountAuthPath } from './auth-core.mjs'
+import { writeJsonAtomic } from './atomic-write.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DATA_DIR = path.join(__dirname, 'data')
@@ -253,7 +254,7 @@ export function migrateLegacyRealtime(accountId) {
     const legacy = freshSnapshot(raw._realtime)
     if (!legacy) return null
     raw._realtime = { version: 2, byAccount: { [accountId || '__shared']: legacy } }
-    fs.writeFileSync(QUOTA_FILE, JSON.stringify(raw, null, 2), { mode: 0o600 })
+    writeJsonAtomic(QUOTA_FILE, raw)
     return legacy
   } catch {
     return null
@@ -271,7 +272,7 @@ export function persistRealtimeSnapshot(accountId, rt) {
     if (cache.byAccount[key]?.syncedAt === rt.syncedAt) return // 30s 轮询不必反复落盘
     cache.byAccount[key] = rt
     raw._realtime = cache
-    fs.writeFileSync(QUOTA_FILE, JSON.stringify(raw, null, 2), { mode: 0o600 })
+    writeJsonAtomic(QUOTA_FILE, raw)
   } catch {}
 }
 
@@ -493,7 +494,7 @@ export async function saveAccountQuota(patch = {}, accountId = null, gwConfig = 
     next.accounts[targetId] = { ...base, ...pickKnown(patch) }
   }
 
-  fs.writeFileSync(QUOTA_FILE, JSON.stringify(next, null, 2), { mode: 0o600 })
+  writeJsonAtomic(QUOTA_FILE, next)
   return getAccountQuota(gwConfig)
 }
 

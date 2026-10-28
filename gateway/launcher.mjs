@@ -71,7 +71,8 @@ import {
   extractBearerToken,
   addKeyUsage,
   resolveKeyAccountId,
-  revealApiKey
+  revealApiKey,
+  flushApiKeys
 } from './apikeys.mjs'
 import {
   applyProxy,
@@ -80,7 +81,8 @@ import {
   getUndici
 } from './proxy.mjs'
 import { ensureBridgePatched } from './bridge-patches.mjs'
-import { recordCallLog, getCallLogs } from './call-logs.mjs'
+import { recordCallLog, getCallLogs, flushCallLogs } from './call-logs.mjs'
+import { writeJsonAtomic, sweepStaleTmpFiles } from './atomic-write.mjs'
 import { handleAssets } from './assets.mjs'
 import { createBridgePool } from './bridge-pool.mjs'
 import {
@@ -128,6 +130,10 @@ let gwConfig = loadConfig()
 // 多账号：启动迁移旧 auth.json，并让 bridge 指向“当前激活账号”
 const _reg = migrateLegacyAuth()
 if (_reg.activeId) gwConfig.authFilePath = accountAuthPath(_reg.activeId)
+
+// 清掉上次被强杀留下的 .xxx.tmp。它们不会被任何逻辑读到，但会越积越多，
+// 在用户自己打开数据目录排障时混进 ls 结果里干扰判断。开一次即可。
+try { sweepStaleTmpFiles(__dirname) } catch {}
 
 // 应用出网代理（仅影响本进程 fetch；bridge 子进程的代理在 startBridge 中注入）
 try { applyProxy(gwConfig.proxy || '') } catch {}
@@ -294,16 +300,18 @@ function crossSiteOrigin(req) {
   return hostOf(u.host) === hostOf(req.headers['host']) ? null : hostOf(u.host)
 }
 
-// 控制面统一守卫。返回 true 表示已响应、调用方应结束处理。
-//
-// 三道闸门，缺一不可：
-//   1) Host 白名单  —— 挡 DNS rebinding
-//   2) 同源校验    —— 挡浏览器 CSRF
-//   3) 管理鉴权    —— 挡本机其它进程无凭据读写 Key / 配置 / 账号（原 F-01）
-function controlPlaneGuard(req, res) {
+// 前两道闸门单独抽出来，因为 /mcp 需要同样的保护，却不能用第三道
+// （MCP 客户端带的是 cgw- Key，不是控制台管理令牌）：
+//   1) Host 白名单 —— 挡 DNS rebinding
+//   2) 同源校验   —— 挡浏览器 CSRF
+// 程序化客户端（curl、MCP client、lan-kit setup-client.mjs）不发 Origin/Referer，
+// 走「无来源标记 → 放行」分支，兼容性不受影响。
+// 返回 true 表示已响应、调用方应结束处理。
+function browserOriginGuard(req, res) {
   const h = hostOf(req.headers['host'])
   // HTTP/1.0 或无 Host 头时无法判断，放行以免影响本机命令行工具
   if (h && !LOCAL_HOSTS.has(h)) {
+    recordCallLog({ method: req.method, endpoint: req.url?.split('?')[0] || '/', model: '—', status: 403, latency: 0, tokens: null })
     res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify({
       error: 'host_not_allowed',
@@ -313,6 +321,7 @@ function controlPlaneGuard(req, res) {
   }
   const bad = crossSiteOrigin(req)
   if (bad) {
+    recordCallLog({ method: req.method, endpoint: req.url?.split('?')[0] || '/', model: '—', status: 403, latency: 0, tokens: null })
     res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify({
       error: 'cross_origin_denied',
@@ -320,6 +329,17 @@ function controlPlaneGuard(req, res) {
     }))
     return true
   }
+  return false
+}
+
+// 控制面统一守卫。返回 true 表示已响应、调用方应结束处理。
+//
+// 三道闸门，缺一不可：
+//   1) Host 白名单  —— 挡 DNS rebinding   ┐ 两道都在 browserOriginGuard 里
+//   2) 同源校验    —— 挡浏览器 CSRF      ┘
+//   3) 管理鉴权    —— 挡本机其它进程无凭据读写 Key / 配置 / 账号（原 F-01）
+function controlPlaneGuard(req, res) {
+  if (browserOriginGuard(req, res)) return true
   if (adminAuth && !adminAuth.verifyRequest(req).ok) {
     recordCallLog({ method: req.method, endpoint: req.url?.split('?')[0] || '/__gw', model: '—', status: 401, latency: 0, tokens: null })
     const hint = '控制台已启用管理令牌保护。浏览器请用一次性登录链接进入：在本机运行 ' +
@@ -502,7 +522,7 @@ function startBridge() {
   }
   bridgePool.start(id).then((r) => {
     if (!r.ok) pushLog('✗ bridge 启动失败：' + (r.msg || '未知原因'))
-  })
+  }).catch((e) => pushLog('✗ bridge 启动异常：' + (e && e.message || e)))
   return { ok: true }
 }
 function stopBridge() {
@@ -523,7 +543,7 @@ function restartBridgeFor(accountId, why = '') {
     if (gwConfig.mode !== 'bridge') return
     bridgePool.start(id).then((r) => {
       if (!r.ok) pushLog('✗ bridge 重启失败' + (why ? `（${why}）` : '') + '：' + (r.msg || '未知原因'))
-    })
+    }).catch((e) => pushLog('✗ bridge 重启异常：' + (e && e.message || e)))
   }, 300)
 }
 
@@ -536,7 +556,7 @@ function restartAllBridges(why = '') {
     const id = primaryAccountId()
     bridgePool.start(id).then((r) => {
       if (!r.ok) pushLog('✗ bridge 重启失败：' + (r.msg || '未知原因'))
-    })
+    }).catch((e) => pushLog('✗ bridge 重启异常：' + (e && e.message || e)))
   }, 400)
 }
 
@@ -612,24 +632,50 @@ function getActiveAccountSummary() {
 }
 
 // 轻量健康检查：请求指定实例的 /health（默认激活账号那个），带 1.2s 超时
+//
+// 响应流上的 'error' / 'aborted' 必须监听。少了它，只要 bridge 在「响应头已发出、
+// body 还没读完」之间断开（进程被杀、端口被回收），'end' 永远不来，
+// 这个 promise 就再也不会 settle —— 而 /__gw/status 与 /__gw/auth/state 都在 await 它，
+// 前端还 3 秒轮一次：每挂一次就漏一个 socket 和一个永不回收的 ServerResponse，
+// 控制台从此一直转圈，看不出任何原因。这类场景下 setTimeout 也帮不上忙，
+// 因为超时只管请求发出阶段，不管响应读数阶段。
 function fetchBridgeHealth(port = defaultBridgePort()) {
   return new Promise((resolve) => {
+    let settled = false
+    const finish = (v) => {
+      if (settled) return
+      settled = true
+      resolve(v)
+    }
     const req = http.get(`${bridgeUrlFor(port)}/health`, (res) => {
-      let body = ''
-      res.on('data', (c) => (body += c))
+      const chunks = []
+      let size = 0
+      res.on('data', (c) => {
+        // /health 的响应通常只有几百字节；上限是防御性的，
+        // 免得 bridge 异常时吐出一坨东西顶住内存。
+        size += c.length
+        if (size > 256 * 1024) {
+          res.destroy()
+          return finish({ ok: res.statusCode === 200, status: res.statusCode, data: null })
+        }
+        chunks.push(c)
+      })
       res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8')
         try {
-          resolve({ ok: res.statusCode === 200, status: res.statusCode, data: JSON.parse(body) })
+          finish({ ok: res.statusCode === 200, status: res.statusCode, data: JSON.parse(body) })
         } catch {
-          resolve({ ok: res.statusCode === 200, status: res.statusCode, data: null })
+          finish({ ok: res.statusCode === 200, status: res.statusCode, data: null })
         }
       })
+      res.on('aborted', () => finish({ ok: false, status: 0, data: null, error: 'aborted' }))
+      res.on('error', () => finish({ ok: false, status: 0, data: null, error: 'stream_error' }))
     })
     req.setTimeout(1200, () => {
       req.destroy()
-      resolve({ ok: false, status: 0, data: null, timeout: true })
+      finish({ ok: false, status: 0, data: null, timeout: true })
     })
-    req.on('error', () => resolve({ ok: false, status: 0, data: null }))
+    req.on('error', () => finish({ ok: false, status: 0, data: null }))
   })
 }
 
@@ -639,20 +685,48 @@ function sendJson(res, code, obj) {
   res.end(buf)
 }
 
-// 读取请求体 JSON
-function readBody(req) {
+// 读取请求体 JSON。
+//
+// 上限是必须的：它同时是 /mcp 与全部 /__gw/* POST 的入口，而 /mcp 在局域网可达。
+// 没有上限时，一个不带 Content-Length、持续灌数据的请求就能把内存吃干。
+// 这里取 8MB —— 控制面请求的实际体积都在几 KB 量级，真正的大 body
+// （chat/completions、图片上传）走的是下面那个有 32MB 配额的 collectBody。
+const READ_BODY_MAX = 8 * 1024 * 1024
+
+function readBody(req, max = READ_BODY_MAX) {
   return new Promise((resolve, reject) => {
-    let data = ''
-    req.on('data', (c) => (data += c))
-    req.on('end', () => {
-      if (!data) return resolve({})
-      try {
-        resolve(JSON.parse(data))
-      } catch (e) {
-        reject(e)
+    const chunks = []
+    let size = 0
+    let settled = false
+    const done = (err, value) => {
+      if (settled) return
+      settled = true
+      err ? reject(err) : resolve(value)
+    }
+    req.on('data', (c) => {
+      size += c.length
+      if (size > max) {
+        req.destroy()
+        return done(new Error('body_too_large'), null)
       }
+      chunks.push(c)
     })
-    req.on('error', reject)
+    req.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8')
+      if (!text) return done(null, {})
+      let json
+      try {
+        json = JSON.parse(text)
+      } catch (e) {
+        return done(e, null)
+      }
+      done(null, json)
+    })
+    req.on('error', (e) => done(e, null))
+    // 客户端在 body 传完之前就断开了。'end' 不会来、'error' 也不保证来，
+    // 于是不再有人 settle 这个 promise —— await readBody() 的那个路由永久挂起，
+    // socket 与整个闭包都留在那。用户主动取消操作时这会稳定发生。
+    req.on('aborted', () => done(new Error('request_aborted'), null))
   })
 }
 
@@ -708,20 +782,31 @@ function extractUsage(text) {
 const MODEL_REWRITE_PATHS = new Set(['/v1/chat/completions', '/v1/responses'])
 const MAX_BODY = 32 * 1024 * 1024
 
+// 与 collectErrorBody 那套写法保持一致（两者本该是同一个实现）：
+//   · done 幂等守卫 —— req.destroy() 之后 Node 仍可能补一个 'error' 事件，
+//     没有守卫时 cb 会被调用两次，下游 pipeProxy 跟着跑两遍，
+//     结果是一半字节已经发给客户端再撞 ERR_STREAM_WRITE_AFTER_END；
+//   · 'aborted' —— 中途断连时 promise/回调必须有人收尾（见 readBody 的说明）。
 function collectBody(req, cb) {
   const chunks = []
   let size = 0
+  let done = false
+  const finish = (err, buf) => {
+    if (done) return
+    done = true
+    cb(err, buf)
+  }
   req.on('data', (c) => {
     size += c.length
     if (size > MAX_BODY) {
       req.destroy()
-      cb(new Error('body_too_large'), null)
-      return
+      return finish(new Error('body_too_large'), null)
     }
     chunks.push(c)
   })
-  req.on('end', () => cb(null, Buffer.concat(chunks)))
-  req.on('error', (err) => cb(err, null))
+  req.on('end', () => finish(null, Buffer.concat(chunks)))
+  req.on('error', (err) => finish(err, null))
+  req.on('aborted', () => finish(new Error('request_aborted'), null))
 }
 
 function rewriteModelBody(buf) {
@@ -828,11 +913,20 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
       })
     })
   }
+  // 只为「流结束后抠出 usage」这一个目的而存在，此前会把整个响应体累进一个字符串。
+  // 长 SSE 会话（整段代码补全）动辄几 MB，等于每转发一个请求就在内存里多复制一份，
+  // 而且 `buf +=` 反复触发字符串 rope 拼接。
+  //
+  // usage 一定出现在响应**末尾**（SSE 是 [DONE] 前的最后一个 event，JSON 也是尾字段），
+  // 所以只保留最后一段就够了。窗口取 64KB：足够容纳任何 usage 报文，
+  // 又把内存占用从「整个响应」压到常数级。响应本来就小于窗口时行为完全不变。
+  const USAGE_TAP_WINDOW = 64 * 1024
   const attachUsageTap = (up) => {
     let buf = ''
     const tap = new Transform({
       transform(chunk, _enc, cb) {
         buf += chunk.toString('utf8')
+        if (buf.length > USAGE_TAP_WINDOW) buf = buf.slice(-USAGE_TAP_WINDOW)
         cb(null, chunk)
       },
       flush(cb) {
@@ -925,6 +1019,13 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
             res.once('error', sw.release)
           }
           attemptToBridge(sw.port, attempt + 1)
+        }).catch((e) => {
+          // 这条 promise 链里任何一环出错都必须收尾：
+          // 否则被投出去的响应永远没有人写，调用方拿到的是一个挂到超时的连接。
+          metrics.failoverMisses++
+          pushLog(`✗ 降级到 ${accountLabel(nextId)} 异常：${e && e.message || e}`)
+          if (!res.headersSent) replyBridgeError(res, status, up.headers, raw)
+          else res.end()
         })
       })
     })
@@ -1369,6 +1470,18 @@ async function handleModels(res, { force = false } = {}) {
 // ---- 生成图片：bridge image_generation 落盘产物（~/.chatgpt-bridge/gen-images） ----
 // 控制面提供列表 / 原图伺服 / 删除，供前端「生成图片」页下载、复制、拖拽
 const GEN_IMAGE_RE = /^[A-Za-z0-9_-]+\.png$/
+// 取 URL 里的文件名。名称由对方构造，可能压根不是合法百分号编码
+// （%zz / %c0%ae 之类），此时 decodeURIComponent 会抛 URIError。
+// serveStatic（1260 行）早就拦了这一手，两条 gen-images 路由却漏掉了，
+// 于是「畸形编码的 DELETE」在请求边界加到之前能把整个进程带走。
+// 返回 null = 这个名字不能用，调用方照 bad_name 处理。
+function safeDecodeName(raw) {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return null
+  }
+}
 function genImagesDir() {
   return path.join(os.homedir(), '.chatgpt-bridge', 'gen-images')
 }
@@ -1381,17 +1494,36 @@ function genImageIndexPath() {
 function readImageIndex() {
   try { return JSON.parse(fs.readFileSync(genImageIndexPath(), 'utf8')) } catch { return {} }
 }
+// index.json 是「这张图属于谁」的**唯一**依据。它丢了，图还在磁盘上，
+// 但 scopedGenImages 看不见它 —— 用户在素材站里找不到自己刚生成的图，也删不掉。
+// 所以：原子写（避免写一半变成无效 JSON 把整份归属信息一次性作废），
+// 且失败必须让人看见（旧代码一个空的 catch 就过去了，界面照样显示「已生成」）。
 function writeImageIndex(idx) {
-  try { fs.writeFileSync(genImageIndexPath(), JSON.stringify(idx)) } catch {}
+  try {
+    writeJsonAtomic(genImageIndexPath(), idx)
+    return true
+  } catch (e) {
+    console.error('[codex-gateway] 写入生成图索引失败（图已落盘但归属可能丢失）：' + (e && e.message || e))
+    return false
+  }
 }
 function saveGenImageB64(b64, owner) {
   try {
     fs.mkdirSync(genImagesDir(), { recursive: true })
-    const name = `${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}.png`
-    fs.writeFileSync(path.join(genImagesDir(), name), Buffer.from(b64, 'base64'))
+    const filePath = path.join(genImagesDir(), name)
+    fs.writeFileSync(filePath, Buffer.from(b64, 'base64'))
     if (owner && owner.keyId) {
+      // 顺手把 size / mtime 记进 index：列表接口的调用频率远高于生图，
+      // 在这里多花一次 stat（每张图一生一次）换掉列表时每张都 stat，非常划算。
+      const st = fs.statSync(filePath)
       const idx = readImageIndex()
-      idx[name] = { keyId: String(owner.keyId), keyName: owner.keyName || null, createdAt: Date.now() }
+      idx[name] = {
+        keyId: String(owner.keyId),
+        keyName: owner.keyName || null,
+        createdAt: Date.now(),
+        size: st.size,
+        mtime: st.mtimeMs
+      }
       writeImageIndex(idx)
     }
     return name
@@ -1407,13 +1539,23 @@ function listGenImages() {
   const out = []
   for (const name of names) {
     try {
-      const st = fs.statSync(path.join(dir, name))
       const meta = idx[name] || null
+      // size / mtime 在落盘那一刻就记进了 index.json，所以这里通常一次 stat 都不用做。
+      // 改动前是「每张图一次 statSync」：图库两三百张时，一次列表就是几百次阻塞 syscall，
+      // 全挤在同一个事件循环上 —— 而这只是个列表接口，被前端和素材站反复轮询。
+      // index 里缺字段的遗留图（早于该字段写入的版本 / 手工放进去的图）回退到 stat。
+      let size = meta && Number.isFinite(meta.size) ? meta.size : null
+      let mtime = meta && Number.isFinite(meta.mtime) ? meta.mtime : null
+      if (size == null || mtime == null) {
+        const st = fs.statSync(path.join(dir, name))
+        if (size == null) size = st.size
+        if (mtime == null) mtime = st.mtimeMs
+      }
       out.push({
-        name, size: st.size, mtime: st.mtimeMs, url: '/__gw/gen-images/' + name,
+        name, size, mtime, url: '/__gw/gen-images/' + name,
         ownerKeyId: meta ? meta.keyId : null,
         ownerKeyName: meta ? meta.keyName : null,
-        createdAt: meta ? meta.createdAt : st.mtimeMs
+        createdAt: meta ? meta.createdAt : mtime
       })
     } catch {}
   }
@@ -1436,6 +1578,16 @@ function deleteGenImage(name, keyId) {
   try { fs.unlinkSync(full) } catch (e) { return { ok: false, error: e.message } }
   if (meta) { delete idx[name]; writeImageIndex(idx) }
   return { ok: true }
+}
+
+// listApiKeys() 每次都重新映射 + 排序整个列表。/ __gw/status 之前连着调了它两遍，
+// 而前端每 3 秒轮询一次 —— 这里统一取一次。
+function apiKeysSummary() {
+  const keys = listApiKeys()
+  return {
+    apikeysCount: keys.length,
+    tokensTotal: keys.reduce((s, k) => s + (k.tokens || 0), 0)
+  }
 }
 
 // 严格鉴权：开启后所有 /v1/* 请求必须携带有效 cgw- API Key（/health 保持开放）
@@ -1546,12 +1698,21 @@ const MCP_HTTP_TOOLS = [
   }
 ]
 
+// 响应头刻意**不带** Access-Control-Allow-Origin。
+//
+// 此前这里（以及 OPTIONS 预检）发的是 `ACAO: *`，配上 /mcp 在「未开 LAN 且
+// strictAuth 未启用」时零凭据放行，等于：任意网页都能跨域读到本机 MCP 的结果
+// —— 而且不用 Cookie 也能成（MCP 走 Authorization 头，有没有 Allow-Credentials 无所谓）。
+// 恶意页面直接 fetch('http://127.0.0.1:4173/mcp') 就能列出图库、调用工具。
+//
+// 真正的 MCP 客户端（mcp.json 里配 url 的那种）跑在 Node 进程里，不受同源策略限制，
+// 移除通配 CORS 对它们没有任何影响。浏览器里的 JS 则会被同源策略挡住。
 function mcpSse(res, obj, headers = {}) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
+    'X-Content-Type-Options': 'nosniff',
     ...headers
   })
   res.end('event: message\ndata: ' + JSON.stringify(obj) + '\n\n')
@@ -1608,6 +1769,13 @@ async function mcpGenerateImage(args, req) {
 // 图库列表：由网关主机代读（远程 MCP 下三个工具都完整可用，比 stdio 版在客户端跑更合理）。
 // 分用户：携带有效 Key 的调用者只看到自己生成的图；无 Key（本机未开鉴权）看到全部。
 function mcpListImages(args, req, caller) {
+  // caller 为 null（未开严格鉴权时的本机调用）原本会返回整个图库 —— 这是宿主机自己的
+  // 场景，属于设计意图。但**远程**无 Key 调用不该看到任何人的图：
+  // LAN 模式下虽然 strictAuthReject 会先要求 Key，这里仍做一层纵深防御，
+  // 免得将来有人改动鉴权顺序时这条口子被重新打开。
+  if (!caller?.keyId && !isLoopbackReq(req)) {
+    return { ok: false, error: '远程调用必须携带有效的 cgw- Key 才能查看图库。' }
+  }
   const all = caller && caller.keyId ? scopedGenImages(caller.keyId) : listGenImages()
   const limit = Math.max(1, Math.min(100, Number(args?.limit) || 20))
   const hostHeader = req.headers.host || `127.0.0.1:${LAUNCHER_PORT}`
@@ -1628,9 +1796,14 @@ function mcpListImages(args, req, caller) {
 }
 
 // 删除：带 Key 调用者只能删自己生成的（归属校验在 deleteGenImage 内）
-function mcpDeleteImage(args, caller) {
+function mcpDeleteImage(args, req, caller) {
   const name = String(args?.name || '').trim()
   if (!name) return { ok: false, error: '缺少图片文件名 name（来自 list_generated_images）' }
+  // deleteGenImage 的归属校验形如 `if (keyId && 不是自己的) 拒绝` —— keyId 为 null 时
+  // 整段被跳过，于是「无 Key 调用」能删掉任何人的图（IDOR）。这里先补上入口检查。
+  if (!caller?.keyId && !isLoopbackReq(req)) {
+    return { ok: false, error: '远程调用必须携带有效的 cgw- Key 才能删除图片。' }
+  }
   const r = deleteGenImage(name, caller && caller.keyId)
   if (!r.ok) {
     return { ok: false, error: r.error === 'not_owner_or_not_found'
@@ -1641,9 +1814,14 @@ function mcpDeleteImage(args, caller) {
 }
 
 async function handleMcpEndpoint(req, res) {
+  // 与控制面同款的两道浏览器闸门（Host 白名单 + 同源校验）。
+  // 有了它们，恶意网页用 XHR/fetch 打 127.0.0.1:4173/mcp 会带上自己的 Origin，
+  // 在这里被直接挡掉 —— 连副作用（例如删图）都发不出去，不只是读不到响应。
+  // MCP 客户端不发 Origin/Referer，照常放行。
+  if (browserOriginGuard(req, res)) return
+
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'authorization, content-type, mcp-session-id, last-event-id',
       'Access-Control-Max-Age': '86400'
@@ -1672,8 +1850,12 @@ async function handleMcpEndpoint(req, res) {
   const messages = Array.isArray(msg) ? msg : [msg]
 
   // 纯通知（initialized 等，无 id）：202 空响应
-  if (messages.every((m) => !m || (m.id === undefined && m.id === null))) {
-    res.writeHead(202, { 'Access-Control-Allow-Origin': '*' })
+  // 这里原本写成 `m.id === undefined && m.id === null` —— 一个值不可能同时等于两者，
+  // 条件恒为 false，整个分支只有「数组元素全是 falsy」时才成立，等于从来没生效过。
+  // 幸好下面「replies 为空 → 202」的兜底把行为接住了，所以症状不明显，
+  // 但注释描述的意图和实际写的条件并不一致。按注释的本意修正。
+  if (messages.every((m) => !m || m.id === undefined || m.id === null)) {
+    res.writeHead(202)
     return res.end()
   }
 
@@ -1698,7 +1880,7 @@ async function handleMcpEndpoint(req, res) {
       let r
       if (name === 'generate_image') r = await mcpGenerateImage(args, req, caller)
       else if (name === 'list_generated_images') r = mcpListImages(args, req, caller)
-      else if (name === 'delete_generated_image') r = mcpDeleteImage(args, caller)
+      else if (name === 'delete_generated_image') r = mcpDeleteImage(args, req, caller)
       else {
         replies.push({ jsonrpc: '2.0', id, error: { code: -32602, message: 'unknown tool: ' + name } })
         continue
@@ -1723,7 +1905,8 @@ async function handleMcpEndpoint(req, res) {
   return mcpSse(res, replies.length === 1 ? replies[0] : replies, sessionHeaders)
 }
 
-const server = http.createServer(async (req, res) => {
+// 请求主流程。刻意保持独立函数：外面的 createServer 外壳负责兜住它抛出的任何东西。
+async function handleHttpRequest(req, res) {
   const url = new URL(req.url, `http://127.0.0.1:${LAUNCHER_PORT}`)
   const p = url.pathname
 
@@ -1872,8 +2055,8 @@ const server = http.createServer(async (req, res) => {
         metrics,
         // 降级状态：哪些账号正在冷却、还剩多少秒，排障时能直接看到「为什么没换过去」
         failover: failoverPolicy.snapshot(),
-        apikeysCount: listApiKeys().length,
-        tokensTotal: listApiKeys().reduce((s, k) => s + (k.tokens || 0), 0),
+        // 列表是全量映射 + 排序，调一次即可 —— 这个接口前端每 3 秒轮一次
+        ...apiKeysSummary(),
         mode: gwConfig.mode,
         // 实际生图模型：本通道没有独立图片模型，一律由该对话模型 + image_generation 工具渲染
         imageModel: IMAGE_MODEL,
@@ -1994,8 +2177,8 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (p.startsWith('/__gw/gen-images/') && req.method === 'GET') {
-      const name = decodeURIComponent(p.slice('/__gw/gen-images/'.length))
-      if (!GEN_IMAGE_RE.test(name)) return sendJson(res, 400, { error: 'bad_name' })
+      const name = safeDecodeName(p.slice('/__gw/gen-images/'.length))
+      if (!name || !GEN_IMAGE_RE.test(name)) return sendJson(res, 400, { error: 'bad_name' })
       try {
         // 与 /__gw/assets/file 一致：ETag 条件请求，避免图库轮询反复全量下载原图
         const full = path.join(genImagesDir(), name)
@@ -2275,7 +2458,7 @@ const server = http.createServer(async (req, res) => {
               model: defaultChatModel()
             })
             if (pr.ok) pushLog(`🔍 已探测新账号额度：${accountLabel(body.id)}`)
-          })
+          }).catch((e) => pushLog('✗ 预热 / 额度探测失败：' + (e && e.message || e)))
         }
         return sendJson(res, 200, { ok: true, path: r.path })
       } catch (e) {
@@ -2305,7 +2488,7 @@ const server = http.createServer(async (req, res) => {
         if (gwConfig.mode === 'bridge' && r.activeId) {
           bridgePool.start(r.activeId).then((x) => {
             if (!x.ok) pushLog('✗ 预热 bridge 失败：' + (x.msg || '未知原因'))
-          })
+          }).catch((e) => pushLog('✗ 预热 bridge 异常：' + (e && e.message || e)))
         }
         return sendJson(res, 200, { ok: true, activeId: r.activeId })
       } catch (e) {
@@ -2462,7 +2645,8 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, total: all.length, images, gallery: `http://${hostHeader}/gallery` })
     }
     if (p.startsWith('/v1/gen-images/') && req.method === 'DELETE') {
-      const name = decodeURIComponent(p.slice('/v1/gen-images/'.length))
+      const name = safeDecodeName(p.slice('/v1/gen-images/'.length))
+      if (!name || !GEN_IMAGE_RE.test(name)) return sendJson(res, 400, { error: 'bad_name' })
       const r = deleteGenImage(name, authKeyId)
       recordCallLog({ method: 'DELETE', endpoint: p.split('?')[0], model: '—', status: r.ok ? 200 : (r.error === 'not_owner_or_not_found' ? 403 : 400), latency: 0, tokens: null })
       if (!r.ok) return sendJson(res, r.error === 'not_owner_or_not_found' ? 403 : 400, { ok: false, error: r.error })
@@ -2507,6 +2691,51 @@ const server = http.createServer(async (req, res) => {
 
   // ---- 静态前端 ----
   return serveStatic(req, res, p)
+}
+
+// ---- 请求边界（P0）：一个请求里的任何漏网异常都不能把整个网关带走 ----
+// 处理器此前是直接写在 createServer(async (req,res) => …) 里的，没有任何顶层 catch。
+// 结果：Node 15+ 把未处理的 promise 拒绝直接升级为进程退出，于是
+//   curl -X DELETE http://127.0.0.1:4173/v1/gen-images/%zz
+// 这样一条命令就能掀翻进程 —— 在「未开 LAN 且 strictAuth 未启用」这个全新安装的
+// 默认配置下，它连凭据都不需要。同一枚 API Key 的局域网客户端也能做到。
+//
+// 这里收口三件事：
+//   1. 处理器的异常一律降级成 500，写日志，进程照常服务（单个坏请求换掉整台网关不划算）；
+//   2. 响应期间的 socket 错误必须有监听，否则 EventEmitter 抛错又是一条 uncaughtException；
+//   3. 畸形请求走 clientError，留下日志而不是静默丢弃。
+const server = http.createServer((req, res) => {
+  // 客户端提前断开时 res 会 emit 'error'。没有监听它就变成未捕获异常 → 进程退出。
+  // 这是最容易被忽略的一条：断连是常态（用户刷新页面、代理超时），不是异常。
+  res.once('error', (e) => {
+    if (e && (e.code === 'ECONNRESET' || e.code === 'EPIPE')) return
+    pushLog('⚠ 响应写出失败（客户端提前断开？）：' + String(e && e.message || e))
+  })
+  let replied = false
+  res.once('finish', () => { replied = true })
+  handleHttpRequest(req, res).catch((e) => {
+    if (replied) return
+    const brief = e && e.stack ? String(e.stack).split('\n').slice(0, 3).join(' ⏎ ') : String(e)
+    pushLog('✗ 请求处理异常（已降级为 500）：' + brief)
+    try {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+        res.end(JSON.stringify({ ok: false, error: 'internal_error' }))
+      } else {
+        res.end()
+      }
+    } catch {}
+  })
+})
+
+server.on('clientError', (err, socket) => {
+  // 畸形请求行 / 超大请求头。默认行为是直接销毁 socket 且不落任何记录，
+  // 排障时看不到发生过什么。
+  const isTrivial = err && (err.code === 'ECONNRESET' || err.code === 'EPIPE')
+  if (!isTrivial) pushLog('⚠ 客户端请求畸形，已断开：' + String(err && err.message || err))
+  if (socket && socket.writable) {
+    try { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n') } catch {}
+  }
 })
 
 // ---- 退出收尾 ----
@@ -2517,11 +2746,41 @@ let shuttingDown = false
 function shutdown(signal) {
   if (shuttingDown) return
   shuttingDown = true
+  // 顺序有讲究：先把两处内存态收据刷出去（它们都用了延迟写），再停 bridge 子进程。
+  // 调用日志此前从未挂在任何退出路径上 —— flushCallLogs() 全项目零调用点，
+  // 于是网关关闭前最后几秒的调用记录每次都整批丢失。
+  try { flushApiKeys() } catch {}
+  try { flushCallLogs() } catch {}
   let n = 0
   try { n = bridgePool.dispose() } catch {}
-  pushLog(`◆ 收到 ${signal}，已停止 ${n} 个 bridge 实例`)
+  pushLog(`◆ 收到 ${signal}，已刷盘并停止 ${n} 个 bridge 实例`)
   process.exit(0)
 }
+
+// 进程级兜底：请求边界已经拦住「一个坏请求」这类情况（见 createServer 处的注释），
+// 这里守的是边界之外漏进来的东西 —— 浮动 promise、流式回调里的 'error'、第三方模块。
+// 没有它们时，这类异常的表现是 stderr 上一行堆栈然后整个进程消失，
+// 控制台只剩「无法连接」，用户看不出发生过什么。
+//
+// uncaughtException 意味着事件循环的状态已经可疑（可能有请求挂在一半），
+// 继续跑在一个半损坏的进程上比重启更糟，所以走同一条收尾路径有序停止。
+// unhandledRejection 多半来自后台任务（例如预热/探测那种没接 .catch 的 promise），
+// 由上面 handleHttpRequest 的边界已经确保它不会拖垮正在进行的请求，
+// 这里只记录并节流，保持网关可服务，把「是否重启」留给使用者判断。
+let rejectWarnCount = 0
+process.on('uncaughtException', (err) => {
+  pushLog('✗ 未捕获异常，网关即将停止：' + String(err && err.stack || err))
+  shutdown('uncaughtException')
+})
+process.on('unhandledRejection', (reason) => {
+  rejectWarnCount += 1
+  if (rejectWarnCount <= 20) {
+    pushLog('✗ 未处理的 promise 拒绝（已记录，服务继续）：' + String(reason && reason.stack || reason))
+  } else if (rejectWarnCount === 21) {
+    pushLog('✗ 未处理的 promise 拒绝过多，后续同类日志已暂不展开')
+  }
+})
+
 process.on('SIGINT', () => shutdown('SIGINT'))
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('exit', () => { try { bridgePool.dispose() } catch {} })

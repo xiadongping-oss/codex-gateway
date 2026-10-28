@@ -187,17 +187,21 @@ export async function testProxy(proxyUrl, timeoutMs = 15000) {
   if (!norm.ok) return { ok: false, error: norm.error }
 
   let agent = null
+  // 走代理分支时的 ProxyAgent 此前是内联 new 出来的，既没被 agent 持有也没被 close，
+  // 于是每点一次「测试代理」就泄漏一个 undici 连接池（含 keep-alive 上的 socket）。
+  let proxyAgent = null
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), timeoutMs)
   const started = Date.now()
   try {
     agent = new mod.Agent({ connectTimeout: timeoutMs })
+    if (norm.url) proxyAgent = new mod.ProxyAgent({ uri: norm.url, connectTimeout: timeoutMs })
     const res = await fetch(target, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Origin: 'https://auth.openai.com' },
       body: JSON.stringify({ client_id: 'app_EMoamEEZ73f0CkXaXp7hrann' }),
       signal: ac.signal,
-      dispatcher: norm.url ? new mod.ProxyAgent({ uri: norm.url, connectTimeout: timeoutMs }) : agent
+      dispatcher: proxyAgent || agent
     })
     const ms = Date.now() - started
     if (res.ok) {
@@ -229,5 +233,6 @@ export async function testProxy(proxyUrl, timeoutMs = 15000) {
   } finally {
     clearTimeout(timer)
     if (agent) { try { await agent.close() } catch {} }
+    if (proxyAgent) { try { await proxyAgent.close() } catch {} }
   }
 }

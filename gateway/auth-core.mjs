@@ -14,6 +14,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import http from 'node:http'
 import { fileURLToPath } from 'node:url'
+import { writeJsonAtomic, writeTextAtomic, createCachedTextReader } from './atomic-write.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -45,10 +46,21 @@ export function loadConfig() {
 
 export function saveConfig(cfg) {
   try {
-    fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true })
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify({ mode: cfg.mode, openaiApiKey: cfg.openaiApiKey, authFilePath: cfg.authFilePath, autoStart: cfg.autoStart, proxy: cfg.proxy || '', strictAuth: !!cfg.strictAuth }, null, 2))
-  } catch {}
-  return cfg
+    writeJsonAtomic(CONFIG_PATH, {
+      mode: cfg.mode,
+      openaiApiKey: cfg.openaiApiKey,
+      authFilePath: cfg.authFilePath,
+      autoStart: cfg.autoStart,
+      proxy: cfg.proxy || '',
+      strictAuth: !!cfg.strictAuth
+    })
+  } catch (e) {
+    // 以前是纯吞：磁盘只读 / 被占用时 saveConfig 一声不响，
+    // 重启后 mode、proxy、激活账号全部回到默认值，用户只会觉得"它自己变了"。
+    console.error('[codex-gateway] 写入配置失败（改动未落盘）：' + (e && e.message || e))
+    return false
+  }
+  return true
 }
 
 // ---------- JWT 解析（仅读 payload，不校验签名） ----------
@@ -126,8 +138,9 @@ export function findAccountByFingerprint(reg, data) {
 
 // ---------- 写入 bridge 兼容的 auth.json ----------
 export async function writeAuthFile(filePath, data) {
-  await fs.promises.mkdir(path.dirname(filePath), { recursive: true })
-  await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf-8', mode: 0o600 })
+  // 原子写。这里是 refresh_token 这类长期凭据，写一半被杀的结果是文件留在半截 JSON，
+  // 上层把这当成「文件不存在」，用户在控制台看到的是账号莫名不可用。
+  writeTextAtomic(filePath, JSON.stringify(data, null, 2) + '\n')
 }
 
 // 把用户粘贴/导入的任意 JSON 规范化为 bridge 形态
@@ -601,21 +614,32 @@ function genAccountId() {
   return 'acc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
 }
 
+// accounts.json 是全仓读得最频繁的文件：每个 /v1/* 请求、每次 bridgeLabel /
+// primaryAccountId / accountLabel 都会走一遍 loadAccounts()。
+// 这里缓存掉磁盘读取那一层（解析仍然每次重做，见 createCachedTextReader 的说明）。
+const registryReader = createCachedTextReader(ACCOUNTS_REGISTRY)
+
 export function loadAccounts() {
+  const txt = registryReader.read()
+  if (txt == null) return { activeId: null, accounts: [] }
   try {
-    const txt = fs.readFileSync(ACCOUNTS_REGISTRY, 'utf-8')
     const j = JSON.parse(txt)
     if (j && Array.isArray(j.accounts)) return j
   } catch {}
   return { activeId: null, accounts: [] }
 }
 
+// registry 是整份覆盖写的 read-modify-write。返回 false 表示没写进去，
+// 调用方据此决定是继续还是报错给用户。
 export function saveAccounts(reg) {
   try {
-    fs.mkdirSync(path.dirname(ACCOUNTS_REGISTRY), { recursive: true })
-    fs.writeFileSync(ACCOUNTS_REGISTRY, JSON.stringify(reg, null, 2))
-  } catch {}
-  return reg
+    writeJsonAtomic(ACCOUNTS_REGISTRY, reg)
+    registryReader.invalidate()
+  } catch (e) {
+    console.error('[codex-gateway] 写入账号注册表失败（改动未落盘）：' + (e && e.message || e))
+    return false
+  }
+  return true
 }
 
 // 某账号 auth 文件的绝对路径
@@ -635,12 +659,32 @@ function defaultAccountName(provider, data) {
 // 写入已规范化 bridge 形态 data，并登记为新账号（自动激活）
 // 若指纹命中已有账号，则更新该账号的 token 与元数据，避免重复建档。
 export async function addAccount({ name, provider = 'token', mode = 'bridge', data }) {
+  // 这段 reconstructed 的关键在于「唯一的 await 放在 load→save 之前」。
+  //
+  // registry 是**整份覆盖**的 read-modify-write：loadAccounts() 拿到的是当时的快照，
+  // saveAccounts() 把这份快照整体写回磁盘。如果这个区间里插进一个 await，
+  // 中间这段时间别的请求完全可以跑完一次完整的 load→save（例如切换激活账号），
+  // 然后被这里拿着过期快照的整份写回无声覆盖 —— activeId 直接回滚。
+  // 可复现：先 POST /__gw/accounts（auth.json 较大、落盘慢），
+  //        紧接 POST /__gw/accounts/activate，切到的账号会退回旧的。
+  //
+  // Node 是单线程的，所以只要这段里不含 await，就不存在穿插，
+  // load 出来的必定是此刻磁盘上的最新内容。
+  const prelim = loadAccounts()
+  const prelimHit = findAccountByFingerprint(prelim, data)
+  const prelimId = prelimHit ? prelimHit.id : genAccountId()
+  await writeAuthFile(accountAuthPath(prelimId), data)
+
+  // ---- 从这里往下是同步段 ----
   const reg = loadAccounts()
   const existing = findAccountByFingerprint(reg, data)
   if (existing) {
     const id = existing.id
-    const filePath = accountAuthPath(id)
-    await writeAuthFile(filePath, data)
+    // await 期间若另一个抢先注册了同一指纹的账号，凭证文件要跟着搬过去，
+    // 否则 accounts/ 里会留下一份没人认领的 auth 文件。
+    if (prelimId !== id) {
+      try { fs.renameSync(accountAuthPath(prelimId), accountAuthPath(id)) } catch {}
+    }
     // 不降级 provider：oauth 比 token 更具体，保留已有更精确标签
     if (provider !== 'token' || existing.provider !== 'oauth') {
       existing.provider = provider
@@ -652,14 +696,11 @@ export async function addAccount({ name, provider = 'token', mode = 'bridge', da
     existing.updatedAt = new Date().toISOString()
     reg.activeId = id
     saveAccounts(reg)
-    return { id, reg, path: filePath, isExisting: true }
+    return { id, reg, path: accountAuthPath(id), isExisting: true }
   }
 
-  const id = genAccountId()
-  const filePath = accountAuthPath(id)
-  await writeAuthFile(filePath, data)
   reg.accounts.push({
-    id,
+    id: prelimId,
     name: name || defaultAccountName(provider, data),
     provider,
     mode,
@@ -667,9 +708,9 @@ export async function addAccount({ name, provider = 'token', mode = 'bridge', da
     email: emailFromIdToken(data?.tokens?.id_token) || '',
     createdAt: new Date().toISOString()
   })
-  reg.activeId = id
+  reg.activeId = prelimId
   saveAccounts(reg)
-  return { id, reg, path: filePath, isExisting: false }
+  return { id: prelimId, reg, path: accountAuthPath(prelimId), isExisting: false }
 }
 
 // 切换激活账号，返回该账号 auth 文件路径
@@ -731,6 +772,10 @@ export function addPendingAccount({ name, email, note, provider = 'oauth' } = {}
 // 补全待授权账号：写入 auth 文件、置为 active 并激活
 // 若该 token 已对应另一个已有账号，则合并到已有账号并删除待授权卡片。
 export async function completePendingAccount(id, data, { name, provider = 'oauth', mode = 'bridge' } = {}) {
+  // 与 addAccount 同理：先做完唯一的 await，再进纯同步的 load→save 段。
+  const prelimPath = accountAuthPath(id)
+  await writeAuthFile(prelimPath, data)
+
   const reg = loadAccounts()
   const pending = reg.accounts.find((a) => a.id === id)
   if (!pending) throw new Error('待授权账号不存在：' + id)
@@ -739,7 +784,7 @@ export async function completePendingAccount(id, data, { name, provider = 'oauth
   if (existing && existing.id !== id) {
     // 待授权卡片的身份与已有账号重复：删除卡片，把 token 更新到已有账号
     const filePath = accountAuthPath(existing.id)
-    await writeAuthFile(filePath, data)
+    try { fs.renameSync(prelimPath, filePath) } catch {}
     existing.provider = provider
     existing.mode = mode
     if (name && name.trim()) existing.name = name.trim().slice(0, 40)
@@ -755,8 +800,9 @@ export async function completePendingAccount(id, data, { name, provider = 'oauth
     return { id: existing.id, reg, path: filePath, isExisting: true }
   }
 
+  // auth 文件在上面那段已经写好了（prelimPath 就是 accountAuthPath(id)），
+  // 这里不再 await —— 同步段要保持完整，否则又会丢别人的改动。
   const filePath = accountAuthPath(id)
-  await writeAuthFile(filePath, data)
   pending.status = 'active'
   pending.provider = provider
   pending.mode = mode

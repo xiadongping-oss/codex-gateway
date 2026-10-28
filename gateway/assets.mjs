@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { writeJsonAtomic } from './atomic-write.mjs'
 
 const MOD_DIR = path.dirname(fileURLToPath(import.meta.url))
 const STORE_PATH = process.env.ASSETS_STORE_PATH || path.join(MOD_DIR, 'data', 'asset-sources.json')
@@ -37,10 +38,15 @@ function store() {
   return storeCache
 }
 function persist() {
-  fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true })
-  const tmp = STORE_PATH + '.tmp'
-  fs.writeFileSync(tmp, JSON.stringify(store(), null, 2))
-  fs.renameSync(tmp, STORE_PATH)
+  // 走统一的原子写：旧实现用的是固定 tmp 名（STORE_PATH + '.tmp'），
+  // 两次并发写会互相覆盖同一个临时文件，rename 出来的可能是别人那半截内容。
+  // 这里换成「tmp 名带 pid + 随机串」的实现，权限也一并收紧（文件里有云存储凭据）。
+  try {
+    writeJsonAtomic(STORE_PATH, store())
+  } catch (e) {
+    console.error('[codex-gateway] 写入素材源注册表失败：' + (e && e.message || e))
+    throw e
+  }
 }
 
 // ---------- 素材源 CRUD ----------
@@ -65,14 +71,42 @@ const BLOCKED_HOST_PATTERNS = [
   /^fe80/,                     // IPv6 链路本地
   /\.local$/i,                 // mDNS
   /\.internal$/i,
-  /^localhost$/i
+  /^localhost$/i,
+  /^::$/                       // IPv6 未指定地址（等价于 0.0.0.0）
 ]
 
+// IPv4-mapped / IPv4-compatible 的 IPv6 写法会让上面这套黑名单整体失效：
+// `::ffff:169.254.169.254` 既不以 "169.254." 开头，也不落在任何 IPv6 段规则里，
+// 实测是放行的 —— 而请求发出去之后，目标仍然是云元数据服务。
+// 所以判黑名单之前先把这两种写法还原成点分十进制。
+function normalizeHostname(h) {
+  const s = String(h || '').toLowerCase().replace(/^\[|\]$/g, '')
+  // ::ffff:169.254.169.254（点分尾部）
+  let m = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(s)
+  if (m) return m[1]
+  // ::ffff:a9fe:a9fe（两段十六进制，同样等于 ::ffff:169.254.169.254）
+  m = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(s)
+  if (m) {
+    const hi = parseInt(m[1], 16)
+    const lo = parseInt(m[2], 16)
+    return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`
+  }
+  return s
+}
+
 function isBlockedHost(hostname) {
-  const h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '')
+  // 先归一化再判定：HOST_PATTERNS 的规则都是按「点分十进制 / 常规写法」写的
+  const h = normalizeHostname(String(hostname || '').toLowerCase().replace(/^\[|\]$/g, ''))
   if (!h) return true
-  // 纯数字 / 十六进制等非常规主机名（可能是 DNS rebinding 的变体）
+  // 下面两条实测下来在当前链路上是**不可达的**：assertOutboundUrl 用的是 WHATWG URL，
+  // 它会先把 "0177.0.0.1" 规范成 "127.0.0.1"、"2130706433" 也规范成 "127.0.0.1"，
+  // 早在进黑名单之前就变成了普通的点分十进制，由上面的 /^127\./ 拦下。
+  // 之所以仍留着：它们是「将来换了 URL 解析器、或有人绕过 URL 直接拿字符串匹配」
+  // 时的第二道防线，成本为零。别把它们当冗余删掉 —— 删掉之后这部分防护
+  // 就只剩下「WHATWG URL 恰好帮我们兜住了」这一个不再被显式表达的前提。
   if (/^\d+$/.test(h) || /^0x[0-9a-f]+$/.test(h)) return true
+  // 带前导零的点分地址（0177.0.0.1 这类写法可以绕开 "127." 前缀匹配）
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(h) && /(^|\.)0\d/.test(h)) return true
   return BLOCKED_HOST_PATTERNS.some((re) => re.test(h))
 }
 
@@ -556,14 +590,35 @@ function json(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' })
   res.end(buf)
 }
+const READ_BODY_MAX = 8 * 1024 * 1024
+// 与 launcher.mjs 那份 readBody 同样的两个坑：无上限累积 + 不处理中途断连。
+// 这里是控制面素材接口的入口，任一条 POST 都能被拿来耗内存；
+// 而一旦客户端在传完前断开，promise 再也没人 settle，路由会永久挂起。
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let data = ''
-    req.on('data', (c) => (data += c))
-    req.on('end', () => {
-      try { resolve(data ? JSON.parse(data) : {}) } catch (e) { reject(e) }
+    const chunks = []
+    let size = 0
+    let settled = false
+    const done = (err, value) => {
+      if (settled) return
+      settled = true
+      err ? reject(err) : resolve(value)
+    }
+    req.on('data', (c) => {
+      size += c.length
+      if (size > READ_BODY_MAX) {
+        req.destroy()
+        return done(new Error('body_too_large'), null)
+      }
+      chunks.push(c)
     })
-    req.on('error', reject)
+    req.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8')
+      if (!text) return done(null, {})
+      try { done(null, JSON.parse(text)) } catch (e) { done(e, null) }
+    })
+    req.on('error', (e) => done(e, null))
+    req.on('aborted', () => done(new Error('request_aborted'), null))
   })
 }
 

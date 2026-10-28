@@ -21,7 +21,7 @@ bash gateway/tests/run.sh --live
 | 命令 | 脚本 | 作用 |
 |---|---|---|
 | `npm test` | `run.sh` + `audit.mjs` | 69 例功能与安全回归，覆盖 API Key 生命周期、`/v1` 鉴权、远程 MCP、素材归属、文件伺服、控制面隔离、管理鉴权、多账号实例池架构、lan-kit 客户端分发 |
-| `npm run test:unit` | `bridge-pool.test.mjs` + `quota.test.mjs` + `failover.test.mjs` + `lan-addr.test.mjs` | bridge 实例池语义（启动互斥 / 一账号一端口 / 空闲回收 / 池满淘汰 / 崩溃自愈）+ **账号额度**（上游限流头解析、按账号隔离缓存、无数据不编数字、主动探测不拿旧头冒充新结果）+ **429/401 账号降级**（哪些状态码可降级、按状态码分开冷却、选路不打转）+ **局域网地址分类**（Tailscale 100.64/10 边界、虚拟网卡不误伤真内网、排序让内网同事拿到的那个排最前） |
+| `npm run test:unit` | `bridge-pool.test.mjs` + `quota.test.mjs` + `failover.test.mjs` + `lan-addr.test.mjs` + `hardening.test.mjs` | bridge 实例池语义（启动互斥 / 一账号一端口 / 空闲回收 / 池满淘汰 / 崩溃自愈）+ **账号额度**（上游限流头解析、按账号隔离缓存、无数据不编数字、主动探测不拿旧头冒充新结果）+ **429/401 账号降级**（哪些状态码可降级、按状态码分开冷却、选路不打转）+ **局域网地址分类**（Tailscale 100.64/10 边界、虚拟网卡不误伤真内网、排序让内网同事拿到的那个排最前）+ **本轮加固**（原子落盘的 tmp 唯一性 / 原子替换 / 失败必须抛出 / 残留清理 / SSRF 的 IPv4-mapped IPv6 归一化） |
 | `npm run test:client` | `setup-client.test.mjs` | **局域网客户端脚本回归**：`setup-client.mjs` 的 14 例（mcp.json 合并幂等 / 坏 JSON 不覆盖 / dry-run 不写盘 / 缺参数报错 / skill 降级 / 注入锚点契约）。临时 HOME + 临时 cwd，不碰真实 `~/.workbuddy` |
 | `npm run test:build` | `build-release.test.mjs` | **打包闸门回归**：`--verify-zip` / `--verify-build` / 运行时锁 / 复制黑名单 / **换行符与可复现性**。25 例，在临时「假仓库」里跑同一份 `build-release.mjs`，不碰真产物 |
 | `npm run test:mutate` | `mutate.mjs` | **变异测试**：往沙盒代码注入 22 个真实缺陷，验证回归能否逐个抓住。存活 = 测试盲区 |
@@ -31,6 +31,7 @@ bash gateway/tests/run.sh --live
 | `npm run test:mutate:unix` | `mutate-unix.mjs` | 上一套的变异测试：注入 7 种「静默失效」（ExecStart 丢引号 / 不 enable / 平台闸门放行 / 停不干净 / 误杀 pid / 不轮转日志 / CRLF），验证 `test:unix` 能逐个抓住 |
 | `npm run test:mutate:failover` | `mutate-failover.mjs` | 降级与额度探测的变异测试：注入 14 种真实退化（把 400 也算可降级 / 冷却合并 / 无归属也降级 / 上限写成 `<=` / 选路从第一个找起 / 不跳过冷却或无 auth 的账号 / 冷却永不解除 / 探测不校验时间戳 / 探测放大 `max_tokens` / 冷却失效 / 没拿到新头也报成功），验证 `test:unit` 能逐个抓住 |
 | `npm run test:mutate:lanaddr` | `mutate-lanaddr.mjs` | 局域网地址分类的变异测试：注入 9 种真实退化（Tailscale 段只看首段或上界写错 / 私有段漏 172.16/12 / 用网段判虚拟网卡误伤真内网 / virtual 恒 false / 排序让 Tailscale 压过内网 / 不排序 / preferred 挂满 / 把虚拟网卡说成普通内网），验证第一行的地址确实是同事连得上的那个 |
+| `npm run test:mutate:hardening` | `mutate-hardening.mjs` | 本轮加固的变异测试：注入 9 种退化（临时文件名退化成固定值 / 退回非原子覆盖写 / 写失败被静默吞掉 / 失败后不清理残留 / sweep 不按结构校验 / sweep 不看年龄 / 不再归一化 IPv4-mapped IPv6 / 放行 `::` / 丢掉整个内网黑名单），验证 `test:unit` 能逐个抓住 |
 | `npm run test:attack` | `pentest.mjs` | 攻击者视角攻防，含原始 socket 绕 URL 规范化、跨站伪造、路径穿越、凭据变形 |
 | `npm run test:bench` | `bench-concurrency.mjs` | 并发吞吐量化对比（修复前 vs 修复后） |
 
@@ -44,6 +45,12 @@ bash gateway/tests/run.sh --live
 - `gateway/bridge-pool.mjs`（按账号的 bridge 实例池）
 - `gateway/admin-auth.mjs`（管理鉴权）
 - `gateway/lan-addr.mjs`（局域网地址分类与排序）→ 另跑 `npm run test:mutate:lanaddr`
+- `gateway/atomic-write.mjs`（统一原子落盘）→ 另跑 `npm run test:mutate:hardening`
+
+`atomic-write.mjs` 是**所有会丢数据的文件写入**的唯一入口（accounts.json / 配置 / 配额 / API Key / 素材源）。
+它的失效方式很不显眼：写盘失败照样返回成功，重启后改动蒸发；写一半被杀则留下半截 JSON，
+被上层当成「文件不存在」。所以改动它必须先跑 `test:unit` 再跑 `test:mutate:hardening`，
+光看测试跑下来是否通过是不够的。
 
 改了 **`docs/lan-kit/setup-client.mjs`** 后，**跑 `npm run test:client` + `npm run test:mutate:client`**。注意它和网关有一处**字符串契约**：`const EMBEDDED_HOST = ''` 这一行是宿主机注入地址的锚点，改引号/空格/变量名都会让注入静默失效（`test:client` 的最后一条会拦）。
 

@@ -4,6 +4,10 @@
 gateway/.gw-config.json
 gateway/api-keys.json
 gateway/api-keys.json.tmp
+# 统一原子落盘之后，所有数据文件的临时件都是「.<目标名>.<pid>.<随机12位hex>.tmp」
+# 这个形状 —— 旧那条固定名已经拦不住它们了，这里按形状忽略。
+# （gateway/data/ 下的同类临时文件由上面的 gateway/data/ 一并覆盖。）
+gateway/*.tmp
 
 # 控制面管理令牌（F-01 引入）：持它即可读写全部 Key / 账号 / 配置，
 # 等同于本机管理员口令。绝不能进 public 仓库。
