@@ -94,6 +94,12 @@ node build-release.mjs --verify-build
 #   3.2 解压 zip 到干净目录，独立端口试跑：
 #     cd <解压目录>/codex-gateway-v${VER}/gateway
 #     LAUNCHER_PORT=4174 node launcher.mjs --open
+#   ⚠ 一定要解压到**仓库之外**的目录，不要图省事直接在 release/staging/ 里跑：
+#     launcher 启动时会在自己目录下生成 admin-token.json（真实管理令牌）。
+#     staging 一旦被这样跑过，再执行压缩就会把一个能控制网关的令牌发给所有下载者，
+#     而 --verify-zip 只对**已打好的 zip** 做检查，不拦「重新压缩」这条路。
+#     v1.6.0 构建时踩过：在 staging 里冒烟后留下了 gateway/admin-token.json
+#     （当次 zip 是在冒烟之前打的，未受影响；文件已手动删除）。
 #   验证清单：
 #     [ ] GET  /            返回控制台 UI（~250KB 单文件）
 #     [ ] GET  /health      503 {"error":"bridge_not_running"} —— 干净解压包里没有账号，
