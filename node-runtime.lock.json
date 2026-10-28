@@ -1,0 +1,8 @@
+{
+  "version": "v22.22.2",
+  "sha256": "ae1a50511be58e987483fdbc12125407443926d2d394669ade2352776e920dd3",
+  "bytes": 87074816,
+  "platform": "win32",
+  "arch": "x64",
+  "note": "内置 node.exe 的锁定指纹；换运行时请显式 --write-lock"
+}

@@ -20,8 +20,8 @@ bash gateway/tests/run.sh --live
 
 | 命令 | 脚本 | 作用 |
 |---|---|---|
-| `npm test` | `run.sh` + `audit.mjs` | 60 例功能与安全回归，覆盖 API Key 生命周期、`/v1` 鉴权、远程 MCP、素材归属、文件伺服、控制面隔离、管理鉴权 |
-| `npm run test:unit` | `bridge-scheduler.test.mjs` | 并发调度器语义单测（读者并行 / 写者独占 / 无 TOCTOU / 无饥饿） |
+| `npm test` | `run.sh` + `audit.mjs` | 62 例功能与安全回归，覆盖 API Key 生命周期、`/v1` 鉴权、远程 MCP、素材归属、文件伺服、控制面隔离、管理鉴权、多账号实例池架构 |
+| `npm run test:unit` | `bridge-pool.test.mjs` | bridge 实例池语义单测（启动互斥 / 一账号一端口 / 空闲回收 / 池满淘汰 / 崩溃自愈） |
 | `npm run test:mutate` | `mutate.mjs` | **变异测试**：往沙盒代码注入 19 个真实缺陷，验证回归能否逐个抓住。存活 = 测试盲区 |
 | `npm run test:attack` | `pentest.mjs` | 攻击者视角攻防，含原始 socket 绕 URL 规范化、跨站伪造、路径穿越、凭据变形 |
 | `npm run test:bench` | `bench-concurrency.mjs` | 并发吞吐量化对比（修复前 vs 修复后） |
@@ -33,7 +33,7 @@ bash gateway/tests/run.sh --live
 - `gateway/launcher.mjs`（路由、鉴权、控制面）
 - `gateway/apikeys.mjs`（Key 生命周期）
 - `gateway/assets.mjs`（文件伺服、路径校验）
-- `gateway/bridge-scheduler.mjs`（并发调度）
+- `gateway/bridge-pool.mjs`（按账号的 bridge 实例池）
 - `gateway/admin-auth.mjs`（管理鉴权）
 
 ## 写用例时的两条硬规矩

@@ -76,7 +76,7 @@ import {
 import { ensureBridgePatched } from './bridge-patches.mjs'
 import { recordCallLog, getCallLogs } from './call-logs.mjs'
 import { handleAssets } from './assets.mjs'
-import { createBridgeScheduler } from './bridge-scheduler.mjs'
+import { createBridgePool } from './bridge-pool.mjs'
 import {
   createAdminAuth, loadOrCreateAdminToken, SESSION_COOKIE, BOOTSTRAP_PARAM, DEFAULT_SESSION_TTL_MS
 } from './admin-auth.mjs'
@@ -110,7 +110,9 @@ const BRIDGE_CLI = process.env.BRIDGE_CLI || path.resolve(__dirname, 'node_modul
 const BRIDGE_NODE = process.env.BRIDGE_NODE || process.execPath
 const BRIDGE_ARGS = (process.env.BRIDGE_ARGS || 'serve').split(/\s+/).filter(Boolean)
 const AUTOSTART = process.env.DISABLE_AUTOSTART !== '1'
-const BRIDGE_URL = `http://127.0.0.1:${BRIDGE_PORT}`
+// 注意：BRIDGE_PORT 现在是实例池的**基准端口**（第一个槽位），
+// 不再是「唯一那个 bridge 的端口」。实际端口见 bridgePool.instance(key).port
+// 或 /__gw/status 里的 bridgeInstances。
 
 // ---- CLI：控制台登录入口（对齐 model-gateway 的 `admin` 子命令）----
 //   node launcher.mjs admin        签发一次性登录链接
@@ -298,8 +300,6 @@ function lanAddresses() {
 
 const MAX_LOG = 800
 const logBuf = []
-let child = null
-let startedAt = null
 // 本地用量统计：经本启动器反代的请求数 与 命中的 429 限流数
 let metrics = { requests: 0, rateLimited: 0, modelAliases: 0 }
 
@@ -310,23 +310,41 @@ function pushLog(line) {
   logBuf.push(`${ts()}  ${line}`)
   if (logBuf.length > MAX_LOG) logBuf.shift()
 }
-function startBridge() {
-  if (child) return { ok: false, msg: '已在运行' }
-  if (gwConfig.mode === 'openai') {
-    return { ok: false, msg: '当前为 API Key 模式，无需启动 bridge' }
-  }
-  if (!fs.existsSync(BRIDGE_CLI)) {
-    const msg = '未找到本地 bridge：' + BRIDGE_CLI + '（请先 cd gateway && npm install）'
-    pushLog('✗ ' + msg)
-    return { ok: false, msg }
-  }
+// ---- 按账号的 bridge 实例池（原 F-03 二期）----
+// 一期只把「切换次数」从请求量级压到账号量级，切换本身仍是 kill + spawn + 等健康。
+// 二期改成「一个账号一个 bridge 进程」：切换 = 选端口，冷启动只发生在某账号
+// 第一次被用到时。为什么不在转发层换 Authorization 头、代价与兜底策略，
+// 见 bridge-pool.mjs 顶部注释。
+const BRIDGE_POOL_MAX = Number(process.env.CGW_BRIDGE_POOL_MAX || 6)
+const BRIDGE_IDLE_MS = Number(process.env.CGW_BRIDGE_IDLE_MS || 15 * 60_000)
+
+// 账号标识 → 人类可读名（日志与状态展示用）
+function bridgeLabel(accountId) {
+  if (!accountId) return 'default'
+  try {
+    const reg = loadAccounts()
+    const a = (reg.accounts || []).find((x) => x.id === accountId)
+    if (a) return a.name || a.email || a.id
+  } catch {}
+  return accountId
+}
+
+// 该账号对应的 auth 文件：账号库里的路径；没有账号时退回配置里那条
+function bridgeAuthFile(accountId) {
+  return accountId ? accountAuthPath(accountId) : (gwConfig.authFilePath || defaultAuthFilePath())
+}
+
+// 实例池的 spawn 回调：为指定账号拉起一个 bridge 子进程，监听指定端口
+function spawnBridgeProcess(accountId, port) {
+  const label = bridgeLabel(accountId)
+  const authFile = bridgeAuthFile(accountId)
   // vendored bridge 上叠了手写补丁，npm install 会清掉；启动前自动校验并从快照恢复
   ensureBridgePatched(pushLog)
   const env = {
     ...process.env,
     CHATGPT_BRIDGE_HOST: '127.0.0.1',
-    CHATGPT_BRIDGE_PORT: String(BRIDGE_PORT),
-    CHATGPT_BRIDGE_AUTH_FILE: gwConfig.authFilePath || defaultAuthFilePath(),
+    CHATGPT_BRIDGE_PORT: String(port),
+    CHATGPT_BRIDGE_AUTH_FILE: authFile,
     // 生图实际使用的模型：必须与网关侧一致，否则 UI 展示的模型与真实渲染模型会脱节
     CHATGPT_BRIDGE_IMAGE_MODEL: IMAGE_MODEL,
     CGW_PROXY: gwConfig.proxy || ''
@@ -338,90 +356,147 @@ function startBridge() {
     env.NODE_OPTIONS = (existing + ' --import ' + preload).trim()
   }
   // 直接用本机 node 跑本地 cli.js（离线、不依赖 npx 解析）
-  const args = [BRIDGE_CLI, ...BRIDGE_ARGS, '--host', '127.0.0.1', '--port', String(BRIDGE_PORT)]
-  pushLog(`▶ 启动 bridge：${BRIDGE_NODE} ${args.join(' ')}`)
-  child = spawn(BRIDGE_NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
-  startedAt = Date.now()
-  child.stdout.on('data', (d) => String(d).split('\n').forEach((l) => l.trim() && pushLog(l)))
-  child.stderr.on('data', (d) => String(d).split('\n').forEach((l) => {
+  const args = [BRIDGE_CLI, ...BRIDGE_ARGS, '--host', '127.0.0.1', '--port', String(port)]
+  pushLog(`▶ 启动 bridge[${label}] 端口 ${port} · auth=${path.basename(authFile)}`)
+  const c = spawn(BRIDGE_NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
+  // 多实例并存，日志必须带账号前缀，否则排障时分不清是哪条通道在说话
+  c.stdout.on('data', (d) => String(d).split('\n').forEach((l) => l.trim() && pushLog(`[${label}] ${l}`)))
+  c.stderr.on('data', (d) => String(d).split('\n').forEach((l) => {
     if (!l.trim()) return
     // bridge 的启动横幅走 console.error，但不是错误；不带 [err] 前缀以免前端标红误导
-    pushLog(/listening|starting chatgpt-bridge/i.test(l) ? l : '[err] ' + l)
+    pushLog(/listening|starting chatgpt-bridge/i.test(l) ? `[${label}] ${l}` : `[${label}] [err] ${l}`)
   }))
-  child.on('exit', (code, sig) => {
-    pushLog(`■ bridge 退出 code=${code ?? ''} sig=${sig ?? ''}`)
-    child = null
-    startedAt = null
+  return c
+}
+
+// 探测端口是否已接受 HTTP 连接。
+// **任意 HTTP 响应都算就绪**：bridge 未登录时 /health 返回 503，
+// 若按 200 判定，未登录的实例会永远被当成「起不来」。
+function probeBridgePort(port) {
+  return new Promise((resolve) => {
+    let settled = false
+    const done = (v) => { if (!settled) { settled = true; resolve(v) } }
+    const req = http.get({ host: '127.0.0.1', port, path: '/health' }, (res) => {
+      res.resume()
+      done({ listening: true, status: res.statusCode })
+    })
+    req.setTimeout(1500, () => { req.destroy(); done({ listening: false }) })
+    req.on('error', () => done({ listening: false }))
   })
-  child.on('error', (e) => pushLog('[spawn error] ' + e.message))
-  // bridge 起来了 → 调度器记住它当前加载的账号
-  bridgeScheduler.setLoaded(gwConfig.authFilePath || null)
+}
+
+const bridgePool = createBridgePool({
+  basePort: BRIDGE_PORT,
+  maxInstances: BRIDGE_POOL_MAX,
+  idleTimeoutMs: BRIDGE_IDLE_MS,
+  spawn: spawnBridgeProcess,
+  probe: probeBridgePort,
+  label: bridgeLabel,
+  // 当前激活账号常驻，不参与空闲回收——它就是 UI 上「正在运行」的那个
+  isPinned: (key) => key === primaryAccountId(),
+  log: (msg) => pushLog(msg)
+})
+
+// 当前激活账号：以账号库的 activeId 为准（启动时已同步给 gwConfig.authFilePath）
+function primaryAccountId() {
+  try {
+    const reg = loadAccounts()
+    if (reg.activeId) return reg.activeId
+  } catch {}
+  return null
+}
+function primaryInstance() {
+  return bridgePool.instance(primaryAccountId())
+}
+function bridgeRunning() {
+  const inst = primaryInstance()
+  return !!inst && (inst.state === 'ready' || inst.state === 'starting')
+}
+// 未绑定账号的请求（控制台探活、/health 反代、无 Key 放行）落到激活账号那个实例
+function defaultBridgePort() {
+  return bridgePool.port(primaryAccountId()) || BRIDGE_PORT
+}
+const bridgeUrlFor = (port) => `http://127.0.0.1:${port}`
+
+function startBridge() {
+  if (gwConfig.mode === 'openai') {
+    return { ok: false, msg: '当前为 API Key 模式，无需启动 bridge' }
+  }
+  if (!fs.existsSync(BRIDGE_CLI)) {
+    const msg = '未找到本地 bridge：' + BRIDGE_CLI + '（请先 cd gateway && npm install）'
+    pushLog('✗ ' + msg)
+    return { ok: false, msg }
+  }
+  // 启动要等端口监听，本质是异步的；这里保持同步返回以兼容既有调用点，
+  // 真正的失败通过日志与 /__gw/status 暴露。
+  const id = primaryAccountId()
+  // 既没有账号、也没有任何 auth 文件时不必拉起：那只会是一个永远 /health 503
+  // 的空实例，白占内存与一个端口，UI 上还显示「运行中但未登录」，反而误导。
+  // 登录完成后由 restartBridgeFor / accounts 相关接口按账号拉起。
+  const authFile = gwConfig.authFilePath || defaultAuthFilePath()
+  if (!id && !fs.existsSync(authFile)) {
+    const msg = '尚无账号，无需启动 bridge（完成授权后会按账号拉起）'
+    pushLog('· ' + msg)
+    return { ok: true, skipped: true, msg }
+  }
+  bridgePool.start(id).then((r) => {
+    if (!r.ok) pushLog('✗ bridge 启动失败：' + (r.msg || '未知原因'))
+  })
   return { ok: true }
 }
 function stopBridge() {
-  if (!child) return { ok: false, msg: '未运行' }
-  child.kill('SIGTERM')
-  // 进程没了就等于「当前加载」失效，否则下一个请求会误以为目标已就绪
-  bridgeScheduler.forget()
-  pushLog('■ 发送 SIGTERM')
-  return { ok: true }
+  const inst = primaryInstance()
+  if (!inst) return { ok: false, msg: '未运行' }
+  const r = bridgePool.stop(primaryAccountId())
+  pushLog(`■ 已停止 bridge（端口 ${inst.port}）`)
+  return { ok: r.ok, msg: r.msg }
 }
 
-// 热切换 bridge 到指定账号：若当前已加载的账号与之不同则 stop+start。
-// API Key 鉴权在请求到达时调用，确保该 key 绑定的账号被 bridge 加载。
-//
-// 调度语义见 bridge-scheduler.mjs：**同账号的请求完全并行**，只有跨账号才需要
-// 独占切换，且切换前会等所有在途请求退场 —— 消除旧实现的 TOCTOU 串号窗口。
-//
-// 返回值里多了一个 release()：**调用方必须持有到本请求的转发真正结束**。
-// 早退会让写者以为无人使用而切走 bridge，把还在转发的请求换到别人的凭据上。
-const bridgeScheduler = createBridgeScheduler({
-  onEvent: (level, msg) => pushLog(level === 'warn' ? '⚠ ' + msg : '· ' + msg)
-})
-
-async function doSwitchBridge(target) {
-  gwConfig.authFilePath = target
-  saveConfig(gwConfig)
-  pushLog('● 切换 bridge 鉴权至账号 ' + path.basename(target, '.json'))
-  const previous = child
-  if (previous) {
-    child = null
-    startedAt = null
-    previous.kill('SIGTERM')
-    // 给子进程体面退出的机会，但不让上层 hang 太久
-    await new Promise((r) => {
-      if (previous.exitCode != null) return r()
-      const t = setTimeout(() => {
-        try { previous.kill('SIGKILL') } catch {}
-        r()
-      }, 1200)
-      previous.once('exit', () => { clearTimeout(t); r() })
+// 重启单个账号的实例：auth 文件被改写、新登录完成、删除账号等场景需要重读凭据。
+// 只影响这一个账号，其余账号的通道继续服务——这是实例池相对一期的实际收益。
+function restartBridgeFor(accountId, why = '') {
+  if (gwConfig.mode !== 'bridge') return
+  const id = accountId ?? primaryAccountId()
+  bridgePool.stop(id)
+  setTimeout(() => {
+    if (gwConfig.mode !== 'bridge') return
+    bridgePool.start(id).then((r) => {
+      if (!r.ok) pushLog('✗ bridge 重启失败' + (why ? `（${why}）` : '') + '：' + (r.msg || '未知原因'))
     })
-  }
-  const r = startBridge()
-  // 等 bridge 真的站起来，否则接下来的转发会直接 502
-  for (let i = 0; i < 30 && !child; i++) await new Promise((res) => setTimeout(res, 80))
-  if (r.ok) {
-    const h = await fetchBridgeHealth()
-    if (!h.ok) pushLog('⚠ bridge 健康检查未过，但已监听：' + (h.status || '—'))
-  }
-  // 切换失败不要假装成功：让上层把错误报给调用方，而不是用错误的凭据继续转发
-  if (!child) return { ok: false, msg: 'bridge 未能启动' }
-  return r
+  }, 300)
 }
 
+// 配置类变更（出网代理、生图模型）：所有实例都必须重读环境变量，只能全量重启
+function restartAllBridges(why = '') {
+  const n = bridgePool.stopAll()
+  pushLog(`● 配置变更${why ? `（${why}）` : ''}：已停止 ${n} 个 bridge 实例，准备重启`)
+  setTimeout(() => {
+    if (gwConfig.mode !== 'bridge') return
+    const id = primaryAccountId()
+    bridgePool.start(id).then((r) => {
+      if (!r.ok) pushLog('✗ bridge 重启失败：' + (r.msg || '未知原因'))
+    })
+  }, 400)
+}
+
+// 让某个账号的 bridge 实例就绪，并返回它的端口。
+// 与一期最大的不同：这里**不再切换任何全局状态**——账号 A 就绪不代表 B 被拆掉，
+// 两条通道可以同时存在。所以既没有写者独占，也没有 TOCTOU 串号窗口。
+//
+// 返回值里的 release() 用于空闲判定：转发结束才释放，避免实例在流式响应
+// 还没吐完时被回收。
 async function ensureBridgeForAccount(accountId) {
-  if (!accountId) return { ok: true, release: () => {} }
+  if (!accountId) return { ok: true, port: defaultBridgePort(), release: () => {} }
   const target = accountAuthPath(accountId)
   if (!fs.existsSync(target)) return { ok: false, msg: '账号 auth 文件不存在：' + target }
 
-  const slot = await bridgeScheduler.acquire(target, doSwitchBridge)
-
-  // bridge 进程可能已被手动停止或崩溃。这里兜底拉起：
-  // startBridge 自带 `if (child)` 重入保护，并发调用是安全的。
-  if (!child) startBridge()
-
-  return { ok: true, release: slot.release }
+  try {
+    const slot = await bridgePool.acquire(accountId)
+    return { ok: true, port: slot.port, release: slot.release }
+  } catch (e) {
+    // 启动失败 / 池满：明确报错给调用方，绝不用错误的凭据继续转发
+    return { ok: false, msg: e.message }
+  }
 }
 
 // 当前激活账号摘要（与 engine.js getActiveAccountSummary 对齐）：
@@ -475,10 +550,10 @@ function getActiveAccountSummary() {
   }
 }
 
-// 轻量健康检查：请求 bridge /health，带 1.2s 超时
-function fetchBridgeHealth() {
+// 轻量健康检查：请求指定实例的 /health（默认激活账号那个），带 1.2s 超时
+function fetchBridgeHealth(port = defaultBridgePort()) {
   return new Promise((resolve) => {
-    const req = http.get(`${BRIDGE_URL}/health`, (res) => {
+    const req = http.get(`${bridgeUrlFor(port)}/health`, (res) => {
       let body = ''
       res.on('data', (c) => (body += c))
       res.on('end', () => {
@@ -526,9 +601,11 @@ async function applyMode(mode, apiKey) {
   if (mode === 'openai') gwConfig.openaiApiKey = apiKey || gwConfig.openaiApiKey || ''
   saveConfig(gwConfig)
   if (gwConfig.mode === 'openai') {
-    stopBridge()
+    // 直连模式下一个实例都不需要，全部停掉（否则白占内存与端口）
+    const n = bridgePool.stopAll()
+    if (n) pushLog(`● 已切换到 API Key 直连模式，停止 ${n} 个 bridge 实例`)
   } else if (AUTOSTART) {
-    if (!child) startBridge()
+    if (!bridgeRunning()) startBridge()
   }
   return gwConfig
 }
@@ -670,13 +747,16 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
     pipeOpenAi(req, res, targetPath, headers, bodyBuf, attachUsageTap)
     return
   }
-  // bridge 模式
+  // bridge 模式：转发到「本请求所属账号」的实例端口。
+  // req.__bridgePort 由鉴权阶段写入（见 handleGateway 里的 ensureBridgeForAccount）；
+  // 没有账号归属的请求（控制台探活 / 无 Key 放行）落到激活账号那个实例。
+  const port = req.__bridgePort || defaultBridgePort()
   const opts = {
     host: '127.0.0.1',
-    port: BRIDGE_PORT,
+    port,
     path: targetPath,
     method: req.method,
-    headers: prep({ ...req.headers, host: `127.0.0.1:${BRIDGE_PORT}` })
+    headers: prep({ ...req.headers, host: `127.0.0.1:${port}` })
   }
   const p = http.request(opts, (up) => {
     if (up.statusCode === 429) metrics.rateLimited++
@@ -685,7 +765,7 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
   })
   p.on('error', () => {
     if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'bridge_unreachable', detail: `bridge 未运行或不可达（${BRIDGE_URL}）` }))
+    res.end(JSON.stringify({ error: 'bridge_unreachable', detail: `bridge 未运行或不可达（${bridgeUrlFor(port)}）` }))
   })
   pump(p)
 }
@@ -809,11 +889,12 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
       }
     }
   } catch {}
-  const headers = { ...req.headers, host: `127.0.0.1:${BRIDGE_PORT}` }
+  const port = req.__bridgePort || defaultBridgePort()
+  const headers = { ...req.headers, host: `127.0.0.1:${port}` }
   delete headers['content-length']
   headers['content-length'] = String(body.length)
   const p = http.request({
-    host: '127.0.0.1', port: BRIDGE_PORT, path: targetPath, method: 'POST', headers
+    host: '127.0.0.1', port, path: targetPath, method: 'POST', headers
   }, (up) => {
     if (up.statusCode === 429) metrics.rateLimited++
     let buf = ''
@@ -874,7 +955,7 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
   })
   p.on('error', () => {
     if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'bridge_unreachable', detail: `bridge 未运行或不可达（${BRIDGE_URL}）` }))
+    res.end(JSON.stringify({ error: 'bridge_unreachable', detail: `bridge 未运行或不可达（${bridgeUrlFor(port)}）` }))
   })
   p.end(body)
 }
@@ -1085,7 +1166,7 @@ async function fetchBridgeModels({ force = false } = {}) {
   if (modelsInflight) return modelsInflight
   modelsInflight = (async () => {
     try {
-      const r = await fetch(`${BRIDGE_URL}/v1/models`, { signal: AbortSignal.timeout(5000) })
+      const r = await fetch(`${bridgeUrlFor(defaultBridgePort())}/v1/models`, { signal: AbortSignal.timeout(5000) })
       const j = await r.json().catch(() => null)
       const ids = (j && Array.isArray(j.data)) ? j.data.map((m) => m && m.id).filter(Boolean) : []
       if (ids.length) {
@@ -1587,13 +1668,17 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, authenticated: v.ok, via: v.via || null })
     }
     if (p === '/__gw/status') {
+      const pInst = primaryInstance()
       const health = await fetchBridgeHealth()
       return sendJson(res, 200, {
-        running: !!child,
-        pid: child ? child.pid : null,
-        startedAt,
-        uptimeSec: startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0,
+        running: bridgeRunning(),
+        pid: pInst ? pInst.pid : null,
+        startedAt: pInst ? pInst.startedAt : null,
+        uptimeSec: pInst && pInst.startedAt ? Math.floor((Date.now() - pInst.startedAt) / 1000) : 0,
         health,
+        // 实例池视图：每个账号的端口 / 状态 / 在途请求数，供控制台展示与排障
+        bridgeInstances: bridgePool.list(),
+        bridgePool: bridgePool.stats(),
         metrics,
         apikeysCount: listApiKeys().length,
         tokensTotal: listApiKeys().reduce((s, k) => s + (k.tokens || 0), 0),
@@ -1603,8 +1688,11 @@ const server = http.createServer(async (req, res) => {
         imageModelVia: `${IMAGE_MODEL} + image_generation 工具`,
         config: {
           launcherPort: LAUNCHER_PORT,
-          bridgePort: BRIDGE_PORT,
-          bridgeUrl: BRIDGE_URL,
+          bridgePort: defaultBridgePort(),
+          bridgeUrl: bridgeUrlFor(defaultBridgePort()),
+          bridgeBasePort: BRIDGE_PORT,
+          bridgePoolMax: BRIDGE_POOL_MAX,
+          bridgeIdleMs: BRIDGE_IDLE_MS,
           frontendDir: FRONTEND_DIR,
           autoStart: AUTOSTART,
           bridgeCli: BRIDGE_CLI,
@@ -1648,12 +1736,9 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, r.ok ? 200 : 409, r)
     }
     if (p === '/__gw/restart' && req.method === 'POST') {
-      stopBridge()
-      // 给一点时间让旧进程退出
-      setTimeout(() => {
-        const r = startBridge()
-        sendControlQueue.push(r)
-      }, 400)
+      // 手动重启 = 所有实例重建：代理、生图模型这类全局配置可能已经变了，
+      // 只重启激活账号会让其它账号的通道停留在旧配置上。
+      restartAllBridges('手动重启')
       return sendJson(res, 200, { ok: true, msg: 'restarting' })
     }
     if (p === '/__gw/logs' && req.method === 'GET') {
@@ -1736,8 +1821,12 @@ const server = http.createServer(async (req, res) => {
     if (p === '/__gw/config' && req.method === 'GET') {
       return sendJson(res, 200, {
         launcherPort: LAUNCHER_PORT,
-        bridgePort: BRIDGE_PORT,
-        bridgeUrl: BRIDGE_URL,
+        bridgePort: defaultBridgePort(),
+        bridgeUrl: bridgeUrlFor(defaultBridgePort()),
+        bridgeBasePort: BRIDGE_PORT,
+        bridgePoolMax: BRIDGE_POOL_MAX,
+        bridgeIdleMs: BRIDGE_IDLE_MS,
+        bridgeInstances: bridgePool.list(),
         frontendDir: FRONTEND_DIR,
         autoStart: AUTOSTART,
         mode: gwConfig.mode,
@@ -1770,11 +1859,9 @@ const server = http.createServer(async (req, res) => {
         gwConfig.proxy = r.url || ''
         saveConfig(gwConfig)
         pushLog(gwConfig.proxy ? '● 出网代理已启用：' + gwConfig.proxy : '● 出网代理已关闭（直连）')
-        // 子进程需重新拉起才能注入新的代理预加载
-        if (child) {
-          child.kill('SIGTERM')
-          setTimeout(() => startBridge(), 400)
-        }
+        // 子进程需重新拉起才能注入新的代理预加载。
+        // 代理是全局配置，所有账号的实例都得重读，只能全量重启。
+        if (gwConfig.mode === 'bridge') restartAllBridges('出网代理变更')
         return sendJson(res, 200, { ok: true, url: gwConfig.proxy, enabled: !!gwConfig.proxy })
       } catch (e) {
         return sendJson(res, 400, { error: 'proxy_failed', detail: e.message })
@@ -1800,10 +1887,8 @@ const server = http.createServer(async (req, res) => {
       pushLog(acct.isExisting
         ? '● OAuth 授权完成，已更新现有账号：' + acct.path
         : '● OAuth 授权完成，已建档：' + acct.path)
-      if (gwConfig.mode === 'bridge' && child) {
-        stopBridge()
-        setTimeout(() => startBridge(), 300)
-      }
+      // 只有这个账号的凭据变了，只需重启它自己的实例；别的账号通道不受影响
+      if (gwConfig.mode === 'bridge') restartBridgeFor(acct.id, 'OAuth 授权完成')
       return acct
     }
 
@@ -1831,11 +1916,8 @@ const server = http.createServer(async (req, res) => {
         const filePath = gwConfig.authFilePath || defaultAuthFilePath()
         await writeAuthFile(filePath, data)
         pushLog('● 已写入 auth 文件：' + filePath)
-        // bridge 模式下重启以加载新登录态
-        if (gwConfig.mode === 'bridge' && child) {
-          stopBridge()
-          setTimeout(() => startBridge(), 300)
-        }
+        // bridge 模式下重启该账号的实例以加载新登录态
+        if (gwConfig.mode === 'bridge') restartBridgeFor(primaryAccountId(), 'auth 文件已改写')
         return sendJson(res, 200, { ok: true, path: filePath, auth_mode: data.auth_mode })
       } catch (e) {
         return sendJson(res, 400, { error: 'save_failed', detail: e.message })
@@ -1932,10 +2014,7 @@ const server = http.createServer(async (req, res) => {
         gwConfig.authFilePath = acct.path
         saveConfig(gwConfig)
         pushLog('● 已添加账号：' + acct.path)
-        if (gwConfig.mode === 'bridge' && child) {
-          stopBridge()
-          setTimeout(() => startBridge(), 300)
-        }
+        if (gwConfig.mode === 'bridge') restartBridgeFor(acct.id, '新增账号')
         return sendJson(res, 200, { ok: true, accountId: acct.id, activeId: acct.reg.activeId })
       } catch (e) {
         return sendJson(res, 400, { error: 'add_account_failed', detail: e.message })
@@ -1963,9 +2042,12 @@ const server = http.createServer(async (req, res) => {
         gwConfig.authFilePath = r.path
         saveConfig(gwConfig)
         pushLog('● 切换激活账号：' + r.path)
-        if (gwConfig.mode === 'bridge' && child) {
-          stopBridge()
-          setTimeout(() => startBridge(), 300)
+        // 切激活账号**不再重启任何进程**：各账号的实例彼此独立，这里改的只是
+        // 「默认路由目标」。目标账号若还没实例，后台预热一个，避免首个请求吃冷启动。
+        if (gwConfig.mode === 'bridge') {
+          bridgePool.start(body.id).then((x) => {
+            if (!x.ok) pushLog('✗ 预热 bridge 失败：' + (x.msg || '未知原因'))
+          })
         }
         return sendJson(res, 200, { ok: true, path: r.path })
       } catch (e) {
@@ -1990,9 +2072,12 @@ const server = http.createServer(async (req, res) => {
         gwConfig.authFilePath = r.path || defaultAuthFilePath()
         saveConfig(gwConfig)
         pushLog('● 已删除账号，当前激活：' + (r.activeId || '无'))
-        if (gwConfig.mode === 'bridge' && child) {
-          stopBridge()
-          setTimeout(() => startBridge(), 300)
+        // 删掉的账号若还有实例，直接停掉释放端口；激活账号变了就预热新的
+        bridgePool.stop(body.id)
+        if (gwConfig.mode === 'bridge' && r.activeId) {
+          bridgePool.start(r.activeId).then((x) => {
+            if (!x.ok) pushLog('✗ 预热 bridge 失败：' + (x.msg || '未知原因'))
+          })
         }
         return sendJson(res, 200, { ok: true, activeId: r.activeId })
       } catch (e) {
@@ -2090,11 +2175,14 @@ const server = http.createServer(async (req, res) => {
         const sw = await ensureBridgeForAccount(targetAccountId)
         if (!sw.ok) {
           res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' })
-          return res.end(JSON.stringify({ error: 'bridge_switch_failed', detail: sw.msg }))
+          return res.end(JSON.stringify({ error: 'bridge_instance_failed', detail: sw.msg }))
         }
-        // 名额必须一直持有到本次响应真正结束。过早释放 = 写者会以为无人使用而
-        // 切走 bridge，正在转发的请求就换成了别人的凭据（这正是 F-03 的串号窗口）。
-        // release 自身幂等，因此三个结束信号都挂上、谁先到算谁，无需去重。
+        // 本请求锁定到该账号自己的端口。**这一步是二期的核心**：
+        // 端口随请求走，不再依赖任何全局「当前加载哪个账号」的状态，
+        // 因此不存在一期那个「校验时是 A、转发时已被切成 B」的窗口。
+        req.__bridgePort = sw.port
+        // 名额只用于空闲判定：持有到本次响应真正结束，避免实例在流式响应
+        // 还没吐完时被回收。release 幂等，三个结束信号谁先到算谁。
         if (sw.release) {
           res.once('close', sw.release)
           res.once('finish', sw.release)
@@ -2181,14 +2269,22 @@ const server = http.createServer(async (req, res) => {
   return serveStatic(req, res, p)
 })
 
-// restart 的异步结果队列（简化：直接写入 logs 即可，status 会反映最新）
-const sendControlQueue = []
-setInterval(() => {
-  while (sendControlQueue.length) {
-    const r = sendControlQueue.shift()
-    pushLog(r.ok ? '▶ bridge 已重启' : '✗ bridge 重启失败：' + (r.msg || ''))
-  }
-}, 200)
+// ---- 退出收尾 ----
+// 实例池里可能有多个 bridge 子进程。父进程被强杀时它们不会自动退出，
+// 会一直占着 10531+ 的端口，导致下次启动全部「端口被占」。
+// 这里尽力在退出路径上把它们带走（taskkill 强杀仍拦不住，属已知限制）。
+let shuttingDown = false
+function shutdown(signal) {
+  if (shuttingDown) return
+  shuttingDown = true
+  let n = 0
+  try { n = bridgePool.dispose() } catch {}
+  pushLog(`◆ 收到 ${signal}，已停止 ${n} 个 bridge 实例`)
+  process.exit(0)
+}
+process.on('SIGINT', () => shutdown('SIGINT'))
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('exit', () => { try { bridgePool.dispose() } catch {} })
 
 server.listen(LAUNCHER_PORT, LISTEN_HOST, () => {
   pushLog(`◆ 启动器已就绪：http://127.0.0.1:${LAUNCHER_PORT}`)

@@ -19,7 +19,19 @@ node build-release.mjs
 #   自动完成：白名单复制 gateway/ + frontend/dist + README/QUICK-START
 #   内置 node.exe 到 gateway/service/node/
 #   机密自检：accounts / api-keys / data / logs / 设备身份 一旦混入立即中止
+#   结构自检：禁止目录整类拦截 / 个人绝对路径扫描 / .sh 必须 LF、.cmd 必须 CRLF
+#   构建指纹：写 BUILD-INFO.json（版本 + git commit + 运行时版本与 sha256）
 #   选项 --no-runtime：不内置 node.exe（用户需自装 Node，不推荐）
+#   选项 --node=<路径>：指定要内置的 node（默认当前运行脚本的那个）
+
+# 1.1 运行时锁（可复现构建）
+#    同一版本号在不同机器上内置不同 node.exe，会让发版记录对不上号
+#    （曾出现一次 98.3MB、一次 106MB）。锁文件按内容哈希固定运行时：
+#      · 与锁一致   → 通过
+#      · 与锁不一致 → 直接失败，要求显式确认（防止静默漂移）
+#    首次确认某枚 node 要长期使用时，跑一次：
+node build-release.mjs --write-lock
+#    ⚠️ 换 node 后必须重新 --write-lock，否则构建会被拦住（这是刻意的）
 
 # 2. 压缩 —— 必须以 staging/<当前版本> 为根，不能以 staging/ 为根
 #    ⚠️ 踩过的坑：若用 os.relpath(p, 'release/staging') 遍历整个 staging/，
@@ -53,6 +65,12 @@ node build-release.mjs --verify-zip
 #   打包阶段已先跑过同样的检查（对着 staging）；--verify-zip 补的是
 #   「压缩时选错根目录」这一类 staging 看不出来的问题。
 #   需要复核历史产物：node build-release.mjs --verify-zip --zip=<路径>
+#   3.1b 构建指纹校验：这条包里的 node.exe 到底是哪一枚
+node build-release.mjs --verify-build
+#   校验项：BUILD-INFO.json 存在；内嵌 node.exe 的实际哈希与声明一致；
+#           声明哈希与 node-runtime.lock.json 一致。任一不符即退出码 1。
+#   复核历史产物：node build-release.mjs --verify-build --zip=<路径>
+#   （早于 v1.3.0 的包没有 BUILD-INFO.json，会明确报「无法核对」而不是假装通过）
 #   3.2 解压 zip 到干净目录，独立端口试跑：
 #     cd <解压目录>/codex-gateway-v${VER}/gateway
 #     LAUNCHER_PORT=4174 node launcher.mjs --open

@@ -1,13 +1,28 @@
 // build-release.mjs — 组装发布版 staging 目录（零依赖，Node 18+）
 //
-// 用法：node build-release.mjs [--no-runtime]
-//   产出：release/staging/codex-gateway-v<版本>/   （解压后的最终形态）
-//   压缩：见 docs/RELEASE.md（用系统自带命令或 Python 一行）
+// 用法：
+//   node build-release.mjs                 组装 staging（内置运行时）
+//   node build-release.mjs --no-runtime    不内置 node.exe（用户自装 Node）
+//   node build-release.mjs --node=<path>   指定要内置的 node 可执行文件
+//   node build-release.mjs --write-lock    把当前 node 的版本+哈希固化进锁文件
+//   node build-release.mjs --verify-zip [--zip=<path>]    校验压缩包结构
+//   node build-release.mjs --verify-build [--zip=<path>]  校验构建指纹（含 node 哈希）
 //
 // 白名单复制，绝不带入：账号凭据 / API Key / 调用日志 / 设备身份 / 开发脚本
+//
+// ---- 为什么要有锁文件 ----
+// 早期版本直接内置「打这个包的那台机器上的 node.exe」。结果同一个版本号在两台
+// 机器上打出来的二进制不一样（一次 98.3MB，一次 106MB），发版记录对不上号，
+// 排查时分不清「行为差异」来自代码还是来自运行时。
+// 现在把 node.exe 的**内容哈希**写进 node-runtime.lock.json：
+//   · 哈希与锁一致 → 通过，且 BUILD-INFO.json 会如实记录这一版用的到底是哪个运行时；
+//   · 哈希不一致   → 直接失败，要求显式 --write-lock 才认账（防止静默漂移）。
+// 注意：BUILD-INFO.json 里**不记录 node 的绝对路径**——那会把打包者的用户名
+// 带进分发包，正是 v1.2.0 栽过的坑。
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)))
@@ -16,6 +31,16 @@ const NAME = `codex-gateway-v${VER}`
 const STAGING = path.join(ROOT, 'release', 'staging', NAME)
 const NO_RUNTIME = process.argv.includes('--no-runtime')
 const VERIFY_ZIP = process.argv.includes('--verify-zip')
+const VERIFY_BUILD = process.argv.includes('--verify-build')
+const WRITE_LOCK = process.argv.includes('--write-lock')
+const LOCK_PATH = path.join(ROOT, 'node-runtime.lock.json')
+
+function argValue(prefix) {
+  const hit = process.argv.find((a) => a.startsWith(prefix))
+  return hit ? hit.slice(prefix.length) : ''
+}
+const ZIP_ARG = argValue('--zip=')
+const NODE_ARG = argValue('--node=') || process.env.CGW_NODE_EXE || ''
 
 // 压缩后校验：staging 自检看不到「压缩时选错根目录」——
 // v1.1.0 就是这样产出了 73MB、解压出两个版本目录的坏包。
@@ -23,11 +48,14 @@ if (VERIFY_ZIP) {
   verifyZip()
   process.exit(0)
 }
+if (VERIFY_BUILD) {
+  verifyBuild()
+  process.exit(0)
+}
 
-// node.exe 候选：打包机上的 managed node（release 必须内置运行时）。
-// 优先用「当前正在运行本脚本的 node」，避免硬编码某台机器的路径。
+// 内置运行时候选：优先「当前正在运行本脚本的 node」，避免硬编码某台机器的路径。
+// 顺序固定，因此同一台机器重复执行的结果稳定；跨机器一致性由锁文件保证。
 const NODE_CANDIDATES = [
-  process.execPath,
   'C:/Program Files/nodejs/node.exe',
   '/usr/local/bin/node',
   '/usr/bin/node'
@@ -42,6 +70,43 @@ function copyFile(src, dest) {
   const s = fs.statSync(src).size
   files++
   bytes += s
+}
+
+// ---------- 分块算 sha256 ----------
+// node.exe 有 100MB 上下，一次性 readFileSync 会白占一份内存，这里按 1MB 流式吃。
+function sha256File(file) {
+  const h = createHash('sha256')
+  const fd = fs.openSync(file, 'r')
+  const buf = Buffer.allocUnsafe(1 << 20)
+  try {
+    let n
+    while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) h.update(buf.subarray(0, n))
+  } finally {
+    fs.closeSync(fd)
+  }
+  return h.digest('hex')
+}
+
+function nodeVersionOf(exe) {
+  try {
+    return execFileSync(exe, ['-v'], { encoding: 'utf-8' }).trim()
+  } catch {
+    return null
+  }
+}
+
+function pickNodeExe() {
+  if (NODE_ARG) {
+    const p = path.resolve(NODE_ARG)
+    if (!fs.existsSync(p)) {
+      console.error(`✗ --node 指定的文件不存在：${p}`)
+      process.exit(1)
+    }
+    return { exe: p, source: '--node/env' }
+  }
+  if (fs.existsSync(process.execPath)) return { exe: process.execPath, source: 'process.execPath' }
+  const hit = NODE_CANDIDATES.find((p) => fs.existsSync(p))
+  return hit ? { exe: hit, source: 'fallback-path' } : null
 }
 
 // gateway/ 整目录递归，但剔除用户数据与机密
@@ -66,6 +131,21 @@ function copyTree(srcDir, destDir) {
   }
 }
 
+function gitCommit() {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf-8' }).trim()
+  } catch {
+    return null
+  }
+}
+function gitDirty() {
+  try {
+    return execFileSync('git', ['status', '--porcelain'], { cwd: ROOT, encoding: 'utf-8' }).trim().length > 0
+  } catch {
+    return null
+  }
+}
+
 // ---------- 组装 ----------
 fs.rmSync(STAGING, { recursive: true, force: true })
 
@@ -77,18 +157,84 @@ copyFile(path.join(ROOT, 'README.md'), path.join(STAGING, 'README.md'))
 copyFile(path.join(ROOT, 'QUICK-START.md'), path.join(STAGING, 'QUICK-START.md'))
 
 // service/ 已随 gateway/ 复制；内置运行时
+let nodeInfo = null
 if (!NO_RUNTIME) {
-  const nodeExe = NODE_CANDIDATES.find((p) => fs.existsSync(p))
-  if (!nodeExe) {
-    console.error('✗ 找不到 node.exe，无法内置运行时。可加 --no-runtime 跳过（用户需自装 Node）。')
+  const picked = pickNodeExe()
+  if (!picked) {
+    console.error('✗ 找不到 node 可执行文件，无法内置运行时。可用 --node=<path> 指定，或加 --no-runtime 跳过（用户需自装 Node）。')
     process.exit(1)
   }
-  copyFile(nodeExe, path.join(STAGING, 'gateway', 'service', 'node', 'node.exe'))
+  const ver = nodeVersionOf(picked.exe)
+  const major = Number(String(ver || '').replace(/^v/, '').split('.')[0])
+  if (!Number.isFinite(major) || major < 22) {
+    // bridge 的 package.json 要求 >=22；打进低于此版本的内置运行时会一路报奇怪的语法错误
+    console.error(`✗ 选中运行时的版本为 ${ver || '未知'}，低于最低要求 v22。请用 --node=<path> 指定。`)
+    process.exit(1)
+  }
+  const digest = sha256File(picked.exe)
+  const size = fs.statSync(picked.exe).size
+  nodeInfo = { version: ver, sha256: digest, bytes: size, source: picked.source }
+
+  // ---- 锁文件校验：同版本号不得产出不同二进制 ----
+  const lock = fs.existsSync(LOCK_PATH) ? JSON.parse(fs.readFileSync(LOCK_PATH, 'utf-8')) : null
+  // 锁文件按平台区分：在 Linux/macOS 上打 win64 包时 node.exe 必然不同，
+  // 那不是「漂移」而是正常的跨平台差异，跳过哈希比对但要提示。
+  const lockApplies = lock && (!lock.platform || lock.platform === process.platform)
+  if (WRITE_LOCK) {
+    fs.writeFileSync(
+      LOCK_PATH,
+      JSON.stringify(
+        {
+          version: ver,
+          sha256: digest,
+          bytes: size,
+          platform: process.platform,
+          arch: process.arch,
+          note: '内置 node.exe 的锁定指纹；换运行时请显式 --write-lock'
+        },
+        null,
+        2
+      ) + '\n',
+      'utf-8'
+    )
+    console.log(`✓ 已写入运行时锁：node-runtime.lock.json（${ver} / ${digest.slice(0, 12)}…）`)
+  } else if (lock && !lockApplies) {
+    console.log(`· 锁文件记录的是 ${lock.platform} 平台，当前为 ${process.platform}，跳过哈希比对`)
+  } else if (lock && lock.sha256 !== digest) {
+    console.error('✗ 内置运行时与锁文件不一致，构建中止：\n')
+    console.error(`  锁文件：${lock.version} / sha256=${lock.sha256} / ${lock.bytes} bytes`)
+    console.error(`  当前  ：${ver} / sha256=${digest} / ${size} bytes\n`)
+    console.error('  同一个版本号产出不同二进制，会让发版记录对不上号。二选一：')
+    console.error('    · 用 --node=<path> 指向锁文件里那枚 node（推荐，保证可复现）')
+    console.error('    · 确认要换运行时，用 --write-lock 更新锁文件（会让新旧包不可比）')
+    process.exit(1)
+  } else if (!lock) {
+    console.log('· 尚无运行时锁文件；本次构建的指纹会写进 BUILD-INFO.json。')
+    console.log('  要固化可复现构建，先确认这枚 node 是你要长期用的，再跑一次 --write-lock。')
+  }
+
+  copyFile(picked.exe, path.join(STAGING, 'gateway', 'service', 'node', 'node.exe'))
 }
+
+// ---------- 构建指纹 ----------
+// 写进发布包，让「这包到底是哪套源码 + 哪个运行时」可事后核对，
+// 不必再靠发版人回忆。刻意不记录绝对路径与主机名。
+const buildInfo = {
+  app: 'codex-gateway',
+  version: VER,
+  builtAt: new Date().toISOString(),
+  git: { commit: gitCommit(), dirty: gitDirty() },
+  node: nodeInfo,
+  // 统计口径：不含 BUILD-INFO.json 自身（它的大小随 totals 变，写进去会自相矛盾）
+  totalsExcludingSelf: { files, bytes }
+}
+fs.writeFileSync(path.join(STAGING, 'BUILD-INFO.json'), JSON.stringify(buildInfo, null, 2) + '\n', 'utf-8')
+files += 1
 
 // ---------- 完整性校验 ----------
 const REQUIRED = [
   'gateway/launcher.mjs',
+  'gateway/bridge-pool.mjs',
   'gateway/gallery.html',
   'gateway/setup.html',
   'gateway/start-unix.sh',
@@ -101,6 +247,7 @@ const REQUIRED = [
   'lan-kit/INSTALL.md',
   'lan-kit/setup-client.mjs',
   'lan-kit/AGENT-PROMPT.md',
+  'BUILD-INFO.json',
   'QUICK-START.md'
 ]
 const missing = REQUIRED.filter((rel) => !fs.existsSync(path.join(STAGING, rel)))
@@ -212,20 +359,25 @@ if (problems.length) {
 const mb = (bytes / 1048576).toFixed(1)
 console.log(`✓ staging 就绪：release/staging/${NAME}`)
 console.log(`  文件 ${files} 个 / ${mb} MB（未压缩）`)
-console.log(`  运行时：${NO_RUNTIME ? '未内置（--no-runtime）' : '已内置 node.exe'}`)
+if (nodeInfo) {
+  console.log(`  运行时：${nodeInfo.version} · sha256 ${nodeInfo.sha256.slice(0, 16)}… · ${(nodeInfo.bytes / 1048576).toFixed(1)} MB`)
+} else {
+  console.log('  运行时：未内置（--no-runtime）')
+}
 console.log(`  自检：机密文件 0 · 禁止目录 0 · 个人绝对路径 0 · 换行符合规`)
+console.log(`  指纹：BUILD-INFO.json（版本 / git commit / 运行时哈希）`)
 console.log(`  下一步：压缩 → release/${NAME}-win64.zip（命令见 docs/RELEASE.md）`)
-console.log(`  压缩后务必再跑：node build-release.mjs --verify-zip`)
+console.log(`  压缩后务必再跑：node build-release.mjs --verify-zip && node build-release.mjs --verify-build`)
 
 // ---------- zip 层校验（--verify-zip） ----------
 // staging 自检管不到「压缩时选错根目录」：v1.1.0 就是遍历了整个 release/staging，
 // 把历史版本一起打进 zip，产出 73MB、解压出两个版本目录的坏包。
+function resolveZipPath() {
+  return ZIP_ARG ? path.resolve(ROOT, ZIP_ARG) : path.join(ROOT, 'release', `${NAME}-win64.zip`)
+}
+
 function verifyZip() {
-  // 支持 --zip=<path> 校验任意包（便于回归测试与复核历史产物）
-  const zipArg = process.argv.find((a) => a.startsWith('--zip='))
-  const zipPath = zipArg
-    ? path.resolve(ROOT, zipArg.slice('--zip='.length))
-    : path.join(ROOT, 'release', `${NAME}-win64.zip`)
+  const zipPath = resolveZipPath()
   if (!fs.existsSync(zipPath)) {
     console.error(`✗ 找不到 ${path.relative(ROOT, zipPath)} —— 先按 docs/RELEASE.md 完成压缩`)
     process.exit(1)
@@ -273,10 +425,80 @@ function verifyZip() {
     console.error(`✗ zip 校验未通过（${path.relative(ROOT, zipPath)}）：\n  ` + bad.join('\n  '))
     process.exit(1)
   }
-  console.log(`✓ zip 校验通过：release/${NAME}-win64.zip`)
+  console.log(`✓ zip 校验通过：${path.relative(ROOT, zipPath).split(path.sep).join('/')}`)
   console.log(`  顶层目录：${tops[0]}`)
   console.log(`  条目 ${names.length} 个 / ${sizeMb} MB`)
   console.log(`  禁止内容 0 项 · .sh 换行符 ${shEntries.length} 个均为 LF`)
+}
+
+// ---------- 构建指纹校验（--verify-build） ----------
+// 回答一个具体问题：「这个包里的 node.exe 到底是哪一枚？」
+// 校验三件事：BUILD-INFO 存在、内嵌运行时哈希与包内声明一致、与锁文件一致。
+function verifyBuild() {
+  const zipPath = resolveZipPath()
+  // 默认校验 staging（刚构建出来的那份），只有显式给 --zip 或 staging 不存在时才看 zip。
+  // 反过来会在「刚打完包但 zip 还是上一版」时验到旧产物，得出错误的通过结论。
+  const stagingInfo = path.join(STAGING, 'BUILD-INFO.json')
+  const useZip = !!ZIP_ARG || !fs.existsSync(stagingInfo)
+  let info = null
+  let topDir = null
+
+  if (useZip) {
+    const names = listZipEntries(zipPath)
+    const tops = [...new Set(names.map((n) => n.split('/')[0]))]
+    topDir = tops[0]
+    const entry = `${topDir}/BUILD-INFO.json`
+    if (!names.includes(entry)) {
+      console.error(`✗ 包内没有 ${entry}：该包早于「构建指纹」改造，无法核对运行时。`)
+      process.exit(1)
+    }
+    info = JSON.parse(readZipEntry(zipPath, entry).toString('utf-8'))
+  } else if (fs.existsSync(path.join(STAGING, 'BUILD-INFO.json'))) {
+    topDir = NAME
+    info = JSON.parse(fs.readFileSync(path.join(STAGING, 'BUILD-INFO.json'), 'utf-8'))
+  } else {
+    console.error('✗ 既没有可校验的 zip，也没有 staging/BUILD-INFO.json。先跑一次 node build-release.mjs')
+    process.exit(1)
+  }
+
+  const bad = []
+  if (!info.node) {
+    bad.push('BUILD-INFO 里没有运行时信息（--no-runtime 构建？）')
+  } else {
+    // 1) 与锁文件比对（跨平台产物不具可比性，锁文件只约束它记录的那个平台）
+    if (fs.existsSync(LOCK_PATH)) {
+      const lock = JSON.parse(fs.readFileSync(LOCK_PATH, 'utf-8'))
+      if (lock.platform && lock.platform !== process.platform) {
+        console.log(`· 锁文件记录的是 ${lock.platform} 平台，当前 ${process.platform}，跳过锁比对`)
+      } else if (lock.sha256 !== info.node.sha256) {
+        bad.push(`运行时哈希与锁文件不一致：锁 ${lock.sha256.slice(0, 16)}… / 包 ${String(info.node.sha256).slice(0, 16)}…`)
+      }
+    }
+    // 2) 实际内嵌的 node.exe 是否真是声明的那个
+    const entryName = `${topDir}/gateway/service/node/node.exe`
+    let actual
+    if (useZip) {
+      const buf = readZipEntry(zipPath, entryName, 512 * 1024 * 1024)
+      if (!buf.length) bad.push(`包内缺少 ${entryName}`)
+      else actual = createHash('sha256').update(buf).digest('hex')
+    } else {
+      const p = path.join(STAGING, 'gateway', 'service', 'node', 'node.exe')
+      if (!fs.existsSync(p)) bad.push(`staging 缺少 ${entryName}`)
+      else actual = sha256File(p)
+    }
+    if (actual && actual !== info.node.sha256) {
+      bad.push(`内嵌 node.exe 哈希与声明不符：声明 ${String(info.node.sha256).slice(0, 16)}… / 实际 ${actual.slice(0, 16)}…`)
+    }
+  }
+
+  if (bad.length) {
+    console.error('✗ 构建指纹校验未通过：\n  ' + bad.join('\n  '))
+    process.exit(1)
+  }
+  console.log(`✓ 构建指纹校验通过（${useZip ? path.relative(ROOT, zipPath).split(path.sep).join('/') : 'release/staging/' + NAME}）`)
+  console.log(`  版本：${info.version} · git ${info.git?.commit ? info.git.commit.slice(0, 7) : '—'}${info.git?.dirty ? ' (dirty)' : ''}`)
+  console.log(`  运行时：${info.node.version} · sha256 ${info.node.sha256} · ${(info.node.bytes / 1048576).toFixed(1)} MB`)
+  console.log(`  构建时间：${info.builtAt}`)
 }
 
 function listZipEntries(zipPath) {
@@ -292,8 +514,8 @@ function listZipEntries(zipPath) {
   process.exit(1)
 }
 
-function readZipEntry(zipPath, entry) {
-  const opts = { maxBuffer: 32 * 1024 * 1024 }
+function readZipEntry(zipPath, entry, maxBuffer = 32 * 1024 * 1024) {
+  const opts = { maxBuffer }
   try {
     return execFileSync('unzip', ['-p', zipPath, entry], opts)
   } catch {}
@@ -304,4 +526,3 @@ function readZipEntry(zipPath, entry) {
     return Buffer.alloc(0)
   }
 }
-

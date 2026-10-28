@@ -551,6 +551,75 @@ await T('反例：已持凭据访问首页不再返回引导页（避免反复�
   ok(r.status !== 401, `已持凭据访问首页被拒：HTTP ${r.status}`)
 })
 
+// =====================================================================
+// K8 · 并发架构（原 F-03 二期）
+// 这一组存在的意义：如果将来有人把「一账号一实例」改回「单进程 + 切账号重启」，
+// 功能测试很可能全绿（请求照样能通），但架构已经退化。所以必须直接断言：
+//   · 两个账号各占一个端口；
+//   · 用账号 2 时账号 1 的进程不能被拆掉；
+//   · 实例启动次数与请求量解耦。
+// =====================================================================
+G('K8 · 并发架构 · 多账号实例池（原 F-03 二期）')
+if (READONLY) {
+  console.log(`${C.d}  只读模式：跳过（会创建账号）${C.x}`)
+} else {
+  const mkAcct = async (name) =>
+    (await req('/__gw/accounts', {
+      method: 'POST',
+      body: { name, json: { access_token: 'audit-' + name, refresh_token: 'r-' + name } }
+    })).json
+  const acct1 = await mkAcct('pool-1')
+  const acct2 = await mkAcct('pool-2')
+  const mkBoundKey = async (name, ids) =>
+    (await req('/__gw/apikeys', { method: 'POST', body: { name, accountIds: ids } })).json?.key
+  const k1 = acct1?.accountId ? await mkBoundKey('pool-key-1', [acct1.accountId]) : null
+  const k2 = acct2?.accountId ? await mkBoundKey('pool-key-2', [acct2.accountId]) : null
+  // 账号用的是假 token，上游必然失败；这里只关心「请求被路由到哪个实例」，
+  // 所以不看响应码，只看实例与端口。
+  const ask = (k) =>
+    req('/v1/chat/completions', {
+      method: 'POST',
+      headers: auth(k.token),
+      body: { model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'hi' }] },
+      timeout: 20000
+    })
+
+  if (!k1 || !k2) {
+    await T('异常：多账号实例池夹具可用', async () => { throw new Error('未能创建两个账号及绑定 Key') })
+  } else {
+    await T('异常：每个账号各自占用独立端口（不再共享单一 bridge）', async () => {
+      await ask(k1)
+      let st = (await req('/__gw/status')).json
+      ok(Array.isArray(st.bridgeInstances), 'status 未提供 bridgeInstances（实例池架构缺失）')
+      const i1 = st.bridgeInstances.find((i) => i.label === 'pool-1')
+      ok(i1, `账号 1 未生成实例：${JSON.stringify(st.bridgeInstances)}`)
+      ok(i1.port >= st.config.bridgeBasePort, `端口 ${i1.port} 不在实例池区间（base ${st.config.bridgeBasePort}）`)
+      const pid1 = i1.pid
+
+      await ask(k2)
+      st = (await req('/__gw/status')).json
+      const i2 = st.bridgeInstances.find((i) => i.label === 'pool-2')
+      ok(i2, `账号 2 未生成实例：${JSON.stringify(st.bridgeInstances)}`)
+      ok(i2.port !== i1.port, `两个账号复用了同一端口 ${i2.port} —— 仍是单进程架构`)
+      // 最关键的一条：切到账号 2 不能把账号 1 的进程拆掉。
+      // 回退成「单进程 + kill/spawn」时，这一条必然失败。
+      const i1After = st.bridgeInstances.find((i) => i.label === 'pool-1')
+      ok(i1After, '用账号 2 之后账号 1 的实例消失了（回退成了单进程架构）')
+      eq(i1After.pid, pid1, '账号 1 的进程被重启了（使用其它账号不应打断已有通道）')
+    })
+
+    await T('正常：交替账号 12 次请求不新增实例启动（切换次数与请求量解耦）', async () => {
+      const before = (await req('/__gw/status')).json.bridgePool?.starts
+      ok(typeof before === 'number', 'status 缺少 bridgePool.starts 字段')
+      await Promise.all(Array.from({ length: 12 }, (_, i) => ask(i % 2 ? k2 : k1)))
+      const st = (await req('/__gw/status')).json
+      eq(st.bridgePool.starts, before, `交替 12 次后实例启动次数由 ${before} 变为 ${st.bridgePool.starts}`)
+      ok(st.bridgePool.starts <= 2, `实例启动次数 ${st.bridgePool.starts} 超过账号数 2`)
+      eq(st.bridgePool.failures, 0, '实例启动出现失败')
+    })
+  }
+}
+
 // ---------------- 汇总 ----------------
 console.log('\n' + '─'.repeat(70))
 console.log(`  ${BASE}    通过 ${C.g}${pass}${C.x}   失败 ${C.r}${fail}${C.x}`)
