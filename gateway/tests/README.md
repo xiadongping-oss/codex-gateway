@@ -16,15 +16,17 @@ npm test
 bash gateway/tests/run.sh --live
 ```
 
-## 五个脚本各管什么
+## 九个脚本各管什么
 
 | 命令 | 脚本 | 作用 |
 |---|---|---|
-| `npm test` | `run.sh` + `audit.mjs` | 63 例功能与安全回归，覆盖 API Key 生命周期、`/v1` 鉴权、远程 MCP、素材归属、文件伺服、控制面隔离、管理鉴权、多账号实例池架构 |
+| `npm test` | `run.sh` + `audit.mjs` | 69 例功能与安全回归，覆盖 API Key 生命周期、`/v1` 鉴权、远程 MCP、素材归属、文件伺服、控制面隔离、管理鉴权、多账号实例池架构、lan-kit 客户端分发 |
 | `npm run test:unit` | `bridge-pool.test.mjs` | bridge 实例池语义单测（启动互斥 / 一账号一端口 / 空闲回收 / 池满淘汰 / 崩溃自愈） |
+| `npm run test:client` | `setup-client.test.mjs` | **局域网客户端脚本回归**：`setup-client.mjs` 的 14 例（mcp.json 合并幂等 / 坏 JSON 不覆盖 / dry-run 不写盘 / 缺参数报错 / skill 降级 / 注入锚点契约）。临时 HOME + 临时 cwd，不碰真实 `~/.workbuddy` |
 | `npm run test:build` | `build-release.test.mjs` | **打包闸门回归**：`--verify-zip` / `--verify-build` / 运行时锁 / 复制黑名单 / **换行符与可复现性**。25 例，在临时「假仓库」里跑同一份 `build-release.mjs`，不碰真产物 |
-| `npm run test:mutate` | `mutate.mjs` | **变异测试**：往沙盒代码注入 19 个真实缺陷，验证回归能否逐个抓住。存活 = 测试盲区 |
+| `npm run test:mutate` | `mutate.mjs` | **变异测试**：往沙盒代码注入 22 个真实缺陷，验证回归能否逐个抓住。存活 = 测试盲区 |
 | `npm run test:mutate:build` | `mutate-build.mjs` | 打包闸门的变异测试：注入 12 种「闸门失效」，验证 `test:build` 能把它们逐个抓住 |
+| `npm run test:mutate:client` | `mutate-client.mjs` | 客户端脚本的变异测试：注入 5 种真实退化（覆盖坏 JSON / 抹掉他人条目 / dry-run 写盘 / 缺参数静默 / 锚点变双引号），验证 `test:client` 能逐个抓住 |
 | `npm run test:attack` | `pentest.mjs` | 攻击者视角攻防，含原始 socket 绕 URL 规范化、跨站伪造、路径穿越、凭据变形 |
 | `npm run test:bench` | `bench-concurrency.mjs` | 并发吞吐量化对比（修复前 vs 修复后） |
 
@@ -38,6 +40,8 @@ bash gateway/tests/run.sh --live
 - `gateway/bridge-pool.mjs`（按账号的 bridge 实例池）
 - `gateway/admin-auth.mjs`（管理鉴权）
 
+改了 **`docs/lan-kit/setup-client.mjs`** 后，**跑 `npm run test:client` + `npm run test:mutate:client`**。注意它和网关有一处**字符串契约**：`const EMBEDDED_HOST = ''` 这一行是宿主机注入地址的锚点，改引号/空格/变量名都会让注入静默失效（`test:client` 的最后一条会拦）。
+
 改了 **`build-release.mjs`**（含新增校验、调整黑名单、改锁逻辑）后，**跑 `npm run test:build` + `npm run test:mutate:build`**，再出包。
 
 ## 打包闸门为什么值得单独测
@@ -47,6 +51,22 @@ bash gateway/tests/run.sh --live
 `build-release.test.mjs` 用**临时假仓库**跑同一份构建脚本：脚本以自身位置推导 `ROOT`，所以换掉 `package.json`、锁文件、目录树即可精确构造任意缺陷，不必真造 83MB 的 `node.exe`，也不写 `release/`。造 zip 依赖 `python`（与 `--verify-zip` 本身的前提一致）。
 
 一个容易写成假测试的地方：`gateway/data`、`api-keys.json` 等在**复制阶段**就被黑名单滤掉，根本进不了 staging，所以「结构自检拦住它们」这种用例永远触发不到。真正该断言的不变量是「**没有**被复制进去」；staging 上的 `DIR_DENY` 是第二层防线（防的正是有人把复制黑名单改坏），由变异体 MB5 验证。
+
+## lan-kit 分发为什么值得单独测
+
+`setup-client.mjs` 是局域网用户的**唯一入口**——写 mcp.json、装 skill、生成模型配置全在这一条命令里。它出问题不会报错，只有「照着文档做完但连不上」，而且这条链路已经出过两次事（安装提示把 `/health` 503 当失败、地址注入静默失效）。
+
+宿主机分发时用**精确字符串替换**把地址注入 `EMBEDDED_HOST`，锚点是 `const EMBEDDED_HOST = ''` 这一整行。一次「单引号改双引号」这种无害格式化就会让替换空转，而响应仍是 200、内容看着正常，只是没有内嵌地址；用户按 `/setup` 页说明只给 `--key` 运行就撞上「缺少 --host」，分发两侧都看不出问题在哪。
+
+现在是三层防护，任一层单独失效都还能兜住：
+
+| 层 | 位置 | 拦什么 |
+|---|---|---|
+| 分发侧 | `launcher.mjs`（K9 / M18） | 锚点对不上直接 500，不把坏脚本发出去 |
+| 客户端 | `setup-client.test.mjs` 末条 | 模板被改动时立刻红，指出要同步 `LAN_KIT_HOST_ANCHOR` |
+| 端到端 | `audit.mjs` K9 | 真发一次 `?host=` 请求，断言地址**确实**出现在响应里 |
+
+顺带一提，这套用例跑在临时 HOME + 临时 cwd 里，不会碰真实的 `~/.workbuddy`。
 
 ## 可复现构建：锁运行时只是第一步
 
@@ -74,7 +94,7 @@ npm run test:build
 
 ## 改 `/health` 语义时必查清单
 
-这个坑已经踩了四次，每次表现都不一样：沙盒起不来、19 个变异体全报「执行异常」并伪装成「17 个测试盲区」、攻防报「超大请求打挂了服务」……根因却都是同一行「只认 200/502」。
+这个坑已经踩了六次，每次表现都不一样：沙盒起不来、19 个变异体全报「执行异常」并伪装成「17 个测试盲区」、攻防报「沙盒网关未启动」和「超大请求打挂了服务」……根因却都是同一行「只认 200/502」。
 
 JS 侧的判定统一在 **`lib/health.mjs`**（`isReady` 用于启动探测，`isAlive` 用于存活断言），改口径只改那里。但仍有两处必须同步：
 

@@ -26,6 +26,10 @@ function argOf(name) {
 const BASE = (argOf('--base') || 'http://127.0.0.1:4199').replace(/\/+$/, '')
 const READONLY = process.argv.includes('--readonly')
 const GEN_DIR = argOf('--gendir') || path.resolve('.', 'home', '.chatgpt-bridge', 'gen-images')
+// lan-kit 源目录：run.sh 会在沙盒里同步一份（cwd 即沙盒），但 mutate.mjs 是从仓库根
+// 启动 audit 的，cwd 不是沙盒——所以必须能显式指定，否则 K9 读错目录，用例会因为
+// 「文件不存在」而"失败"，看起来像变异被杀死，其实是环境问题。
+const LAN_KIT_DIR = argOf('--lankit') || path.resolve('.', 'lan-kit')
 // 控制面管理令牌（F-01 后新增）：run.sh 会把沙盒的 admin-token.json 路径传进来。
 // 只给 /__gw/* 带上，不能污染 /v1 —— 那边要测的正是「没有 cgw- Key」。
 const ADMIN_TOKEN = (() => {
@@ -633,6 +637,68 @@ if (READONLY) {
       eq(st.bridgePool.failures, 0, '实例启动出现失败')
     })
   }
+}
+
+// ---------------- K9 · lan-kit 客户端分发 ----------------
+// setup-client.mjs 是局域网用户的**唯一入口**（写 mcp.json + 装 skill + 生成模型配置）。
+// 宿主机分发时用精确字符串替换把地址注入 EMBEDDED_HOST —— 一次「单引号改双引号」这种
+// 无害格式化就会让替换空转，而响应仍是 200、内容看着正常，只是没有内嵌地址；用户照着
+// /setup 页说明只给 --key 运行，就撞上「缺少 --host」，分发两侧都看不出问题在哪。
+// 这一组守的就是「注入是否真的发生了」，只看状态码会漏掉全部问题。
+G('K9 · lan-kit 客户端分发（局域网安装入口）')
+
+await T('异常：白名单外的 lan-kit 文件一律 404', async () => {
+  const r = await req('/lan-kit/setup-client.mjs.bak')
+  eq(r.status, 404, '非白名单文件被放行了')
+  ok(!r.text.includes('EMBEDDED_HOST'), '404 响应里不应包含脚本内容')
+})
+
+await T('异常：编码形式的路径穿越不能读到上游文件', async () => {
+  for (const p of ['/lan-kit/%2e%2e/launcher.mjs', '/lan-kit/%2e%2e%2faccounts.json']) {
+    const r = await rawSend('GET', p, {})
+    ok(r.status !== 200, `${p} 返回 ${r.status}，疑似放行了非白名单路径`)
+    ok(!/cgw-|accounts\.json|ADMIN/.test(r.text), `${p} 泄露了上游内容`)
+  }
+})
+
+await T('正常：带 host 时地址被真正注入（不是 200 了事）', async () => {
+  const r = await req('/lan-kit/setup-client.mjs?host=192.168.1.188')
+  eq(r.status, 200, '分发端点未返回 200')
+  ok(r.text.includes("const EMBEDDED_HOST = '192.168.1.188'"),
+    'host 未被注入：响应 200 但锚点仍是空串，客户端会要求用户手工输入地址')
+  ok(!r.text.includes("const EMBEDDED_HOST = ''"), '空锚点仍在，说明替换没有生效')
+})
+
+await T('正常：不带 host 时保持空锚点（交互式安装路径仍可用）', async () => {
+  const r = await req('/lan-kit/setup-client.mjs')
+  eq(r.status, 200)
+  ok(r.text.includes("const EMBEDDED_HOST = ''"), '未带 host 时不应改动模板')
+})
+
+await T('异常：host 含非法字符时明确 400，不能静默当作没传', async () => {
+  for (const bad of ["192.168.1.1'", 'a;process.exit(1)', '<script>', 'a b']) {
+    const r = await req('/lan-kit/setup-client.mjs?host=' + encodeURIComponent(bad))
+    eq(r.status, 400, `非法 host ${JSON.stringify(bad)} 未被拒绝（返回 ${r.status}）`)
+  }
+})
+
+// 这条要改沙盒文件，只读模式（--live 打真实实例）下不能跑
+if (!READONLY) {
+  await T('异常：注入锚点被改动时明确 500，而不是把坏脚本发出去', async () => {
+    const LAN_KIT = path.join(LAN_KIT_DIR, 'setup-client.mjs')
+    ok(fs.existsSync(LAN_KIT), `缺少 ${LAN_KIT}（沙盒未同步 lan-kit？）`)
+    const orig = fs.readFileSync(LAN_KIT, 'utf8')
+    try {
+      fs.writeFileSync(LAN_KIT, orig.replace("const EMBEDDED_HOST = ''", 'const EMBEDDED_HOST = ""'))
+      const r = await req('/lan-kit/setup-client.mjs?host=192.168.1.188')
+      eq(r.status, 500, `锚点不匹配时仍返回 ${r.status}——没内嵌地址的脚本会被静默发出去`)
+      ok(/注入锚点不匹配/.test(r.text), '错误信息未说明真实原因，维护者无从下手')
+    } finally {
+      fs.writeFileSync(LAN_KIT, orig)
+    }
+  })
+} else {
+  note('跳过', '「锚点被改动时 500」需要改写沙盒文件，只读模式不执行')
 }
 
 // ---------------- 汇总 ----------------

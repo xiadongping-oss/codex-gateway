@@ -156,6 +156,25 @@ const MUTANTS = [
     from: "  if (adminAuth && req.method === 'GET' && (p === '/' || p === '/index.html') && !adminAuth.verifyRequest(req).ok) {",
     to: "  if (false) {"
   },
+  {
+    // 这三条对应「响应 200 但事情没做成」的静默降级，只看状态码的测试全部漏得出去
+    id: 'M18', cat: '可用性', desc: 'lan-kit 注入锚点断言被摘除（模板改动后仍把坏脚本发出去）',
+    file: 'launcher.mjs',
+    from: '          if (!src.includes(LAN_KIT_HOST_ANCHOR)) {',
+    to: '          if (false) {'
+  },
+  {
+    id: 'M19', cat: '可用性', desc: '非法 host 静默放行（用户以为地址已内嵌，实际没有）',
+    file: 'launcher.mjs',
+    from: '          if (!/^[A-Za-z0-9._-]+$/.test(h)) {',
+    to: '          if (false) {'
+  },
+  {
+    id: 'M20', cat: '可用性', desc: '分发改成原样返回（host 参数被忽略，注入形同虚设）',
+    file: 'launcher.mjs',
+    from: '          buf = Buffer.from(src.replace(LAN_KIT_HOST_ANCHOR, `const EMBEDDED_HOST = \'${h}\'`))',
+    to: '          buf = Buffer.from(src)'
+  },
 ]
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -167,6 +186,12 @@ function syncSandbox() {
     if (f.endsWith('.mjs') || f.endsWith('.html')) {
       fs.copyFileSync(path.join(SRC, f), path.join(SB, f))
     }
+  }
+  // lan-kit 也要同步：K9 测的是分发端点，沙盒里没有这批文件会全 404，
+  // 那时用例「失败」的原因是环境而非变异，会被误记成「变异被杀死」。
+  const LANKIT = path.join(SRC, '..', 'docs', 'lan-kit')
+  if (fs.existsSync(LANKIT)) {
+    fs.cpSync(LANKIT, path.join(SB, 'lan-kit'), { recursive: true, force: true })
   }
 }
 
@@ -231,7 +256,7 @@ async function startGateway() {
 
 function runAudit() {
   return new Promise((resolve) => {
-    const a = spawn(NODE, [path.join(ROOT, 'audit.mjs'), '--base=' + BASE, '--gendir=' + GEN, '--tokenfile=' + TOKEN_FILE], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const a = spawn(NODE, [path.join(ROOT, 'audit.mjs'), '--base=' + BASE, '--gendir=' + GEN, '--tokenfile=' + TOKEN_FILE, '--lankit=' + path.join(SB, 'lan-kit')], { stdio: ['ignore', 'pipe', 'pipe'] })
     let out = ''
     a.stdout.on('data', (d) => (out += d))
     a.stderr.on('data', (d) => (out += d))

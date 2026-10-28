@@ -36,6 +36,12 @@ echo "▶ 同步源码到沙盒（始终以 gateway/ 为唯一真源，避免「
 for f in "$GATEWAY/"*.mjs "$GATEWAY/"*.html; do
   [ -f "$f" ] && cp "$f" "$SB/"
 done
+# lan-kit 也要同步：launcher 的候选路径之一是 $SB/lan-kit。
+# 不同步的话 /lan-kit/* 全部 404，K9 那组用例会「通过」但什么都没测到。
+if [ -d "$GATEWAY/../docs/lan-kit" ]; then
+  rm -rf "$SB/lan-kit"
+  cp -r "$GATEWAY/../docs/lan-kit" "$SB/" 2>/dev/null
+fi
 # 依赖只需复制一次（24MB），沙盒重建时复用
 [ -d "$SB/node_modules" ] || cp -r "$GATEWAY/node_modules" "$SB/" 2>/dev/null
 cd "$SB"

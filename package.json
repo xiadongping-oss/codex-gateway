@@ -1,6 +1,6 @@
 {
   "name": "codex-gateway",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "private": true,
   "type": "module",
   "main": "gateway/launcher.mjs",
@@ -15,9 +15,11 @@
     "login": "npx @openai/codex login",
     "test": "bash gateway/tests/run.sh",
     "test:unit": "node --test --test-timeout=15000 gateway/tests/bridge-pool.test.mjs",
+    "test:client": "node --test --test-timeout=60000 gateway/tests/setup-client.test.mjs",
     "test:build": "node --test --test-timeout=60000 gateway/tests/build-release.test.mjs",
     "test:mutate": "node gateway/tests/mutate.mjs",
     "test:mutate:build": "node gateway/tests/mutate-build.mjs",
+    "test:mutate:client": "node gateway/tests/mutate-client.mjs",
     "test:attack": "node gateway/tests/pentest.mjs",
     "test:bench": "node gateway/tests/bench-concurrency.mjs"
   }

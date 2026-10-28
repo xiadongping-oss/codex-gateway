@@ -1611,6 +1611,12 @@ const server = http.createServer(async (req, res) => {
 
   // ---- lan-kit 文件分发（LAN 可达，白名单；setup-client.mjs 支持 ?host= 注入宿主机地址） ----
   if (p.startsWith('/lan-kit/')) {
+    // 注入锚点：必须与 setup-client.mjs 里那一行逐字符一致。
+    // 为什么要有这条断言——注入用的是精确字符串替换，一次「单引号改双引号」这类无害
+    // 格式化就会让替换空转，而响应仍然 200、内容看起来正常，只是没有内嵌地址。用户
+    // 照着 /setup 页说明只给 --key 运行，就会撞上「缺少 --host」，而分发两侧都看不出
+    // 问题在哪。锚点对不上时宁可 500 明确失败，也不要把坏脚本发出去。
+    const LAN_KIT_HOST_ANCHOR = "const EMBEDDED_HOST = ''"
     const LAN_KIT_WHITELIST = {
       '/lan-kit/setup-client.mjs': { file: 'setup-client.mjs', type: 'text/javascript; charset=utf-8', inject: true },
       '/lan-kit/INSTALL.md': { file: 'INSTALL.md', type: 'text/markdown; charset=utf-8' },
@@ -1636,8 +1642,23 @@ const server = http.createServer(async (req, res) => {
       }
       if (entry.inject) {
         const h = String(url.searchParams.get('host') || '').trim()
-        if (h && /^[A-Za-z0-9._-]+$/.test(h)) {
-          buf = Buffer.from(buf.toString('utf8').replace("const EMBEDDED_HOST = ''", `const EMBEDDED_HOST = '${h}'`))
+        if (h) {
+          // 字符集白名单仍是第一道（挡住把引号/分号拼进 JS 字符串的注入），
+          // 但非法值要**明确拒绝**而不是静默当作「用户没带参数」——
+          // 否则用户以为地址已内嵌，实际拿到的是交互式脚本。
+          if (!/^[A-Za-z0-9._-]+$/.test(h)) {
+            res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
+            return res.end('host 参数只允许字母、数字、点、下划线和连字符。示例：?host=192.168.1.188')
+          }
+          const src = buf.toString('utf8')
+          if (!src.includes(LAN_KIT_HOST_ANCHOR)) {
+            pushLog('✗ lan-kit 分发失败：setup-client.mjs 的注入锚点不匹配（文件被改动过？）')
+            res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
+            return res.end('分发失败：setup-client.mjs 的注入锚点不匹配，宿主机地址未能内嵌。\n' +
+              '这是网关自身的缺陷，不是你的问题。请在宿主机控制台查看日志，或手工执行\n' +
+              `node setup-client.mjs --host <宿主机IP> --key cgw-xxx\n`)
+          }
+          buf = Buffer.from(src.replace(LAN_KIT_HOST_ANCHOR, `const EMBEDDED_HOST = '${h}'`))
         }
         res.writeHead(200, { 'Content-Type': entry.type, 'Cache-Control': 'no-cache' })
       } else {
