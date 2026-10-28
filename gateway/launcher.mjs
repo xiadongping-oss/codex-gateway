@@ -2157,6 +2157,16 @@ const server = http.createServer(async (req, res) => {
   // 热切换 bridge，并原样转发 /v1/*（bridge 会用其内部 auth 头覆盖客户端 auth）。
   if (p.startsWith('/v1/') || p === '/health') {
     if (p.startsWith('/v1/') && strictAuthReject(req, res, p)) return
+    // /health 是透传给 bridge 的探活端点。没有任何实例时不要往虚空转发——
+    // 那会得到 502 bridge_unreachable，看日志的人分不清「没启动」和「刚崩了」。
+    if (p === '/health' && gwConfig.mode !== 'openai' && !primaryInstance()) {
+      return sendJson(res, 503, {
+        ok: false,
+        error: 'bridge_not_running',
+        detail: '当前没有运行中的 bridge 实例（通常是尚未添加账号）。完成授权后会自动拉起。',
+        pool: bridgePool.stats()
+      })
+    }
     const token = extractBearerToken(req.headers['authorization'])
     let authKeyId = null
     let authOwner = null

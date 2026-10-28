@@ -314,7 +314,8 @@ await T('边界：超大参数 / 畸形 JSON / 畸形编码 不打挂进程', as
   await req('/__gw/apikeys', { method: 'POST', rawText: '{ not json' })
   await req('/%zz')
   const alive = await req('/health')
-  ok([200, 502].includes(alive.status), `服务失联：HTTP ${alive.status} ${alive.err || ''}`)
+  // 200 = bridge 在跑且已登录；503 = 无实例（bridge_not_running）；502 = 实例在但库不可达
+  ok([200, 502, 503].includes(alive.status), `服务失联：HTTP ${alive.status} ${alive.err || ''}`)
 })
 
 G('K4 · 敏感信息泄露（数据）')
@@ -328,6 +329,19 @@ await T('正常：/health 不含内部路径与凭据', async () => {
   const r = await req('/health')
   ok(!r.text.includes(CANARY), '健康检查泄露金丝雀机密值')
   ok(!/authFilePath|openaiApiKey|api-keys/i.test(r.text), `健康检查泄露：${r.text.slice(0, 100)}`)
+})
+// 无实例时若直接透传到虚空，会得到 502 bridge_unreachable——看日志的人分不清
+// 「还没启动」和「刚崩了」。要求给出机器可读原因 + 可操作文案。
+await T('正常：无实例时 /health 明确报 bridge_not_running，而不是 502 到虚空', async () => {
+  const r = await req('/health')
+  if (r.status === 200) {
+    ok(r.json?.ok === true, '/health 返回 200 但响应体不是 bridge 健康信息')
+    note('OK-health', '沙盒里已有运行中的实例，跳过「无实例」分支的断言')
+    return
+  }
+  eq(r.status, 503, `无实例时应返回 503，实际 ${r.status}`)
+  eq(r.json?.error, 'bridge_not_running', '缺少机器可读的原因码')
+  ok(r.json?.detail && r.json.detail.length > 8, '缺少可操作的处理提示')
 })
 await T('异常：错误响应不回显绝对路径与堆栈', async () => {
   const r = await req('/__gw/assets/file?src=nope&n=x.png')

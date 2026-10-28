@@ -20,7 +20,7 @@ bash gateway/tests/run.sh --live
 
 | 命令 | 脚本 | 作用 |
 |---|---|---|
-| `npm test` | `run.sh` + `audit.mjs` | 62 例功能与安全回归，覆盖 API Key 生命周期、`/v1` 鉴权、远程 MCP、素材归属、文件伺服、控制面隔离、管理鉴权、多账号实例池架构 |
+| `npm test` | `run.sh` + `audit.mjs` | 63 例功能与安全回归，覆盖 API Key 生命周期、`/v1` 鉴权、远程 MCP、素材归属、文件伺服、控制面隔离、管理鉴权、多账号实例池架构 |
 | `npm run test:unit` | `bridge-pool.test.mjs` | bridge 实例池语义单测（启动互斥 / 一账号一端口 / 空闲回收 / 池满淘汰 / 崩溃自愈） |
 | `npm run test:mutate` | `mutate.mjs` | **变异测试**：往沙盒代码注入 19 个真实缺陷，验证回归能否逐个抓住。存活 = 测试盲区 |
 | `npm run test:attack` | `pentest.mjs` | 攻击者视角攻防，含原始 socket 绕 URL 规范化、跨站伪造、路径穿越、凭据变形 |
