@@ -19,7 +19,12 @@ node build-release.mjs
 #   自动完成：白名单复制 gateway/ + frontend/dist + README/QUICK-START
 #   内置 node.exe 到 gateway/service/node/
 #   机密自检：accounts / api-keys / data / logs / 设备身份 一旦混入立即中止
-#   结构自检：禁止目录整类拦截 / 个人绝对路径扫描 / .sh 必须 LF、.cmd 必须 CRLF
+#   结构自检：禁止目录整类拦截 / 个人绝对路径扫描 / 换行符合规
+#   换行符规范化：.cmd/.bat/.vbs 强制 CRLF，其余文本（含 node_modules）强制 LF
+#     为什么：core.autocrlf=true 与 false 的机器 checkout 出不同字节，
+#     同一版本号就会产出不同 zip。规范化在复制阶段做，与 git 配置无关。
+#     遇到孤立 \r（如被二次转换过的 \r\r\n）会直接失败，不做"自动修复"——
+#     把孤立 CR 当换行会凭空多出空行、悄悄改变文件内容。
 #   构建指纹：写 BUILD-INFO.json（版本 + git commit + 运行时版本与 sha256）
 #   选项 --no-runtime：不内置 node.exe（用户需自装 Node，不推荐）
 #   选项 --node=<路径>：指定要内置的 node（默认当前运行脚本的那个）
@@ -32,6 +37,13 @@ node build-release.mjs
 #    首次确认某枚 node 要长期使用时，跑一次：
 node build-release.mjs --write-lock
 #    ⚠️ 换 node 后必须重新 --write-lock，否则构建会被拦住（这是刻意的）
+
+# 1.2 想验证「同源码 → 同字节」时，固定构建时间戳
+#    BUILD-INFO.json 里的 builtAt 默认取当前时间，所以任何两次构建都不可能相同。
+#    用 SOURCE_DATE_EPOCH（Unix 秒）固定它，再比对两次产物即可：
+SOURCE_DATE_EPOCH=1700000000 node build-release.mjs
+#    （测试里已经这么做：build-release.test.mjs 会造 LF / CRLF 两个假仓库，
+#      断言两边产物哈希相等。手动复核时不必再跑一遍。）
 
 # 2. 压缩 —— 必须以 staging/<当前版本> 为根，不能以 staging/ 为根
 #    ⚠️ 踩过的坑：若用 os.relpath(p, 'release/staging') 遍历整个 staging/，
@@ -58,7 +70,8 @@ print(f'{n} files → release/{top}-win64.zip')
 #   3.0 闸门自测：验证下面这些校验本身没坏（改了 build-release.mjs 后务必跑）
 npm run test:build && npm run test:mutate:build
 #   在临时「假仓库」里跑同一份构建脚本，覆盖 --verify-zip / --verify-build /
-#   运行时锁 / 复制黑名单四类闸门；第二句再注入 7 种「闸门失效」确认能逐个抓住。
+#   运行时锁 / 复制黑名单 / 换行符与可复现性 五类闸门；第二句再注入 12 种
+#   「闸门失效」确认能逐个抓住。
 #   为什么要测闸门本身：它们守的是「发给别人的唯一凭证」，静默失效的事故已经发生过两次
 #   （v1.1.0 双目录包、v1.2.0 家目录泄露），而闸门自己此前没有任何自动化回归。
 #   依赖：造测试用 zip 需要 python（与 --verify-zip 的前提一致）。
@@ -68,7 +81,7 @@ node build-release.mjs --verify-zip
 #     · 顶层恰好一个目录且与版本同名（防 v1.1.0 那种双目录坏包）
 #     · 无 gateway/data、gateway/tests、admin-token.json 等数据与机密
 #     · 无 C:\Users\<真实用户名> 这类打包机绝对路径
-#     · 所有 .sh 为 LF、.cmd/.bat 为 CRLF
+#     · 所有 .sh 为 LF、.cmd/.bat 为 CRLF（打包阶段已规范化，这里是压缩后的复核）
 #   打包阶段已先跑过同样的检查（对着 staging）；--verify-zip 补的是
 #   「压缩时选错根目录」这一类 staging 看不出来的问题。
 #   需要复核历史产物：node build-release.mjs --verify-zip --zip=<路径>

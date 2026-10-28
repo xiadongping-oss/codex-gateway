@@ -62,6 +62,34 @@ const MUTANTS = [
     id: 'MB7', desc: '校验时不再比对「声明哈希 vs 包内实物」',
     from: '    if (actual && actual !== info.node.sha256) {',
     to: '    if (false) {'
+  },
+  // ---- 换行符规范化与可复现构建 ----
+  // 这一组的共同点：失效后包**照样能打出来、也能跑**，只是两台机器打出的字节不同，
+  // 或者文件内容被悄悄改了一个换行。属于最难靠肉眼发现的一类。
+  {
+    id: 'MB8', desc: '复制阶段不再规范化换行符（CRLF 工作区打出的包与 LF 工作区不同）',
+    from: '  if (TEXT_EXT.has(ext)) {\n    const fixed = normalizeEol(buf, ext)',
+    to: '  if (false) {\n    const fixed = normalizeEol(buf, ext)'
+  },
+  {
+    id: 'MB9', desc: '不把 LF 的 Windows 脚本补成 CRLF（cmd 对纯 LF 不稳）',
+    from: '  return wantCRLF ? toCRLF(lf) : lf',
+    to: '  return lf'
+  },
+  {
+    id: 'MB10', desc: '把孤立 CR 静默转成换行（\\r\\r\\n 变成两个换行，悄悄改变内容）',
+    from: "  if (lf.includes(0x0d)) return buf\n  return wantCRLF ? toCRLF(lf) : lf",
+    to: "  return wantCRLF ? toCRLF(lf) : Buffer.from(lf.toString('latin1').replace(/\\r/g, '\\n'), 'latin1')"
+  },
+  {
+    id: 'MB11', desc: '忽略 SOURCE_DATE_EPOCH（同源码两次构建的 BUILD-INFO 必然不同，无法比对）',
+    from: '  builtAt: buildTimestamp(),',
+    to: '  builtAt: new Date().toISOString(),'
+  },
+  {
+    id: 'MB12', desc: 'SOURCE_DATE_EPOCH 非法值不再报错（悄悄回落到当前时间）',
+    from: '  if (!Number.isFinite(sec) || sec <= 0) {',
+    to: '  if (false) {'
   }
 ]
 

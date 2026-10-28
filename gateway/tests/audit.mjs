@@ -16,6 +16,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
+import { HEALTH_ALIVE_STATUSES } from './lib/health.mjs'
 const require = createRequire(import.meta.url)
 
 function argOf(name) {
@@ -315,7 +316,7 @@ await T('边界：超大参数 / 畸形 JSON / 畸形编码 不打挂进程', as
   await req('/%zz')
   const alive = await req('/health')
   // 200 = bridge 在跑且已登录；503 = 无实例（bridge_not_running）；502 = 实例在但库不可达
-  ok([200, 502, 503].includes(alive.status), `服务失联：HTTP ${alive.status} ${alive.err || ''}`)
+  ok(HEALTH_ALIVE_STATUSES.includes(alive.status), `服务失联：HTTP ${alive.status} ${alive.err || ''}`)
 })
 
 G('K4 · 敏感信息泄露（数据）')
@@ -408,7 +409,7 @@ await T('反例：无 Origin / 无 Referer 的命令行调用放行（curl / MCP
 })
 await T('反例：/health 与静态资源不走控制面守卫（保持对外开放）', async () => {
   const h = await req('/health')
-  ok([200, 502, 503].includes(h.status), `/health 意外 HTTP ${h.status}`)
+  ok(HEALTH_ALIVE_STATUSES.includes(h.status), `/health 意外 HTTP ${h.status}`)
 })
 
 G('K6 · 输入净化 · 显示名（数据）')

@@ -63,13 +63,58 @@ const NODE_CANDIDATES = [
 
 let files = 0
 let bytes = 0
+let eolFixed = 0
+
+// ---------- 换行符规范化（可复现构建的最后一块）----------
+// 只锁 node.exe 是不够的：`core.autocrlf=true` 的机器 checkout 出来是 CRLF，
+// `false` 的机器是 LF，同一 commit 打出的 zip 字节就不同。实测本仓库就存在这种
+// 混态——apikeys.mjs / assets.mjs / account-quota.mjs 在工作区是全 CRLF
+// （git ls-files --eol 显示 i/lf w/crlf），而 launcher.mjs 是 LF。
+// 靠 .gitattributes 只能稳定「git checkout」这条路，管不住「某人编辑器存成 CRLF」，
+// 也管不住 vendored node_modules 里自带的 CRLF。所以构建时统一规范化：
+// 产物字节只由源码内容决定，不由打包机器的 git 配置决定。
+//
+// 规则：Windows 脚本（.cmd/.bat/.vbs）必须 CRLF；其余文本一律 LF。
+// 顺带修掉混合换行——先全归一成 LF 再按需加 CR，避免「一半 CRLF 一半 LF」。
+const TEXT_EXT = new Set([
+  '.mjs', '.js', '.cjs', '.mts', '.cts', '.ts', '.json', '.map',
+  '.sh', '.cmd', '.bat', '.vbs', '.ps1',
+  '.md', '.html', '.css', '.svg', '.txt', '.yml', '.yaml', '.vue'
+])
+const CRLF_REQUIRED = new Set(['.cmd', '.bat', '.vbs'])
+
+// 用 latin1 做字节级往返：UTF-8 多字节字符映射为单字节序列，替换后再写回，
+// 不会误改内容，BOM 也原样保留。
+//
+// 只处理 CRLF。遇到**孤立 CR**（不跟在 CRLF 里的 CR）时原样放行、交给自检报错，
+// 不做"修复"——因为把孤立 CR 当换行会把 `\r\r\n` 变成 `\n\n`，凭空多出一个空行，
+// 静默改变文件内容。这类文件通常是被某个工具二次转换过，属于需要人看的情况，
+// 打包器不该替它猜。宁可构建失败，也不要发出一个内容被悄悄改过的包。
+function toCRLF(buf) {
+  return Buffer.from(buf.toString('latin1').replace(/\n/g, '\r\n'), 'latin1')
+}
+
+function normalizeEol(buf, ext) {
+  const wantCRLF = CRLF_REQUIRED.has(ext)
+  if (!buf.includes(0x0d)) return wantCRLF ? toCRLF(buf) : buf
+  const lf = Buffer.from(buf.toString('latin1').replace(/\r\n/g, '\n'), 'latin1')
+  if (lf.includes(0x0d)) return buf
+  return wantCRLF ? toCRLF(lf) : lf
+}
 
 function copyFile(src, dest) {
   fs.mkdirSync(path.dirname(dest), { recursive: true })
-  fs.copyFileSync(src, dest)
-  const s = fs.statSync(src).size
+  const ext = path.extname(src).toLowerCase()
+  let buf = fs.readFileSync(src)
+  if (TEXT_EXT.has(ext)) {
+    const fixed = normalizeEol(buf, ext)
+    if (!fixed.equals(buf)) eolFixed++
+    buf = fixed
+  }
+  fs.writeFileSync(dest, buf)
+  // 按写出后的尺寸计数：规范化会让 CRLF 文件略小，用源文件大小会对不上 zip
   files++
-  bytes += s
+  bytes += buf.length
 }
 
 // ---------- 分块算 sha256 ----------
@@ -219,10 +264,25 @@ if (!NO_RUNTIME) {
 // ---------- 构建指纹 ----------
 // 写进发布包，让「这包到底是哪套源码 + 哪个运行时」可事后核对，
 // 不必再靠发版人回忆。刻意不记录绝对路径与主机名。
+// builtAt 默认取当前时间，但可用 SOURCE_DATE_EPOCH（Unix 秒）固定。
+// 没有它就无法验证「同源码 → 同字节」：每次构建时间不同，BUILD-INFO 必然不同，
+// 于是任何两次构建都无法比对。这是 reproducible-builds 的通行做法，
+// 也让测试能真正断言「两次构建产物一致」而非只断言结构。
+function buildTimestamp() {
+  const raw = process.env.SOURCE_DATE_EPOCH
+  if (!raw) return new Date().toISOString()
+  const sec = Number(raw)
+  if (!Number.isFinite(sec) || sec <= 0) {
+    console.error(`✗ SOURCE_DATE_EPOCH 不是合法的 Unix 秒：${raw}`)
+    process.exit(1)
+  }
+  return new Date(sec * 1000).toISOString()
+}
+
 const buildInfo = {
   app: 'codex-gateway',
   version: VER,
-  builtAt: new Date().toISOString(),
+  builtAt: buildTimestamp(),
   git: { commit: gitCommit(), dirty: gitDirty() },
   node: nodeInfo,
   // 统计口径：不含 BUILD-INFO.json 自身（它的大小随 totals 变，写进去会自相矛盾）
@@ -306,24 +366,24 @@ function isPlaceholderUser(absPath) {
   const user = absPath.split(/[\\/]+/).filter(Boolean).pop() || ''
   return PLACEHOLDER_USERS.has(user.toLowerCase())
 }
-const TEXT_EXT = new Set(['.mjs', '.js', '.cjs', '.json', '.cmd', '.bat', '.sh', '.vbs', '.md', '.html', '.txt', '.yml', '.yaml'])
 const LEAK_HITS = []
 const EOL_HITS = []
 
-function walkStaging(dir) {
+function walkStaging(dir, { scanPaths = true } = {}) {
   for (const name of fs.readdirSync(dir)) {
     const p = path.join(dir, name)
     const st = fs.statSync(p)
     if (st.isDirectory()) {
-      // node_modules 是第三方依赖，其中的绝对路径属正常内容，跳过以免误报
-      if (name === 'node_modules') continue
-      walkStaging(p)
+      // node_modules 是第三方依赖：其中的绝对路径属正常内容，跳过路径扫描以免误报；
+      // 但**换行符仍要检查**——vendored 包自带的 CRLF（实测 json-schema-typed 有）
+      // 一样会进产物字节，而「同版本不同字节」正是要堵的东西。
+      walkStaging(p, { scanPaths: scanPaths && name !== 'node_modules' })
       continue
     }
     const rel = path.relative(STAGING, p).split(path.sep).join('/')
     const ext = path.extname(name).toLowerCase()
 
-    if (TEXT_EXT.has(ext)) {
+    if (scanPaths && TEXT_EXT.has(ext)) {
       const text = fs.readFileSync(p, 'utf-8')
       WIN_HOME_RE.lastIndex = 0
       const raw = text.match(WIN_HOME_RE)
@@ -333,14 +393,18 @@ function walkStaging(dir) {
       }
     }
 
-    // 3) 换行符：.sh 必须 LF（bash 遇 CRLF 直接报错），.cmd/.bat 必须 CRLF（cmd 对 LF 不稳）
-    if (ext === '.sh' || ext === '.cmd' || ext === '.bat') {
+    // 3) 换行符：Windows 脚本必须 CRLF（cmd 对 LF 不稳），其余文本一律 LF
+    //    （bash 遇 CRLF 的 .sh 直接报 `set: $'\r': invalid option`）。
+    //    复制阶段已规范化，这里是**第二层断言**：确认规范化真的生效了。
+    //    没有换行的单行文件（如极简 .cmd）不参与判断，否则只会制造噪音。
+    if (TEXT_EXT.has(ext)) {
       const buf = fs.readFileSync(p)
-      const hasCR = buf.includes(0x0d)
       const hasLF = buf.includes(0x0a)
+      const hasCR = buf.includes(0x0d)
       if (hasLF) {
-        if (ext === '.sh' && hasCR) EOL_HITS.push(`${rel} 应为 LF，实际含 CRLF`)
-        if (ext !== '.sh' && !hasCR) EOL_HITS.push(`${rel} 应为 CRLF，实际为 LF`)
+        const wantCRLF = CRLF_REQUIRED.has(ext)
+        if (wantCRLF && !hasCR) EOL_HITS.push(`${rel} 应为 CRLF（Windows 脚本），实际为 LF`)
+        if (!wantCRLF && hasCR) EOL_HITS.push(`${rel} 应为 LF，实际含 CRLF`)
       }
     }
   }
@@ -359,6 +423,7 @@ if (problems.length) {
 const mb = (bytes / 1048576).toFixed(1)
 console.log(`✓ staging 就绪：release/staging/${NAME}`)
 console.log(`  文件 ${files} 个 / ${mb} MB（未压缩）`)
+if (eolFixed) console.log(`  换行符规范化：修正 ${eolFixed} 个文件（CRLF 工作区打出的包与 LF 工作区一致）`)
 if (nodeInfo) {
   console.log(`  运行时：${nodeInfo.version} · sha256 ${nodeInfo.sha256.slice(0, 16)}… · ${(nodeInfo.bytes / 1048576).toFixed(1)} MB`)
 } else {

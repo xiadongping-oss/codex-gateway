@@ -12,6 +12,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn, execSync } from 'node:child_process'
+import { isReady } from './lib/health.mjs'
 
 const ROOT = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
 const SB = path.join(ROOT, 'sandbox')
@@ -204,7 +205,7 @@ async function waitReady() {
       // 只要拿到 HTTP 响应就算起来了。**不能只认 200**：沙盒里没有账号，
       // v1.3.0 起 /health 明确返回 503 bridge_not_running（502 是更早的语义）。
       // 按 200 判定会让整个变异框架一个都跑不起来，还把「框架崩了」误报成「全部盲区」。
-      if ([200, 502, 503].includes(r.status)) return true
+      if (isReady(r.status)) return true
     } catch {}
     await sleep(250)
   }

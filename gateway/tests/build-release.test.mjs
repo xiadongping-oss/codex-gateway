@@ -58,6 +58,33 @@ function sha256(buf) {
   return createHash('sha256').update(buf).digest('hex')
 }
 
+// ---------- 整棵树的哈希（可复现性用） ----------
+// 按「相对路径 + 内容」排序后串联，所以不受目录遍历顺序与仓库绝对路径影响：
+// 两个不同临时目录里打出的相同产物，哈希必须相等。
+function treeHash(dir) {
+  const files = []
+  ;(function walk(d) {
+    for (const n of fs.readdirSync(d)) {
+      const p = path.join(d, n)
+      if (fs.statSync(p).isDirectory()) walk(p)
+      else files.push(p)
+    }
+  })(dir)
+  files.sort()
+  const h = createHash('sha256')
+  for (const f of files) {
+    h.update(path.relative(dir, f).split(path.sep).join('/'))
+    h.update('\0')
+    h.update(fs.readFileSync(f))
+    h.update('\0')
+  }
+  return h.digest('hex')
+}
+
+// 固定时间戳：不固定的话 BUILD-INFO.builtAt 每次都变，任何两次构建都无法比对。
+const EPOCH = '1700000000'
+const withEpoch = { ...process.env, SOURCE_DATE_EPOCH: EPOCH }
+
 // ---------- 造一个 zip（内容用 python 打包，条目为普通目录结构） ----------
 function makeZip(zipPath, files) {
   const stage = tmpdir('zip')
@@ -83,12 +110,19 @@ function makeZip(zipPath, files) {
 // ---------- 假仓库：满足 REQUIRED 清单，让脚本能跑过完整性校验 ----------
 // 少了任何一个文件，脚本都会停在「缺少关键文件」，被测的结构自检根本执行不到——
 // 那种用例看起来在测，其实什么都没测。
-function fakeRepo({ lockSha, extra = {} } = {}) {
+//
+// eol='crlf' 用于模拟 core.autocrlf=true 的机器：所有文本按 CRLF 落地。
+// 「同一源码在不同 git 配置下打出不同字节」正是这一轮要堵的东西，
+// 所以必须有一个专门用它来跑的用例。
+function fakeRepo({ lockSha, extra = {}, eol = 'lf' } = {}) {
   const root = tmpdir('repo')
   const w = (rel, data) => {
     const p = path.join(root, rel)
     fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, data)
+    const out = eol === 'crlf'
+      ? data.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n')
+      : data
+    fs.writeFileSync(p, out)
   }
   w('package.json', JSON.stringify({ name: 'codex-gateway', version: VER }))
   w('README.md', '# r\n')
@@ -317,13 +351,19 @@ test('结构自检：文档里的占位符用户名不应误报（否则自检�
   assert.match(r.out, /staging 就绪/)
 })
 
-test('结构自检：.sh 为 CRLF 要被拦住', () => {
+test('结构自检：源里 CRLF 的 .sh 会被规范化，产物必须是 LF', () => {
+  // 行为变更记录：早先的策略是「发现 CRLF 的 .sh 就拒绝打包」；现在改为
+  // 构建阶段直接规范化（否则 autocrlf=true 的机器根本打不出包）。
+  // 守护的不变量没变——**发布包里的 .sh 必须是 LF**，否则 bash 报
+  // `set: $'\r': invalid option`，入库即不可用。
   const { root, script } = fakeRepo({
     extra: { 'gateway/extra.sh': '#!/bin/sh\r\necho hi\r\n' }
   })
   const r = run(script, ['--no-runtime'], { cwd: root })
-  assert.equal(r.code, 1, r.out)
-  assert.match(r.out, /换行符不符/)
+  assert.equal(r.code, 0, r.out)
+  const buf = fs.readFileSync(path.join(root, 'release', 'staging', NAME, 'gateway/extra.sh'))
+  assert.ok(!buf.includes(0x0d), '.sh 进包前必须被转成 LF')
+  assert.equal(buf.toString(), '#!/bin/sh\necho hi\n')
 })
 
 // ======================= 运行时锁（构建阶段） =======================
@@ -348,4 +388,82 @@ test('构建：锁文件一致时通过，且 BUILD-INFO 不含绝对路径与�
   // v1.2.0 栽过的坑：构建指纹把打包者家目录带进了分发包
   assert.doesNotMatch(raw, /[A-Za-z]:[\\/]+Users[\\/]+[A-Za-z0-9._-]+/)
   assert.ok(!raw.includes(os.hostname()), 'BUILD-INFO 不应记录主机名')
+})
+
+// ======================= 换行符规范化（可复现构建） =======================
+// 为什么单独一组：只锁 node.exe 不足以谈可复现。core.autocrlf=true 的机器
+// checkout 出来是 CRLF、false 的是 LF，同一 commit 打出的 zip 字节就不同。
+// 本仓库实测确有混态（apikeys.mjs / assets.mjs / account-quota.mjs 曾是全 CRLF），
+// 所以构建阶段必须主动规范化，而不是依赖每台机器的 git 配置。
+const stagingOf = (root) => path.join(root, 'release', 'staging', NAME)
+
+test('换行符：CRLF 源文件被打成 LF（不靠 git 配置，靠构建脚本）', () => {
+  const { root, script } = fakeRepo({ extra: { 'gateway/crlf.mjs': 'const a = 1\r\nconst b = 2\r\n' } })
+  const r = run(script, ['--no-runtime'], { cwd: root })
+  assert.equal(r.code, 0, r.out)
+  assert.match(r.out, /换行符规范化：修正 \d+ 个文件/)
+
+  const buf = fs.readFileSync(path.join(stagingOf(root), 'gateway/crlf.mjs'))
+  assert.ok(!buf.includes(0x0d), 'CRLF 源文件应在产物中被规范化为 LF')
+  assert.equal(buf.toString(), 'const a = 1\nconst b = 2\n')
+})
+
+test('换行符：node_modules 里的 CRLF 同样要规范化', () => {
+  // 曾经的实现跳过整个 node_modules（为了避免绝对路径误报），
+  // 顺带连换行符也没查 —— vendored 包自带的 CRLF 就这样进了产物。
+  const { root, script } = fakeRepo({
+    extra: { 'gateway/node_modules/somepkg/index.js': 'module.exports = 1\r\n' }
+  })
+  const r = run(script, ['--no-runtime'], { cwd: root })
+  assert.equal(r.code, 0, r.out)
+  const buf = fs.readFileSync(path.join(stagingOf(root), 'gateway/node_modules/somepkg/index.js'))
+  assert.ok(!buf.includes(0x0d), 'node_modules 内的 CRLF 也必须被规范化')
+})
+
+test('换行符：Windows 脚本若为 LF，要补成 CRLF', () => {
+  const { root, script } = fakeRepo({ extra: { 'gateway/extra.cmd': '@echo off\nrem x\n' } })
+  const r = run(script, ['--no-runtime'], { cwd: root })
+  assert.equal(r.code, 0, r.out)
+  const buf = fs.readFileSync(path.join(stagingOf(root), 'gateway/extra.cmd'))
+  assert.equal(buf.toString(), '@echo off\r\nrem x\r\n')
+})
+
+test('换行符：被二次转换的损坏文件（\\r\\r\\n）必须中止，不得静默"修复"', () => {
+  // 把孤立 CR 当换行会把 \r\r\n 变成 \n\n，凭空多一个空行、静默改变内容。
+  // 那类文件通常是被某个工具二次转换过，属于需要人看的情况，打包器不该替它猜。
+  const { root, script } = fakeRepo({ extra: { 'gateway/broken.mjs': 'const a = 1\r\r\nconst b = 2\r\n' } })
+  const r = run(script, ['--no-runtime'], { cwd: root })
+  assert.equal(r.code, 1, r.out)
+  assert.match(r.out, /换行符不符/)
+})
+
+// ======================= 可复现构建 =======================
+test('可复现：同一源码连续两次构建，产物逐字节一致', () => {
+  const { root, script } = fakeRepo()
+  assert.equal(run(script, ['--no-runtime'], { cwd: root, env: withEpoch }).code, 0)
+  const first = treeHash(stagingOf(root))
+  assert.equal(run(script, ['--no-runtime'], { cwd: root, env: withEpoch }).code, 0)
+  assert.equal(treeHash(stagingOf(root)), first, '两次构建产物必须完全一致')
+})
+
+test('可复现：LF 工作区与 CRLF 工作区打出的包必须一致（本轮核心）', () => {
+  // 这一条就是「同一版本号、不同二进制」的正面回击：
+  // 两台机器只有 git 换行符配置不同，产物哈希必须相同。
+  const lf = fakeRepo({ eol: 'lf' })
+  const crlf = fakeRepo({ eol: 'crlf' })
+  assert.equal(run(lf.script, ['--no-runtime'], { cwd: lf.root, env: withEpoch }).code, 0)
+  assert.equal(run(crlf.script, ['--no-runtime'], { cwd: crlf.root, env: withEpoch }).code, 0)
+
+  assert.equal(
+    treeHash(stagingOf(crlf.root)),
+    treeHash(stagingOf(lf.root)),
+    'CRLF 工作区与 LF 工作区打出的包不一致 —— 可复现构建失效'
+  )
+})
+
+test('可复现：SOURCE_DATE_EPOCH 非法时明确报错，而不是悄悄用当前时间', () => {
+  const { root, script } = fakeRepo()
+  const r = run(script, ['--no-runtime'], { cwd: root, env: { ...process.env, SOURCE_DATE_EPOCH: 'not-a-number' } })
+  assert.equal(r.code, 1, r.out)
+  assert.match(r.out, /SOURCE_DATE_EPOCH/)
 })

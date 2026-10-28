@@ -226,6 +226,16 @@ sequenceDiagram
 - **frontend/**：Vue 3 + Vite 控制台，构建为单文件 `dist/index.html` 由启动器直接托管
 - **无数据库 / 无 Redis**：全部状态为本地文件，删除目录即彻底重置
 
+### 构建可复现
+
+同一个版本号必须对应同一份二进制，否则「这个包到底是哪套源码 + 哪个运行时」无从核对。发布包在这一点上做了三件事：
+
+- **锁定运行时**：`node-runtime.lock.json` 按 sha256 固定内置的 `node.exe`，与锁不一致直接构建失败（不是警告）；
+- **锁定字节**：构建时主动规范化换行符（`.cmd/.bat/.vbs` → CRLF，其余文本 → LF），所以 `core.autocrlf` 开与不开的机器打出来的包**逐字节相同**；
+- **留下指纹**：包内 `BUILD-INFO.json` 记录版本、git commit、运行时哈希（刻意不含绝对路径与主机名）。
+
+验证方式：`node build-release.mjs --verify-build` 做「包内声明 ↔ 实物 ↔ 锁文件」三方核对。构建细节见 [`docs/RELEASE.md`](docs/RELEASE.md)。
+
 ## 合规与使用须知（重要）
 
 > **⚠️ 局域网模式（`--lan`）走的是明文 HTTP。**

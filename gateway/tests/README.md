@@ -22,9 +22,9 @@ bash gateway/tests/run.sh --live
 |---|---|---|
 | `npm test` | `run.sh` + `audit.mjs` | 63 例功能与安全回归，覆盖 API Key 生命周期、`/v1` 鉴权、远程 MCP、素材归属、文件伺服、控制面隔离、管理鉴权、多账号实例池架构 |
 | `npm run test:unit` | `bridge-pool.test.mjs` | bridge 实例池语义单测（启动互斥 / 一账号一端口 / 空闲回收 / 池满淘汰 / 崩溃自愈） |
-| `npm run test:build` | `build-release.test.mjs` | **打包闸门回归**：`--verify-zip` / `--verify-build` / 运行时锁 / 复制黑名单。18 例，在临时「假仓库」里跑同一份 `build-release.mjs`，不碰真产物 |
+| `npm run test:build` | `build-release.test.mjs` | **打包闸门回归**：`--verify-zip` / `--verify-build` / 运行时锁 / 复制黑名单 / **换行符与可复现性**。25 例，在临时「假仓库」里跑同一份 `build-release.mjs`，不碰真产物 |
 | `npm run test:mutate` | `mutate.mjs` | **变异测试**：往沙盒代码注入 19 个真实缺陷，验证回归能否逐个抓住。存活 = 测试盲区 |
-| `npm run test:mutate:build` | `mutate-build.mjs` | 打包闸门的变异测试：注入 7 种「闸门失效」，验证 `test:build` 能把它们逐个抓住 |
+| `npm run test:mutate:build` | `mutate-build.mjs` | 打包闸门的变异测试：注入 12 种「闸门失效」，验证 `test:build` 能把它们逐个抓住 |
 | `npm run test:attack` | `pentest.mjs` | 攻击者视角攻防，含原始 socket 绕 URL 规范化、跨站伪造、路径穿越、凭据变形 |
 | `npm run test:bench` | `bench-concurrency.mjs` | 并发吞吐量化对比（修复前 vs 修复后） |
 
@@ -47,6 +47,41 @@ bash gateway/tests/run.sh --live
 `build-release.test.mjs` 用**临时假仓库**跑同一份构建脚本：脚本以自身位置推导 `ROOT`，所以换掉 `package.json`、锁文件、目录树即可精确构造任意缺陷，不必真造 83MB 的 `node.exe`，也不写 `release/`。造 zip 依赖 `python`（与 `--verify-zip` 本身的前提一致）。
 
 一个容易写成假测试的地方：`gateway/data`、`api-keys.json` 等在**复制阶段**就被黑名单滤掉，根本进不了 staging，所以「结构自检拦住它们」这种用例永远触发不到。真正该断言的不变量是「**没有**被复制进去」；staging 上的 `DIR_DENY` 是第二层防线（防的正是有人把复制黑名单改坏），由变异体 MB5 验证。
+
+## 可复现构建：锁运行时只是第一步
+
+`node-runtime.lock.json` 只保证「内置的 node.exe 是同一个」，管不住**源码字节**。`core.autocrlf=true` 的机器 checkout 出来是 CRLF，`false` 的是 LF，同一 commit 打出的 zip 就不同——本仓库实测确实存在这种混态（`apikeys.mjs` / `assets.mjs` / `account-quota.mjs` 曾是全 CRLF，`launcher.mjs` 是 LF）。
+
+所以构建阶段主动规范化，不依赖打包机器的 git 配置：
+
+| 文件类型 | 规则 |
+|---|---|
+| `.cmd` / `.bat` / `.vbs` | 强制 CRLF（cmd 对纯 LF 不稳） |
+| 其余文本（含 `node_modules` 内） | 强制 LF |
+
+配合 `.gitattributes` 把仓库内形态也固定为 LF，两道防线缺一不可：git 管 checkout，构建脚本管产物。
+
+验证方式（测试里已固化）：
+
+```bash
+# 造两个只有换行符不同的假仓库，产物哈希必须相等
+npm run test:build
+```
+
+`SOURCE_DATE_EPOCH` 可固定 `BUILD-INFO.json` 里的 `builtAt`，没有它任何两次构建都无法比对（时间戳每次不同）。
+
+**一个刻意不做的事**：遇到孤立 `\r`（例如被二次转换过的 `\r\r\n`）时，构建**失败**而不是"修好它"。把孤立 CR 当换行会凭空多出空行、静默改变文件内容；这类文件通常是被某个工具改坏了，应该让人看见。
+
+## 改 `/health` 语义时必查清单
+
+这个坑已经踩了四次，每次表现都不一样：沙盒起不来、19 个变异体全报「执行异常」并伪装成「17 个测试盲区」、攻防报「超大请求打挂了服务」……根因却都是同一行「只认 200/502」。
+
+JS 侧的判定统一在 **`lib/health.mjs`**（`isReady` 用于启动探测，`isAlive` 用于存活断言），改口径只改那里。但仍有两处必须同步：
+
+| 位置 | 为什么不能共享 |
+|---|---|
+| `run.sh` 的就绪轮询 | bash，无法 import 常量 |
+| `build-release.test.mjs` | 断言的是产物内容，与状态码无关，一般不受影响——但新增用例时别硬编码 |
 
 ## 写用例时的两条硬规矩
 
