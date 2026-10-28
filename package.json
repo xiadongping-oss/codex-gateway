@@ -1,6 +1,6 @@
 {
   "name": "codex-gateway",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "main": "gateway/launcher.mjs",
@@ -12,6 +12,11 @@
     "admin": "node gateway/launcher.mjs admin",
     "build": "npm --prefix frontend run build",
     "setup": "npm --prefix gateway install",
-    "login": "npx @openai/codex login"
+    "login": "npx @openai/codex login",
+    "test": "bash gateway/tests/run.sh",
+    "test:unit": "node --test --test-timeout=15000 gateway/tests/bridge-scheduler.test.mjs",
+    "test:attack": "node gateway/tests/pentest.mjs",
+    "test:mutate": "node gateway/tests/mutate.mjs",
+    "test:bench": "node gateway/tests/bench-concurrency.mjs"
   }
 }

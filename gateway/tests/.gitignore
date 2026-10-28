@@ -1,0 +1,7 @@
+# 运行时沙盒：独立的凭据/数据/依赖副本，每次运行重建，不入库
+sandbox/
+sandbox.log
+*.log
+
+# 审计报告含漏洞细节，仓库为 public，禁止入库
+audit-report.html

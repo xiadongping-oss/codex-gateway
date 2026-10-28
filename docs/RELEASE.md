@@ -21,15 +21,40 @@ node build-release.mjs
 #   机密自检：accounts / api-keys / data / logs / 设备身份 一旦混入立即中止
 #   选项 --no-runtime：不内置 node.exe（用户需自装 Node，不推荐）
 
-# 2. 压缩（任选其一）
-python -c "import zipfile,os; z=zipfile.ZipFile('release/codex-gateway-v1.0.0-win64.zip','w',zipfile.ZIP_DEFLATED,6); [z.write(os.path.join(r,n),os.path.relpath(os.path.join(r,n),'release/staging')) for r,_,ns in os.walk('release/staging') for n in ns]; z.close()"
-#   或 PowerShell：
-#   Compress-Archive -Path release/staging/codex-gateway-v1.0.0/* -DestinationPath release/codex-gateway-v1.0.0-win64.zip
+# 2. 压缩 —— 必须以 staging/<当前版本> 为根，不能以 staging/ 为根
+#    ⚠️ 踩过的坑：若用 os.relpath(p, 'release/staging') 遍历整个 staging/，
+#    历史版本的 staging 残留会一起打进 zip（v1.1.0 因此变成 73MB、解压出两个目录）。
+#    用户解压后看到两个版本目录，QUICK-START 里的相对路径会全部失效。
+VER=$(node -p "require('./package.json').version")
+VER=$VER python -c "
+import zipfile, os
+v = os.environ['VER']; top = 'codex-gateway-v' + v
+base = os.path.join('release', 'staging', top)
+assert os.path.isdir(base), 'staging 不存在，先跑 node build-release.mjs'
+z = zipfile.ZipFile(f'release/{top}-win64.zip', 'w', zipfile.ZIP_DEFLATED, 6)
+n = 0
+for r, _, ns in os.walk(base):
+    for f in ns:
+        p = os.path.join(r, f)
+        z.write(p, os.path.join(top, os.path.relpath(p, base)))
+        n += 1
+z.close()
+print(f'{n} files → release/{top}-win64.zip')
+"
 
 # 3. 端到端验证（发布前必做）
-#   解压 zip 到干净目录，独立端口试跑：
-#     cd <解压目录>/codex-gateway-v1.0.0/gateway
-#     LAUNCHER_PORT=4174 node launcher.mjs
+#   3.1 结构自检：顶层必须恰好一个目录，且无机密（一行验证）
+python -c "
+import zipfile, collections, sys
+z = zipfile.ZipFile('release/codex-gateway-v${VER}-win64.zip'); names = z.namelist()
+tops = set(n.split('/')[0] for n in names)
+bad = [n for n in names if any(k in n for k in ('admin-token.json','api-keys.json','accounts.json','.gw-config.json','.codex-client-identity'))]
+print('顶层目录:', tops, '| 机密命中:', bad or '无')
+sys.exit(0 if len(tops) == 1 and not bad else 1)
+"
+#   3.2 解压 zip 到干净目录，独立端口试跑：
+#     cd <解压目录>/codex-gateway-v${VER}/gateway
+#     LAUNCHER_PORT=4174 node launcher.mjs --open
 #   验证清单：
 #     [ ] GET  /            返回控制台 UI（~250KB 单文件）
 #     [ ] GET  /health      200

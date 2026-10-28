@@ -15,10 +15,13 @@ const NAME = `codex-gateway-v${VER}`
 const STAGING = path.join(ROOT, 'release', 'staging', NAME)
 const NO_RUNTIME = process.argv.includes('--no-runtime')
 
-// node.exe 候选：打包机上的 managed node（release 必须内置运行时）
+// node.exe 候选：打包机上的 managed node（release 必须内置运行时）。
+// 优先用「当前正在运行本脚本的 node」，避免硬编码某台机器的路径。
 const NODE_CANDIDATES = [
-  'C:/Users/Designer/.workbuddy/binaries/node/versions/22.22.2-6/node.exe',
-  'C:/Program Files/nodejs/node.exe'
+  process.execPath,
+  'C:/Program Files/nodejs/node.exe',
+  '/usr/local/bin/node',
+  '/usr/bin/node'
 ]
 
 let files = 0
@@ -38,7 +41,9 @@ const GATEWAY_DENY = new Set([
   'data', 'logs', 'launcher.log',
   // 管理令牌等同于控制台管理员口令：一旦打进发布包，所有下载者共享同一枚令牌。
   'admin-token.json',
-  '.codex-client-identity', '.gw-config.json', '.gw-config.json.tmp'
+  '.codex-client-identity', '.gw-config.json', '.gw-config.json.tmp',
+  // 安全审计套件：终端用户用不上，且含攻击 payload 与沙盒逻辑，不分发
+  'tests'
 ])
 
 function copyTree(srcDir, destDir) {
