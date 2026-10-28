@@ -168,8 +168,8 @@ Skill 的作用：教任意模型在生图任务时正确调用 MCP 工具（或
 
 | # | 命令/操作 | 期望结果 |
 |---|---|---|
-| 1 | 浏览器打开 `http://<网关IP>:4173/health` | `{"ok":true,...}` |
-| 2 | `curl -H "Authorization: Bearer cgw-你的Key" http://<网关IP>:4173/v1/models` | 返回模型列表（含 `gpt-6.1-sol`） |
+| 1 | 用你的 Key 请求 `http://<网关IP>:4173/v1/models` | 返回模型列表（含 `gpt-6.1-sol`）—— 网络、Key、网关三项一次验完 |
+| 2 | 浏览器打开 `http://<网关IP>:4173/health` | `{"ok":true,...}` 表示宿主机账号通道正常；`503 bridge_not_running` 表示宿主机还没登录账号（找宿主机处理），此时上一条若已通过，说明你的接入没问题 |
 | 3 | WorkBuddy 新会话查看 MCP 工具 | 出现 `generate_image` / `list_generated_images` / `delete_generated_image` |
 | 4 | 让 agent「画一张测试图」 | 返回「链接」+「网页素材站」两个地址；链接打开能看到图 |
 | 5 | 浏览器打开返回的素材站链接，输入你的 Key | 能看到刚才那张图（且只有你的图） |

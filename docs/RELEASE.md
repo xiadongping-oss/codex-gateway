@@ -76,9 +76,11 @@ node build-release.mjs --verify-build
 #     LAUNCHER_PORT=4174 node launcher.mjs --open
 #   验证清单：
 #     [ ] GET  /            返回控制台 UI（~250KB 单文件）
-#     [ ] GET  /health      200
+#     [ ] GET  /health      503 {"error":"bridge_not_running"} —— 干净解压包里没有账号，
+#                           这是正确状态（v1.3.0 起）；登录账号后才变 200
 #     [ ] GET  /v1/models   本机模式开箱可读（LAN/strict 模式应 401）
-#     [ ] GET  /__gw/status lan.enabled=false（默认仅本机）
+#     [ ] GET  /__gw/status 401（无管理令牌时）；带令牌后 lan.enabled=false
+#     [ ] GET  /**未带令牌** 控制面一律 401，不能只靠前端隐藏
 #     [ ] GET  /__gw/models 目录版本正确、含主力模型
 #     [ ] 机密扫描：解压树中无 accounts.json / api-keys.json / .codex-client-identity
 ```

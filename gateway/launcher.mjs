@@ -85,6 +85,21 @@ import { getAccountQuota, saveAccountQuota } from './account-quota.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
+// 应用版本：以 package.json 为准，**不要在这里硬编码**。
+// 此前 MCP 的 serverInfo 写死 '1.2.0-http'，发版时没人记得同步，客户端日志里
+// 报的版本和实际包对不上，排障时先误导自己一次。改为读包内声明后，改
+// package.json 一处即全站一致；读不到时如实报 unknown，不假装是某个版本。
+function resolveAppVersion() {
+  for (const p of [path.join(__dirname, '..', 'package.json'), path.join(__dirname, 'package.json')]) {
+    try {
+      const v = JSON.parse(fs.readFileSync(p, 'utf8')).version
+      if (v) return v
+    } catch { /* 找不到就用下一个候选 */ }
+  }
+  return 'unknown'
+}
+const APP_VERSION = resolveAppVersion()
+
 // ---- 控制面管理鉴权（原 F-01） ----
 // 令牌落在 __dirname（与 api-keys.json 同级，不进 git）。想指定自己的令牌用
 // 环境变量 CGW_ADMIN_TOKEN；想彻底关掉这项保护用 CGW_ADMIN_AUTH=0（不建议）。
@@ -1520,7 +1535,7 @@ async function handleMcpEndpoint(req, res) {
       replies.push({ jsonrpc: '2.0', id, result: {
         protocolVersion: (params && params.protocolVersion) || '2025-03-26',
         capabilities: { tools: {} },
-        serverInfo: { name: 'codex-gateway-image', version: '1.2.0-http' }
+        serverInfo: { name: 'codex-gateway-image', version: APP_VERSION + '-http' }
       } })
     } else if (method === 'tools/list') {
       replies.push({ jsonrpc: '2.0', id, result: { tools: MCP_HTTP_TOOLS } })

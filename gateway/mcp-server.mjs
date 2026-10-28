@@ -16,6 +16,20 @@ import readline from 'node:readline'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { fileURLToPath } from 'node:url'
+
+// 版本号以 package.json 为准，不在这里硬编码——历史上这里写死 1.1.0，落后了三个
+// 版本，客户端 initialize 拿到的版本号是错的。读不到时如实报 unknown。
+const SERVER_VERSION = (() => {
+  const dir = path.dirname(fileURLToPath(import.meta.url))
+  for (const p of [path.join(dir, '..', 'package.json'), path.join(dir, 'package.json')]) {
+    try {
+      const v = JSON.parse(fs.readFileSync(p, 'utf8')).version
+      if (v) return v
+    } catch { /* 试下一个候选 */ }
+  }
+  return 'unknown'
+})()
 
 const CGW_BASE = (process.env.CGW_BASE || 'http://127.0.0.1:4173').replace(/\/+$/, '')
 const CGW_API_KEY = process.env.CGW_API_KEY || ''
@@ -130,7 +144,7 @@ async function dispatch(id, method, params, res) {
       id, result: {
         protocolVersion: params?.protocolVersion || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'codex-gateway-image', version: '1.1.0' }
+        serverInfo: { name: 'codex-gateway-image', version: SERVER_VERSION }
       }
     })
   }

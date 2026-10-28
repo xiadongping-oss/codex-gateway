@@ -10,14 +10,17 @@
 ```text
 请帮我在本机部署 codex-gateway 局域网网关（服务启动器绿色版）。
 
-包位置：<zip 文件完整路径，例如 C:\Users\me\Downloads\codex-gateway-v1.2.0-win64.zip>
+包位置：<zip 文件完整路径，例如 C:\Users\me\Downloads\codex-gateway-v1.3.1-win64.zip>
 安装目录：<例如 C:\codex-gateway>
 
 请按以下步骤执行，每步失败就停下并告诉我原因：
 1. 解压 zip 到安装目录（保留目录结构）。
 2. 用包内自带的 node 运行：<安装目录>\gateway\service\node\node.exe <安装目录>\gateway\launcher.mjs --lan
    （后台运行；也可直接双击 <安装目录>\gateway\service\start-gateway.vbs 启动并注册开机自启）
-3. 等待 3 秒后访问 http://127.0.0.1:4173/health 确认返回 200 且 JSON 正常。
+3. 等待 3 秒后访问 http://127.0.0.1:4173/health 确认服务已起来。
+   **判定标准：只要返回任何一段 JSON 就算就绪**——此时还没有登录账号，返回
+   503 {"ok":false,"error":"bridge_not_running"} 是**正常状态**，不是故障。
+   只有连接被拒绝 / 返回 403 / 返回 HTML 才算失败，那时才停下报我。
 4. 打开控制台 http://127.0.0.1:4173/ ，在「账号管理」完成 ChatGPT 账号 OAuth 登录
    （浏览器打开授权页 → 授权 → 回到控制台确认登录态有效）。
 5. 在控制台「API Key」页创建一个 Key（名字用我的称呼），把 cgw- 开头的 Key 告诉我。
@@ -57,8 +60,11 @@ setup-client.mjs，然后执行：
    http://<宿主机IP>:<端口>/v1/chat/completions，apiKey 用我的 Key。
 
 配置完成后逐项验证并给我结果：
-  a. curl -s http://<宿主机IP>:<端口>/health 返回 200
-  b. 用我的 Key 调 http://<宿主机IP>:<端口>/v1/models 能列出模型（默认主力 gpt-6.1-sol）
+  a. 用我的 Key 调 http://<宿主机IP>:<端口>/v1/models 能列出模型（默认主力 gpt-6.1-sol）
+     —— 这是**权威判据**：它同时证明网络可达、我的 Key 有效、网关在工作。
+  b. 另外看一眼 http://<宿主机IP>:<端口>/health（不需要 Key）：返回 200 表示宿主机账号
+     通道正常；返回 503 {"error":"bridge_not_running"} 表示宿主机还没登录账号或通道没起来，
+     这时请提醒我去找宿主机的人，**不要判定为我的接入失败**（a 已通即接线正确）。
   c. 用我的 Key POST http://<宿主机IP>:<端口>/mcp 执行 tools/list，应列出
      generate_image / list_generated_images / delete_generated_image 三个工具
   d. 告诉我网页素材站地址 http://<宿主机IP>:<端口>/gallery ，
