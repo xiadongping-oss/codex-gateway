@@ -7,6 +7,22 @@ set -u
 
 . "$(cd "$(dirname "$0")" && pwd)/_common.sh"
 
+# 端口来源：--port N > LAUNCHER_PORT > logs/port.txt > 4173
+# 与 Windows 的 start/stop-gateway.vbs 保持同一套优先级顺序，免得两端行为不一致。
+PORT_ARG="${LAUNCHER_PORT:-}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --port)   PORT_ARG="${2:-}"; shift 2 ;;
+    --port=*) PORT_ARG="${1#*=}"; shift ;;
+    *) shift ;;
+  esac
+done
+PORT="${PORT_ARG:-}"
+if [ -z "$PORT" ] && [ -f "$CGW_LOG_DIR/port.txt" ]; then
+  PORT="$(tr -dc '0-9' < "$CGW_LOG_DIR/port.txt" 2>/dev/null || true)"
+fi
+[ -n "$PORT" ] || PORT=4173
+
 STOPPED=0
 
 # ---- 1) 先停掉守护（如果注册过） ----
@@ -61,7 +77,6 @@ if [ -f "$CGW_PID_FILE" ]; then
 fi
 
 # ---- 3) 兜底：占用启动器端口、且命令行确实是 launcher.mjs 的进程 ----
-PORT="${LAUNCHER_PORT:-4173}"
 if command -v lsof >/dev/null 2>&1; then
   for pid in $(lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null || true); do
     if kill_if_ours "$pid"; then
@@ -73,6 +88,10 @@ fi
 
 if [ "$STOPPED" -eq 1 ]; then
   echo "✓ 网关已停止"
+elif command -v lsof >/dev/null 2>&1 && [ -n "$(lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null || true)" ]; then
+  # 端口有人在听、但不是我们的 launcher：这句要单独说，否则用户会以为"网关没开"而反复重启
+  echo "· 端口 $PORT 被其它程序占用（不是本网关），未做任何操作。"
+  echo "  查看占用者：lsof -nP -iTCP:$PORT -sTCP:LISTEN"
 else
   echo "· 没有发现运行中的网关（端口 $PORT 无监听，也没有 pid 文件）"
 fi

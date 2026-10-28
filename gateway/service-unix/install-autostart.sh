@@ -7,6 +7,24 @@ set -u
 
 . "$(cd "$(dirname "$0")" && pwd)/_common.sh"
 
+# 端口：--port N > 4173。非默认端口会写进 logs/port.txt（stop-gateway.sh 也读它），
+# 并固化进 launchd/systemd 的启动参数——否则自启会用 4173 再起一个「另一个网关」。
+PORT=4173
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --port)   PORT="${2:-}"; shift 2 || true ;;   # 显式给了 --port 却没值 → 走下面的校验报错，不静默回落默认
+    --port=*) PORT="${1#*=}"; shift ;;
+    *) shift ;;
+  esac
+done
+case "$PORT" in
+  ''|*[!0-9]*) echo "✗ --port 必须是数字（收到 \"$PORT\"）" >&2; exit 1 ;;
+esac
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+  echo "✗ --port 超出范围 1-65535（收到 $PORT）" >&2
+  exit 1
+fi
+
 NODE_BIN="$(cgw_find_node)"
 if [ -z "$NODE_BIN" ]; then
   echo "[codex-gateway] 未找到 Node.js：自启会装好但一启动就失败。" >&2
@@ -18,8 +36,28 @@ cgw_check_node_version "$NODE_BIN"
 chmod +x "$CGW_SERVICE_DIR"/*.sh 2>/dev/null || true
 mkdir -p "$CGW_LOG_DIR" || exit 1
 
+# 端口状态文件与 Windows 侧同名同格式（logs/port.txt 一行数字）：
+#   stop-gateway.sh 靠它找端口，用户也能一眼看到"当前自启用的是哪个端口"。
+if [ "$PORT" = "4173" ]; then
+  rm -f "$CGW_LOG_DIR/port.txt"
+else
+  printf '%s\n' "$PORT" > "$CGW_LOG_DIR/port.txt" || exit 1
+fi
+
 RUNNER="$CGW_SERVICE_DIR/run-gateway.sh"
 NODE_DIR="$(dirname "${NODE_BIN:-/usr/bin/node}")"
+
+# 两种格式各准备一份：plist 是数组（每项一对 <string>），systemd 是单行参数
+if [ "$PORT" = "4173" ]; then
+  PORT_XML=""
+  PORT_ARG=""
+else
+  PORT_XML='
+    <string>--port</string>'
+  PORT_XML="$PORT_XML
+    <string>$PORT</string>"
+  PORT_ARG=" --port $PORT"
+fi
 
 OS="$(uname -s)"
 case "$OS" in
@@ -36,7 +74,7 @@ case "$OS" in
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>$RUNNER</string>
+    <string>$RUNNER</string>$PORT_XML
   </array>
   <key>WorkingDirectory</key>
   <string>$CGW_GATEWAY_DIR</string>
@@ -98,7 +136,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$CGW_GATEWAY_DIR
-ExecStart=/bin/bash "$RUNNER"
+ExecStart=/bin/bash "$RUNNER"$PORT_ARG
 Restart=always
 RestartSec=5
 

@@ -22,6 +22,7 @@
    - 控制台有管理令牌保护。正常情况下自动打开的链接已完成登录，14 天内不用再登
    - 如果看到「管理控制台 · 管理令牌」页面：在 `gateway` 目录运行 `node launcher.mjs admin-token`，把输出的 `cgwadm-...` 粘进去即可
    - **只用 API 的用户不需要进控制台**，拿到 `cgw-` Key 后直接用 `/v1` 即可
+   - **提示「端口 4173 已被占用」**：这说明有程序占着这个端口（最常见是前端预览的 vite preview，或者网关其实已经在跑）。前者不用担心，双击 `start-gateway.vbs` 会直接弹出准确原因；要换端口就 `gateway\service\run-gateway.cmd 4174`，想固定下来则 `cscript gateway\service\install-autostart.vbs 4174`（换端口后已发出去的配置需要重新下发，详见 README「端口被占用怎么办」）
 
 ## 首次配置（网页里点一点）
 

@@ -61,6 +61,25 @@ const MUTANTS = [
   {
     id: 'MU7', file: 'start-gateway.sh', crlf: true,
     desc: '脚本被存成 CRLF（bash 直接报 invalid option，跑不起来）'
+  },
+  // ---- 端口自定义：三种写法都会让「自启跑在 4173、手动跑在 4174」这种诡异状态出现 ----
+  {
+    id: 'MU8', file: 'install-autostart.sh',
+    desc: '--port 只在 port.txt 里生效，没写进 ExecStart（自启悄悄用回默认端口）',
+    from: '  PORT_ARG=" --port $PORT"',
+    to: '  PORT_ARG=""'
+  },
+  {
+    id: 'MU9', file: 'install-autostart.sh',
+    desc: '回到默认端口时不删 port.txt（stop 脚本照旧去查旧端口，永远停不掉）',
+    from: '  rm -f "$CGW_LOG_DIR/port.txt"',
+    to: '  :'
+  },
+  {
+    id: 'MU10', file: 'stop-gateway.sh',
+    desc: 'stop 脚本忽略 --port（用户指明端口也没用，还是去查默认那个）',
+    from: '    --port)   PORT_ARG="${2:-}"; shift 2 ;;',
+    to: '    --port)   shift 2 ;;'
   }
 ]
 
@@ -92,7 +111,9 @@ function makeDir(mutant) {
 
 function runTests(dir) {
   try {
-    execFileSync(process.execPath, ['--test', '--test-timeout=30000', TEST_FILE], {
+    // 120s 而不是 30s：node 的 --test-timeout 对「整个测试文件」也计时，
+    // 22 个用例累计 50s+，30s 会让基线整文件超时（表现为 1 例 0 通过，看着像断言失败）
+    execFileSync(process.execPath, ['--test', '--test-timeout=120000', TEST_FILE], {
       cwd: REPO,
       env: { ...process.env, CGW_SERVICE_SRC: dir },
       stdio: 'ignore',

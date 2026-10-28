@@ -35,6 +35,10 @@ npm start       # = node launcher.mjs  → 自动拉起 bridge + 托管前端
 `BRIDGE_NODE`（运行 bridge 的 node，默认即启动器自身 node）、
 `BRIDGE_ARGS`（默认 `serve`）、`DISABLE_AUTOSTART=1`。
 
+命令行参数优先于环境变量：`--port N` 覆盖 `LAUNCHER_PORT`，`--bridge-port N` 覆盖 `BRIDGE_PORT`。
+端口被占用时启动器以**退出码 2** 结束并打出中文诊断（`EACCES` 为 3），不会只丢一句 `EADDRINUSE`。
+`4173` 是 vite preview 的默认端口，撞上了就 `node launcher.mjs --port 4174`。
+
 ### 启动器控制接口（前端经此自动托管后端）
 
 | 方法 | 路径 | 说明 |

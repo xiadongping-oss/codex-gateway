@@ -301,3 +301,73 @@ test('运行器：Node 版本过低时给出警告但不阻断启动', () => {
   assert.match(r.out, /低于建议的 20/)
   assert.equal(fs.readFileSync(path.join(sb.gw, 'logs', 'service.log'), 'utf8').includes('RUN launcher.mjs'), true)
 })
+
+// ---------- 端口自定义（--port）----------
+// 4173 是 vite preview 的默认端口，开发机上撞端口并不罕见；撞上之后如果启动脚本
+// 只会说「8 秒未就绪」，用户根本不知道下一步做什么。这组用例守住三件事：
+//   1) --port 真的写进了守护配置（否则自启会另起一个默认端口的网关）
+//   2) 回到默认端口时清掉状态文件（不留「看起来设过」的残留）
+//   3) stop 脚本查的是同一个端口，且「端口被别的程序占」与「网关没开」分开说
+
+test('Linux 安装：--port 4174 写进 ExecStart 与 logs/port.txt', () => {
+  const sb = makeSandbox()
+  const r = sb.run('install-autostart.sh', ['--port', '4174'], { FAKE_UNAME: 'Linux' })
+  assert.equal(r.code, 0, r.out)
+  const unit = fs.readFileSync(sb.path.unit, 'utf8')
+  assert.match(unit, /ExecStart=\/bin\/bash ".*run-gateway\.sh" --port 4174/, '自启必须带上同一个端口')
+  assert.equal(fs.readFileSync(path.join(sb.gw, 'logs', 'port.txt'), 'utf8').trim(), '4174')
+})
+
+test('macOS 安装：--port 4174 写进 plist 的 ProgramArguments', () => {
+  const sb = makeSandbox()
+  const r = sb.run('install-autostart.sh', ['--port', '4174'], { FAKE_UNAME: 'Darwin' })
+  assert.equal(r.code, 0, r.out)
+  const plist = fs.readFileSync(sb.path.plist, 'utf8')
+  assert.match(plist, /<string>--port<\/string>\s*<string>4174<\/string>/, 'plist 是数组，端口要作为独立两项')
+})
+
+test('安装：默认端口不写 port.txt，并清掉旧残留', () => {
+  const sb = makeSandbox()
+  const pf = path.join(sb.gw, 'logs', 'port.txt')
+  fs.writeFileSync(pf, '4174\n')
+  const r = sb.run('install-autostart.sh', [], { FAKE_UNAME: 'Linux' })
+  assert.equal(r.code, 0, r.out)
+  assert.equal(fs.existsSync(pf), false, '回到默认端口必须删掉状态文件')
+  assert.doesNotMatch(fs.readFileSync(sb.path.unit, 'utf8'), /--port/)
+})
+
+test('安装：--port 非数字 / 越界一律拒绝，且不写任何文件', () => {
+  for (const bad of ['abc', '0', '65536', '-1', '41.74', '']) {
+    const sb = makeSandbox()
+    const r = sb.run('install-autostart.sh', ['--port', bad], { FAKE_UNAME: 'Linux' })
+    assert.notEqual(r.code, 0, `--port "${bad}" 应被拒绝`)
+    assert.equal(fs.existsSync(sb.path.unit), false, `--port "${bad}" 不该写出单元文件`)
+  }
+})
+
+test('停止：--port 覆盖默认端口（lsof 查的是新端口）', () => {
+  const sb = makeSandbox()
+  const r = sb.run('stop-gateway.sh', ['--port', '4174'], { FAKE_UNAME: 'Linux', FAKE_LSOF_PIDS: '' })
+  assert.equal(r.code, 0, r.out)
+  assert.match(sb.calls(), /lsof -ti tcp:4174 -sTCP:LISTEN/)
+})
+
+test('停止：没给 --port 时读 logs/port.txt', () => {
+  const sb = makeSandbox()
+  fs.writeFileSync(path.join(sb.gw, 'logs', 'port.txt'), '4321\n')
+  const r = sb.run('stop-gateway.sh', [], { FAKE_UNAME: 'Linux', FAKE_LSOF_PIDS: '' })
+  assert.equal(r.code, 0, r.out)
+  assert.match(sb.calls(), /lsof -ti tcp:4321 -sTCP:LISTEN/)
+})
+
+test('停止：端口被非网关进程占着要单独说明，不能说成「没在运行」', () => {
+  const sb = makeSandbox()
+  const r = sb.run('stop-gateway.sh', [], {
+    FAKE_UNAME: 'Linux',
+    FAKE_LSOF_PIDS: '999999',
+    FAKE_PS_CMD: '/usr/bin/other-service'
+  })
+  assert.equal(r.code, 0, r.out)
+  assert.match(r.out, /被其它程序占用/)
+  assert.doesNotMatch(r.out, /没有发现运行中的网关/, '两种情况的处理建议完全不同，混成一句会让人反复重启')
+})

@@ -13,7 +13,13 @@
 //   npm start        # 或：node launcher.mjs
 //   浏览器打开 http://127.0.0.1:4173
 //
-// 环境变量：
+// 常用参数：
+//   --port <n>       启动器端口（默认 4173；端口被占时用它换一个，如 --port 4174）
+//   --lan            开局域网模式（监听 0.0.0.0）
+//   --open           启动后自动打开控制台
+//   --bridge-port <n> bridge 实例池基准端口（内部使用，默认 10531，一般不用改）
+//
+// 环境变量（命令行参数优先于环境变量）：
 //   LAUNCHER_PORT    本启动器端口（默认 4173）
 //   BRIDGE_PORT      chatgpt-bridge 端口（默认 10531）
 //   FRONTEND_DIR     前端构建目录（默认 ../frontend/dist）
@@ -84,6 +90,10 @@ import { mergeModelList, resolveModelId, defaultChatModel, IMAGE_MODEL } from '.
 import { getAccountQuota, saveAccountQuota, probeQuotaViaBridge } from './account-quota.mjs'
 import { createFailoverPolicy } from './failover.mjs'
 import { sortAddresses, KIND } from './lan-addr.mjs'
+import {
+  parsePort, portInUseAdvice, portPermissionAdvice,
+  DEFAULT_LAUNCHER_PORT, DEFAULT_BRIDGE_PORT
+} from './port-util.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -122,8 +132,37 @@ if (_reg.activeId) gwConfig.authFilePath = accountAuthPath(_reg.activeId)
 // 应用出网代理（仅影响本进程 fetch；bridge 子进程的代理在 startBridge 中注入）
 try { applyProxy(gwConfig.proxy || '') } catch {}
 
-const LAUNCHER_PORT = Number(process.env.LAUNCHER_PORT || 4173)
-const BRIDGE_PORT = Number(process.env.BRIDGE_PORT || 10531)
+// ---- 命令行参数（必须在端口解析之前，因为 --port 要参与端口计算）----
+//   --lan / --lan-host=<addr>   开局域网模式（等价 GW_LAN=1）
+//   --open                      启动后自动打开控制台
+//   --port <n>                  启动器端口（覆盖 LAUNCHER_PORT 环境变量）
+//   --bridge-port <n>           bridge 实例池的基准端口（覆盖 BRIDGE_PORT）
+const CLI_ARGS = process.argv.slice(2)
+const hasFlag = (name) => CLI_ARGS.some((a) => a === name || a.startsWith(name + '='))
+// 取值支持两种写法：--port 4174 与 --port=4174（脚本里用空格分隔更直观）
+function flagValue(name) {
+  const eq = CLI_ARGS.find((a) => a.startsWith(name + '='))
+  if (eq) return eq.slice(name.length + 1)
+  const i = CLI_ARGS.indexOf(name)
+  if (i >= 0 && i + 1 < CLI_ARGS.length && !CLI_ARGS[i + 1].startsWith('--')) return CLI_ARGS[i + 1]
+  return ''
+}
+
+const _lp = parsePort(flagValue('--port') || process.env.LAUNCHER_PORT, DEFAULT_LAUNCHER_PORT)
+if (_lp.error) {
+  console.error(`✗ 启动器端口配置有误：${_lp.error}`)
+  console.error(`  用法：node launcher.mjs --port ${DEFAULT_LAUNCHER_PORT}`)
+  process.exit(1)
+}
+const _bp = parsePort(flagValue('--bridge-port') || process.env.BRIDGE_PORT, DEFAULT_BRIDGE_PORT)
+if (_bp.error) {
+  console.error(`✗ bridge 基准端口配置有误：${_bp.error}`)
+  console.error(`  用法：node launcher.mjs --bridge-port ${DEFAULT_BRIDGE_PORT}`)
+  process.exit(1)
+}
+
+const LAUNCHER_PORT = _lp.port
+const BRIDGE_PORT = _bp.port
 const FRONTEND_DIR = process.env.FRONTEND_DIR || path.resolve(__dirname, '../frontend/dist')
 const BRIDGE_CLI = process.env.BRIDGE_CLI || path.resolve(__dirname, 'node_modules/chatgpt-bridge/dist/cli.js')
 const BRIDGE_NODE = process.env.BRIDGE_NODE || process.execPath
@@ -191,12 +230,7 @@ if (process.argv[2] === 'admin' || process.argv[2] === 'admin-token') {
 //   node launcher.mjs --lan
 //   GW_LAN=1 node launcher.mjs
 // 可选 --lan-host=<addr> 覆盖监听地址（默认 0.0.0.0；显式给出地址即视为开启 LAN）
-const CLI_ARGS = process.argv.slice(2)
-const hasFlag = (name) => CLI_ARGS.some((a) => a === name || a.startsWith(name + '='))
-const flagValue = (name) => {
-  const hit = CLI_ARGS.find((a) => a.startsWith(name + '='))
-  return hit ? hit.slice(name.length + 1) : ''
-}
+// CLI_ARGS / hasFlag / flagValue 定义在文件上方端口解析之前，这里直接复用。
 const LAN_ENABLED = hasFlag('--lan') || hasFlag('--lan-host') || process.env.GW_LAN === '1'
 // 启动后自动打开控制台。桌面快捷方式（start-gateway.vbs → run-gateway.cmd）与 npm start
 // 会带上 --open；命令行手工排查、CI、测试脚本不带，避免每次都被弹一个标签页。
@@ -2491,6 +2525,31 @@ function shutdown(signal) {
 process.on('SIGINT', () => shutdown('SIGINT'))
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('exit', () => { try { bridgePool.dispose() } catch {} })
+
+// ---- 端口绑定失败的处理（P0）----
+// 不挂 error 监听时，EADDRINUSE 是未捕获异常：进程直接掀桌，stderr 里只有一行
+// 英文堆栈。双击快捷方式的用户看到的是「8 秒内健康检查未通过，请查日志」，
+// 对着 service.log 里那句 EADDRINUSE 也不知道下一步该做什么。
+//
+// 这里把三种典型失败翻译成「能照着做」的中文，并用不同退出码区分，
+// 供 service/*.vbs 与 service-unix/*.sh 判断该给哪种提示：
+//   2 = 端口被占用（换端口 or 已在运行）
+//   3 = 无权限绑定（<1024 特权端口）
+//   1 = 其它
+// 刻意不自动换端口：端口是对外契约，静默漂移会让「配置没动却连不上」无从解释。
+server.on('error', (err) => {
+  const code = err && err.code
+  if (code === 'EADDRINUSE') {
+    console.error(portInUseAdvice({ port: LAUNCHER_PORT, lanEnabled: LAN_ENABLED }))
+    process.exit(2)
+  }
+  if (code === 'EACCES') {
+    console.error(portPermissionAdvice({ port: LAUNCHER_PORT }))
+    process.exit(3)
+  }
+  console.error(`✗ 启动器监听失败：${code || ''} ${(err && err.message) || err}`)
+  process.exit(1)
+})
 
 server.listen(LAUNCHER_PORT, LISTEN_HOST, () => {
   pushLog(`◆ 启动器已就绪：http://127.0.0.1:${LAUNCHER_PORT}`)
