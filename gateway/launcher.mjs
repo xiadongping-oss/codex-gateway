@@ -81,7 +81,8 @@ import {
   createAdminAuth, loadOrCreateAdminToken, SESSION_COOKIE, BOOTSTRAP_PARAM, DEFAULT_SESSION_TTL_MS
 } from './admin-auth.mjs'
 import { mergeModelList, resolveModelId, defaultChatModel, IMAGE_MODEL } from './model-catalog.mjs'
-import { getAccountQuota, saveAccountQuota } from './account-quota.mjs'
+import { getAccountQuota, saveAccountQuota, probeQuotaViaBridge } from './account-quota.mjs'
+import { createFailoverPolicy } from './failover.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -318,7 +319,11 @@ function lanAddresses() {
 const MAX_LOG = 800
 const logBuf = []
 // 本地用量统计：经本启动器反代的请求数 与 命中的 429 限流数
-let metrics = { requests: 0, rateLimited: 0, modelAliases: 0 }
+let metrics = { requests: 0, rateLimited: 0, modelAliases: 0, failovers: 0, failoverMisses: 0 }
+
+// 429/401 的账号降级。判定逻辑在 failover.mjs 里（纯函数，有单测），
+// 这里只负责把它接到转发路径上：谁被标记、换到谁、换完怎么写回。
+const failoverPolicy = createFailoverPolicy()
 
 function ts() {
   return new Date().toISOString().slice(11, 19)
@@ -706,6 +711,63 @@ function rewriteModelBody(buf) {
   return { body: Buffer.from(JSON.stringify(json), 'utf8'), changed: r.changed, from: r.from, to: r.id, qInjected }
 }
 
+// ---------- 429 / 401 账号降级 ----------
+// 只对「响应已完整收到」的 429/401 生效（判定在 failover.mjs，那里有完整说明）。
+// 关键顺序：**判定之前绝不能 writeHead**，否则降级重发时响应头已经发出去了。
+const FAILOVER_BODY_MAX = 64 * 1024
+
+// 上游错误响应体通常只有几百字节。超过 64KB 就不为降级去缓冲了，
+// 直接原样返回——省一次重试不值得为它留一块大内存。
+function collectErrorBody(up, cb) {
+  const chunks = []
+  let size = 0
+  let done = false
+  const finish = (err, buf) => {
+    if (done) return
+    done = true
+    cb(err, buf)
+  }
+  up.on('data', (c) => {
+    size += c.length
+    if (size > FAILOVER_BODY_MAX) {
+      up.destroy()
+      return finish(new Error('error_body_too_large'), null)
+    }
+    chunks.push(c)
+  })
+  up.on('end', () => finish(null, Buffer.concat(chunks)))
+  up.on('error', () => finish(new Error('error_body_aborted'), null))
+}
+
+// 救不成时把上游原本的状态码与响应体还回去：调用方看到的仍应是 429/401。
+// 不能因为「网关试着救了一次没救成」就改写成 200 或 502。
+function replyBridgeError(res, status, headers, raw) {
+  if (res.headersSent) return res.end()
+  if (raw && raw.length) {
+    const h = { ...(headers || {}) }
+    delete h['transfer-encoding']
+    delete h['content-length']
+    res.writeHead(status, h)
+    return res.end(raw)
+  }
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
+  res.end(JSON.stringify({ error: `upstream_${status}`, detail: `该账号返回 ${status}，且没有可用的备用账号` }))
+}
+
+// 把账号注册表转成降级策略要的形状。策略本身不碰文件系统（纯逻辑好测），
+// hasAuth 由这里补齐——切到一个没登录的账号只会立刻拿到 401。
+function failoverAccounts() {
+  const reg = loadAccounts()
+  return (reg.accounts || []).map((a) => ({ id: a.id, hasAuth: fs.existsSync(accountAuthPath(a.id)) }))
+}
+
+function accountLabel(id) {
+  if (!id) return '—'
+  const reg = loadAccounts()
+  const a = (reg.accounts || []).find((x) => x.id === id)
+  return a?.note || a?.email || String(id).slice(0, 8)
+}
+
 // 真正的转发；bodyBuf 非空时用它替代原始请求流（改写过 model）
 function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
   metrics.requests++
@@ -767,24 +829,73 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
   // bridge 模式：转发到「本请求所属账号」的实例端口。
   // req.__bridgePort 由鉴权阶段写入（见 handleGateway 里的 ensureBridgeForAccount）；
   // 没有账号归属的请求（控制台探活 / 无 Key 放行）落到激活账号那个实例。
-  const port = req.__bridgePort || defaultBridgePort()
-  const opts = {
-    host: '127.0.0.1',
-    port,
-    path: targetPath,
-    method: req.method,
-    headers: prep({ ...req.headers, host: `127.0.0.1:${port}` })
+  //
+  // 429/401 会换账号重放（见 failover.mjs）。能这么做的前提是这类请求本来就
+  // 被 collectBody 全缓冲了（/v1/chat/completions 与 /v1/responses 都在
+  // MODEL_REWRITE_PATHS 里），bodyBuf 就在手上，重放不必重新读 req 流——
+  // 那时候 req 早就读完了。
+  function attemptToBridge(port, attempt) {
+    const opts = {
+      host: '127.0.0.1',
+      port,
+      path: targetPath,
+      method: req.method,
+      headers: prep({ ...req.headers, host: `127.0.0.1:${port}` })
+    }
+    const p = http.request(opts, (up) => {
+      const status = up.statusCode || 0
+      if (status === 429) metrics.rateLimited++
+
+      const retryable = failoverPolicy.canRetry({
+        status,
+        attempt,
+        canReplay: Boolean(bodyBuf),
+        accountId: req.__accountId
+      })
+      if (!retryable) {
+        res.writeHead(status || 502, up.headers)
+        return attachUsageTap(up)
+      }
+
+      // 判定窗口：先把错误体收下来，才有「救不成原样还回去」的余地
+      const fromId = req.__accountId
+      collectErrorBody(up, (err, raw) => {
+        if (err) return replyBridgeError(res, status, up.headers, null)
+        failoverPolicy.markDegraded(fromId, status)
+        const nextId = failoverPolicy.pickNext(failoverAccounts(), fromId)
+        if (!nextId) {
+          metrics.failoverMisses++
+          pushLog(`⚠ 账号 ${accountLabel(fromId)} 返回 ${status}，没有可降级的备用账号`)
+          return replyBridgeError(res, status, up.headers, raw)
+        }
+        ensureBridgeForAccount(nextId).then((sw) => {
+          if (!sw.ok) {
+            metrics.failoverMisses++
+            pushLog(`✗ 降级到 ${accountLabel(nextId)} 失败：${sw.msg}`)
+            return replyBridgeError(res, status, up.headers, raw)
+          }
+          metrics.failovers++
+          pushLog(`⇄ 账号降级：${accountLabel(fromId)} 返回 ${status} → 改用 ${accountLabel(nextId)}`)
+          // 提前写好，重发成功时随 writeHead 一起发出去，调用方能看出这是降级后的结果
+          res.setHeader('X-CGW-Failover', `${status}; attempt=${attempt + 1}`)
+          req.__accountId = nextId
+          req.__bridgePort = sw.port
+          if (sw.release) {
+            res.once('close', sw.release)
+            res.once('finish', sw.release)
+            res.once('error', sw.release)
+          }
+          attemptToBridge(sw.port, attempt + 1)
+        })
+      })
+    })
+    p.on('error', () => {
+      if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'bridge_unreachable', detail: `bridge 未运行或不可达（${bridgeUrlFor(port)}）` }))
+    })
+    pump(p)
   }
-  const p = http.request(opts, (up) => {
-    if (up.statusCode === 429) metrics.rateLimited++
-    res.writeHead(up.statusCode || 502, up.headers)
-    attachUsageTap(up)
-  })
-  p.on('error', () => {
-    if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'bridge_unreachable', detail: `bridge 未运行或不可达（${bridgeUrlFor(port)}）` }))
-  })
-  pump(p)
+  attemptToBridge(req.__bridgePort || defaultBridgePort(), 0)
 }
 
 // ---------- openai 模式出站 ----------
@@ -1720,6 +1831,8 @@ const server = http.createServer(async (req, res) => {
         // 当前激活账号：前端用来在实例列表里标出「就是这一条在服务」
         activeAccountId: primaryAccountId(),
         metrics,
+        // 降级状态：哪些账号正在冷却、还剩多少秒，排障时能直接看到「为什么没换过去」
+        failover: failoverPolicy.snapshot(),
         apikeysCount: listApiKeys().length,
         tokensTotal: listApiKeys().reduce((s, k) => s + (k.tokens || 0), 0),
         mode: gwConfig.mode,
@@ -1758,6 +1871,32 @@ const server = http.createServer(async (req, res) => {
     if (p === '/__gw/account/quota' && req.method === 'GET') {
       // 端口必须按「激活账号」给：池化后每个账号一个 bridge，限流头只在自己那个进程里
       return sendJson(res, 200, await getAccountQuota({ ...gwConfig, bridgePort: defaultBridgePort() }))
+    }
+
+    // 主动探测：发一次最小真实请求把上游限流头拉回来（额度卡片上的「刷新」）。
+    // 会消耗一点点额度，所以是由用户点击触发的显式动作，不做定时轮询。
+    if (p === '/__gw/account/quota/probe' && req.method === 'POST') {
+      const reg = loadAccounts()
+      const probeAccountId = reg.activeId || null
+      if (!probeAccountId) return sendJson(res, 200, { ok: false, reason: 'no_account' })
+      // 实例没起就先拉起（幂等）：否则「刷新」在冷启动时会一直失败
+      const started = await bridgePool.start(probeAccountId)
+      if (!started.ok) {
+        return sendJson(res, 200, { ok: false, reason: 'bridge_start_failed', detail: started.msg })
+      }
+      const r = await probeQuotaViaBridge({
+        accountId: probeAccountId,
+        bridgePort: started.port,
+        model: defaultChatModel()
+      })
+      if (r.ok) pushLog(`🔍 额度探测：${accountLabel(probeAccountId)} 已取到上游限流头（发出一次最小请求）`)
+      else if (r.reason !== 'cooldown') {
+        pushLog(`· 额度探测未取到数据：${r.reason || '未知'}${r.detail ? ' · ' + r.detail : ''}`)
+      }
+      return sendJson(res, 200, {
+        ...r,
+        quota: await getAccountQuota({ ...gwConfig, bridgePort: started.port })
+      })
     }
 
     if (p === '/__gw/account/quota' && req.method === 'POST') {
@@ -2087,8 +2226,16 @@ const server = http.createServer(async (req, res) => {
         // 切激活账号**不再重启任何进程**：各账号的实例彼此独立，这里改的只是
         // 「默认路由目标」。目标账号若还没实例，后台预热一个，避免首个请求吃冷启动。
         if (gwConfig.mode === 'bridge') {
-          bridgePool.start(body.id).then((x) => {
-            if (!x.ok) pushLog('✗ 预热 bridge 失败：' + (x.msg || '未知原因'))
+          bridgePool.start(body.id).then(async (x) => {
+            if (!x.ok) return pushLog('✗ 预热 bridge 失败：' + (x.msg || '未知原因'))
+            // 切过去顺手把新账号的额度探一次：限流头只存在它自己的 bridge 进程里，
+            // 不探的话卡片会一直是空态，用户会以为「切了跟没切一样」。
+            const pr = await probeQuotaViaBridge({
+              accountId: body.id,
+              bridgePort: x.port,
+              model: defaultChatModel()
+            })
+            if (pr.ok) pushLog(`🔍 已探测新账号额度：${accountLabel(body.id)}`)
           })
         }
         return sendJson(res, 200, { ok: true, path: r.path })
@@ -2233,6 +2380,8 @@ const server = http.createServer(async (req, res) => {
         // 端口随请求走，不再依赖任何全局「当前加载哪个账号」的状态，
         // 因此不存在一期那个「校验时是 A、转发时已被切成 B」的窗口。
         req.__bridgePort = sw.port
+        // 账号归属：429/401 降级时靠它判断「该把哪个账号标成不可用、又该换到谁」
+        req.__accountId = targetAccountId
         // 名额只用于空闲判定：持有到本次响应真正结束，避免实例在流式响应
         // 还没吐完时被回收。release 幂等，三个结束信号谁先到算谁。
         if (sw.release) {

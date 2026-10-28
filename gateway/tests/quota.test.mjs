@@ -223,3 +223,116 @@ test('countdownText 对未来时刻给倒计时，对过去时刻给「已重置
   assert.equal(q.countdownText(null), null)
   assert.match(q.countdownText(new Date(Date.now() + 1.5 * 86400 * 1000).toISOString()), /^1天 1[12]小时/)
 })
+
+// ---------- 主动探测 ----------
+// 探测会真的发一次上游请求（消耗极小但非零额度），所以这几条守的是
+// 「别多发、别把旧数据当新的、失败了别假装成功」。
+
+// 会真的响应探测请求的假 bridge：
+//   /health 回当前快照；/v1/chat/completions 记录请求体，并按需刷新快照
+async function fakeProbeBridge({ refreshHeaders = null, replyStatus = 200 } = {}) {
+  const state = { at: 0, headers: {}, probeCount: 0, probeBodies: [] }
+  const srv = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json')
+    if (String(req.url).startsWith('/health')) {
+      return res.end(JSON.stringify({ ok: true, last_upstream_limits: { at: state.at, headers: state.headers } }))
+    }
+    let raw = ''
+    req.on('data', (c) => (raw += c))
+    req.on('end', () => {
+      state.probeCount++
+      try { state.probeBodies.push(JSON.parse(raw)) } catch { state.probeBodies.push(raw) }
+      if (refreshHeaders) {
+        state.at = Date.now()
+        state.headers = refreshHeaders
+      }
+      res.writeHead(replyStatus)
+      res.end(JSON.stringify(replyStatus === 200 ? { ok: true } : { error: 'rate_limited' }))
+    })
+  })
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
+  return {
+    srv,
+    port: srv.address().port,
+    state,
+    seed: (headers, at) => { state.headers = headers; state.at = at }
+  }
+}
+
+const WEEKLY = { 'x-codex-primary-used-percent': '31', 'x-codex-primary-window-minutes': '10080' }
+
+test('探测成功后把限流头落到该账号名下', async () => {
+  const b = await fakeProbeBridge({ refreshHeaders: WEEKLY })
+  try {
+    const r = await q.probeQuotaViaBridge({ accountId: 'probe-ok', bridgePort: b.port, model: 'gpt-6.1-sol' })
+    assert.equal(r.ok, true)
+    assert.equal(r.source, 'realtime')
+    const cached = q.readCachedRealtime('probe-ok')
+    assert.ok(cached, '应写入该账号名下')
+    assert.equal(cached.weekly.usedPercent, 31)
+  } finally { b.srv.close() }
+})
+
+test('探测不把 bridge 里的旧头当成本次结果', async () => {
+  const b = await fakeProbeBridge({ refreshHeaders: null }) // 探测不会产生新头
+  // bridge 里还留着 1 小时前那次真实调用的头（24h 内都算「有效」）
+  b.seed(WEEKLY, Date.now() - 3600 * 1000)
+  try {
+    const r = await q.probeQuotaViaBridge({ accountId: 'probe-stale', bridgePort: b.port })
+    assert.equal(r.ok, false, '没拿到新头就不能报成功')
+    assert.equal(r.reason, 'no_limit_headers')
+    assert.equal(b.state.probeCount, 1, '请求确实发出去了')
+    assert.equal(q.readCachedRealtime('probe-stale'), null, '更不许把旧头写进缓存')
+  } finally { b.srv.close() }
+})
+
+test('探测请求是最小请求：max_tokens=1，不偷偷跑一次完整对话', async () => {
+  const b = await fakeProbeBridge({ refreshHeaders: WEEKLY })
+  try {
+    await q.probeQuotaViaBridge({ accountId: 'probe-min', bridgePort: b.port, model: 'gpt-6.1-sol' })
+    const body = b.state.probeBodies[0]
+    assert.equal(body.max_tokens, 1)
+    assert.equal(body.stream, false)
+    assert.equal(body.model, 'gpt-6.1-sol')
+    assert.ok(body.messages.length > 0)
+  } finally { b.srv.close() }
+})
+
+test('探测遇到 429 也照样取头——「已经用满」正是最该展示的信息', async () => {
+  const b = await fakeProbeBridge({
+    refreshHeaders: { 'x-codex-primary-used-percent': '100', 'x-codex-primary-window-minutes': '10080' },
+    replyStatus: 429
+  })
+  try {
+    const r = await q.probeQuotaViaBridge({ accountId: 'probe-429', bridgePort: b.port })
+    assert.equal(r.ok, true)
+    assert.equal(r.status, 429, '状态码如实带上，但数据是有效的')
+    assert.equal(q.readCachedRealtime('probe-429').weekly.usedPercent, 100)
+  } finally { b.srv.close() }
+})
+
+test('同账号 60 秒内不重复探测（冷却期内不发请求）', async () => {
+  const b = await fakeProbeBridge({ refreshHeaders: WEEKLY })
+  try {
+    const first = await q.probeQuotaViaBridge({ accountId: 'probe-cd', bridgePort: b.port })
+    assert.equal(first.ok, true)
+    const second = await q.probeQuotaViaBridge({ accountId: 'probe-cd', bridgePort: b.port })
+    assert.equal(second.ok, false)
+    assert.equal(second.reason, 'cooldown')
+    assert.ok(second.retryAfterSec > 0 && second.retryAfterSec <= 60)
+    assert.equal(b.state.probeCount, 1, '冷却期内绝不能再发一次')
+  } finally { b.srv.close() }
+})
+
+test('没有端口 / 连不上时如实返回原因，不假装成功也不抛异常', async () => {
+  const noPort = await q.probeQuotaViaBridge({ accountId: 'probe-noport', bridgePort: null })
+  assert.equal(noPort.ok, false)
+  assert.equal(noPort.reason, 'no_bridge_port')
+
+  const b = await fakeProbeBridge()
+  const deadPort = b.port
+  b.srv.close()
+  const dead = await q.probeQuotaViaBridge({ accountId: 'probe-dead', bridgePort: deadPort, timeoutMs: 1500 })
+  assert.equal(dead.ok, false)
+  assert.equal(dead.reason, 'bridge_unreachable')
+})

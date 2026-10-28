@@ -133,7 +133,7 @@ function activeAccountId() {
 const RT_FRESH_MS = 24 * 3600 * 1000
 const RT_STALE_MS = 30 * 60 * 1000 // 超 30 分钟没观测到就标 stale：仍展示，但提示可能过期
 
-async function fetchRealtimeQuota(port) {
+async function fetchRealtimeQuota(port, { since = 0 } = {}) {
   const p = Number(port) || Number(process.env.BRIDGE_PORT || 10531)
   try {
     const ctrl = new AbortController()
@@ -143,11 +143,81 @@ async function fetchRealtimeQuota(port) {
     if (!res.ok) return null
     const j = await res.json()
     const lul = j?.last_upstream_limits
-    if (!lul || !lul.at || Date.now() - lul.at > RT_FRESH_MS) return null
+    // since：只要「不早于此时刻」的那份。主动探测必须传它——否则 bridge 里
+    // 上一次调用留下的旧头（24h 内都算有效）会被当成本次探测的结果，
+    // 界面显示「刚同步」，其实一行新数据都没拿到。
+    if (!lul || !lul.at || lul.at < since || Date.now() - lul.at > RT_FRESH_MS) return null
     return realtimeQuotaFrom(lul.headers || {}, lul.at)
   } catch {
     return null
   }
+}
+
+// ---------- 主动探测 ----------
+// ChatGPT 没有额度查询接口，限流头只会跟着真实上游响应一起回来。
+// 所以「主动拉一次」的实质是**发一个尽可能小的真实请求**把响应头带回来：
+// max_tokens=1，一次极其轻微的额度消耗。正因如此，只在用户明确动作时做
+// （切换激活账号 / 点刷新），绝不定时轮询——那等于替用户偷偷花钱。
+const PROBE_COOLDOWN_MS = 60 * 1000
+const probeState = new Map() // accountId -> { at, ok, status, reason }
+
+export function probeCooldownOf(accountId) {
+  const prev = probeState.get(accountId || '__shared')
+  if (!prev) return 0
+  const left = PROBE_COOLDOWN_MS - (Date.now() - prev.at)
+  return left > 0 ? Math.ceil(left / 1000) : 0
+}
+
+export async function probeQuotaViaBridge({ accountId = null, bridgePort, model = null, timeoutMs = 20000 } = {}) {
+  const key = accountId || '__shared'
+  const wait = probeCooldownOf(accountId)
+  if (wait > 0) return { ok: false, reason: 'cooldown', retryAfterSec: wait }
+
+  const port = Number(bridgePort)
+  if (!port) {
+    probeState.set(key, { at: Date.now(), ok: false, reason: 'no_bridge_port' })
+    return { ok: false, reason: 'no_bridge_port' }
+  }
+
+  // 请求发出前记下时刻，之后只要 at >= since 的快照，确保拿到的是这次探测的产物
+  const probeStart = Date.now()
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  let status = 0
+  let netErr = null
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: model || 'gpt-6.1-sol',
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1,
+        stream: false
+      }),
+      signal: ctrl.signal
+    })
+    status = res.status
+    // 返回内容没用，但必须读完才会释放连接
+    await res.arrayBuffer().catch(() => null)
+  } catch (e) {
+    netErr = e
+  } finally {
+    clearTimeout(timer)
+  }
+
+  // 成功还是 429 都去读一次 /health：限流头是 bridge 内部捕获的，
+  // 而 429 响应本身通常就带着「已经用满」的那组头——那正是最该展示的信息。
+  const rt = await fetchRealtimeQuota(port, { since: probeStart })
+  if (rt && accountId) persistRealtimeSnapshot(accountId, rt)
+  if (rt) {
+    probeState.set(key, { at: Date.now(), ok: true, status })
+    return { ok: true, source: 'realtime', status, syncedAt: rt.syncedAt }
+  }
+  const reason = netErr ? 'bridge_unreachable' : status ? 'no_limit_headers' : 'unknown'
+  const detail = netErr ? netErr.message : status ? `探测请求返回 ${status}，但这次响应没带上限流头` : ''
+  probeState.set(key, { at: Date.now(), ok: false, status, reason })
+  return { ok: false, reason, status, detail }
 }
 
 // 缓存结构 v2：{ version: 2, byAccount: { [accountId]: snapshot } }

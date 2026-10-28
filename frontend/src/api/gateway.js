@@ -345,6 +345,11 @@ export async function getAccountQuota() {
 export async function saveAccountQuota(patch = {}) {
   return await gwRequest('/__gw/account/quota', 'POST', patch).catch(() => null)
 }
+// 主动探测：让该账号的 bridge 发一次最小请求，把上游限流头拉回来。
+// 会消耗极少量额度，只在用户点「刷新」时调用。
+export async function probeAccountQuota() {
+  return await gwRequest('/__gw/account/quota/probe', 'POST', {}).catch(() => null)
+}
 
 // ---------- 严格鉴权 ----------
 export async function getStrictAuth() {

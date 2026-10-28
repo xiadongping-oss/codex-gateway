@@ -162,6 +162,34 @@ async function refresh() {
   loading.value = false
 }
 
+// 「刷新额度」不只是重读接口——上游限流头只有真实请求才会带回来，
+// 光重读是拿不到新数字的。所以这里先让网关探一次（一次极小请求），再展示结果。
+const probing = ref(false)
+const probeHint = ref('')
+
+async function probeAndReload() {
+  if (probing.value || loading.value || editing.value) return
+  probing.value = true
+  probeHint.value = ''
+  let r = null
+  try {
+    r = await api.probeAccountQuota()
+    if (!r) probeHint.value = '探测请求失败，请确认网关在运行'
+    else if (r.ok) probeHint.value = ''
+    else if (r.reason === 'cooldown') probeHint.value = `刚探测过，${r.retryAfterSec || 60} 秒后可再试`
+    else if (r.reason === 'no_account') probeHint.value = '还没有激活账号'
+    else if (r.reason === 'bridge_start_failed') probeHint.value = `该账号的 bridge 起不来：${r.detail || '未知原因'}`
+    else if (r.reason === 'bridge_unreachable') probeHint.value = '连不上该账号的 bridge'
+    else if (r.reason === 'no_limit_headers') probeHint.value = '上游这次没回限流头，稍后再试'
+    else probeHint.value = `没取到数据：${r.reason || '未知原因'}`
+  } finally {
+    // 探测接口已经把最新额度一起返回了，不必再拉一次
+    if (r?.quota) q.value = r.quota
+    else await load()
+    probing.value = false
+  }
+}
+
 async function onTypeChange(e) {
   const v = e?.target?.value
   if (!v || !q.value || v === q.value.accountType) return
@@ -200,12 +228,14 @@ onUnmounted(() => {
       <span v-if="saving" class="saving-tag">保存中…</span>
       <span class="head-meta">更新于 {{ updatedText }}</span>
       <button v-if="q && !editing" class="btn-ghost sm" @click="startEdit" :disabled="saving">编辑</button>
-      <button class="btn-ghost sm" @click="refresh" :disabled="loading || editing">
-        {{ loading ? '刷新中…' : '刷新' }}
+      <button class="btn-ghost sm" @click="probeAndReload" :disabled="loading || probing || editing"
+              title="让网关发一次极小请求，把上游限流头拉回来（会消耗极少量额度）">
+        {{ probing ? '探测中…' : '刷新额度' }}
       </button>
     </div>
 
     <div v-if="err" class="q-err">{{ err }}</div>
+    <div v-if="probeHint" class="q-hint">{{ probeHint }}</div>
 
     <template v-if="q">
       <!-- 身份 + 订阅 -->
@@ -312,7 +342,8 @@ onUnmounted(() => {
         <div class="q-blank-title">还没有这个账号的额度数据</div>
         <div class="q-blank-body">
           ChatGPT 没有公开额度查询接口，网关只能在真实调用拿到上游响应头时顺手记一笔。
-          用它跑一次对话（WorkBuddy 里发一句话即可），30 秒内这里就会出现真实的剩余比例。
+          点右上角「刷新额度」让网关探一次，或者直接用它跑一次对话（WorkBuddy 里发一句话即可），
+          这里就会出现真实的剩余比例。
         </div>
         <div class="q-blank-alt">如果要先手填一个大概值，点右上角「编辑」。</div>
       </div>
@@ -402,6 +433,11 @@ onUnmounted(() => {
 .btn-ghost.sm { padding: 5px 10px; font-size: 11.5px; background: var(--card-2); color: var(--text-2); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
 .btn-ghost.sm:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .q-err { font-size: 12px; color: var(--rose); margin-bottom: 12px; }
+.q-hint {
+  font-size: 11.5px; color: var(--amber); margin-bottom: 12px;
+  padding: 6px 10px; border-radius: 8px;
+  background: rgba(251, 191, 36, 0.08); border: 1px solid rgba(251, 191, 36, 0.25);
+}
 .q-empty { font-size: 12.5px; color: var(--text-3); padding: 8px 0; }
 /* 空态：不画进度条，改成说明 + 下一步动作 */
 .q-blank {

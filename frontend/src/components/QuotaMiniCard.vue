@@ -73,7 +73,7 @@ onUnmounted(() => {
     </div>
 
     <div v-if="isEmpty" class="qs-empty">
-      还没有观测到额度——用它跑一次对话，这里就会自动出现真实余量（ChatGPT 未公开额度接口）
+      还没有观测到额度——到账号页点「刷新额度」探一次，或直接用它跑一次对话（ChatGPT 未公开额度接口）
     </div>
 
     <div class="qs-mid" v-if="weekly">

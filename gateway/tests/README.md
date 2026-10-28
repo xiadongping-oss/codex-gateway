@@ -16,12 +16,12 @@ npm test
 bash gateway/tests/run.sh --live
 ```
 
-## 十一个脚本各管什么
+## 十二个脚本各管什么
 
 | 命令 | 脚本 | 作用 |
 |---|---|---|
 | `npm test` | `run.sh` + `audit.mjs` | 69 例功能与安全回归，覆盖 API Key 生命周期、`/v1` 鉴权、远程 MCP、素材归属、文件伺服、控制面隔离、管理鉴权、多账号实例池架构、lan-kit 客户端分发 |
-| `npm run test:unit` | `bridge-pool.test.mjs` + `quota.test.mjs` | bridge 实例池语义（启动互斥 / 一账号一端口 / 空闲回收 / 池满淘汰 / 崩溃自愈）+ **账号额度**（上游限流头解析、按账号隔离缓存、无数据不编数字） |
+| `npm run test:unit` | `bridge-pool.test.mjs` + `quota.test.mjs` + `failover.test.mjs` | bridge 实例池语义（启动互斥 / 一账号一端口 / 空闲回收 / 池满淘汰 / 崩溃自愈）+ **账号额度**（上游限流头解析、按账号隔离缓存、无数据不编数字、主动探测不拿旧头冒充新结果）+ **429/401 账号降级**（哪些状态码可降级、按状态码分开冷却、选路不打转） |
 | `npm run test:client` | `setup-client.test.mjs` | **局域网客户端脚本回归**：`setup-client.mjs` 的 14 例（mcp.json 合并幂等 / 坏 JSON 不覆盖 / dry-run 不写盘 / 缺参数报错 / skill 降级 / 注入锚点契约）。临时 HOME + 临时 cwd，不碰真实 `~/.workbuddy` |
 | `npm run test:build` | `build-release.test.mjs` | **打包闸门回归**：`--verify-zip` / `--verify-build` / 运行时锁 / 复制黑名单 / **换行符与可复现性**。25 例，在临时「假仓库」里跑同一份 `build-release.mjs`，不碰真产物 |
 | `npm run test:mutate` | `mutate.mjs` | **变异测试**：往沙盒代码注入 22 个真实缺陷，验证回归能否逐个抓住。存活 = 测试盲区 |
@@ -29,6 +29,7 @@ bash gateway/tests/run.sh --live
 | `npm run test:mutate:client` | `mutate-client.mjs` | 客户端脚本的变异测试：注入 5 种真实退化（覆盖坏 JSON / 抹掉他人条目 / dry-run 写盘 / 缺参数静默 / 锚点变双引号），验证 `test:client` 能逐个抓住 |
 | `npm run test:unix` | `service-unix.test.mjs` | **macOS / Linux 启动与开机自启**：launchd plist / systemd unit 生成、守护优先停止、pid 复用不误杀、日志轮转、非目标平台拒绝。用 PATH 前置的 shell shim 模拟 `launchctl`/`systemctl`，临时 HOME，不碰真实系统配置 |
 | `npm run test:mutate:unix` | `mutate-unix.mjs` | 上一套的变异测试：注入 7 种「静默失效」（ExecStart 丢引号 / 不 enable / 平台闸门放行 / 停不干净 / 误杀 pid / 不轮转日志 / CRLF），验证 `test:unix` 能逐个抓住 |
+| `npm run test:mutate:failover` | `mutate-failover.mjs` | 降级与额度探测的变异测试：注入 14 种真实退化（把 400 也算可降级 / 冷却合并 / 无归属也降级 / 上限写成 `<=` / 选路从第一个找起 / 不跳过冷却或无 auth 的账号 / 冷却永不解除 / 探测不校验时间戳 / 探测放大 `max_tokens` / 冷却失效 / 没拿到新头也报成功），验证 `test:unit` 能逐个抓住 |
 | `npm run test:attack` | `pentest.mjs` | 攻击者视角攻防，含原始 socket 绕 URL 规范化、跨站伪造、路径穿越、凭据变形 |
 | `npm run test:bench` | `bench-concurrency.mjs` | 并发吞吐量化对比（修复前 vs 修复后） |
 
