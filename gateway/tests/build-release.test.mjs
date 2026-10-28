@@ -135,6 +135,12 @@ function fakeRepo({ lockSha, extra = {}, eol = 'lf' } = {}) {
   w('gateway/service/start-gateway.vbs', '@echo off\r\n')      // CRLF：合规
   w('gateway/service/stop-gateway.vbs', '@echo off\r\n')
   w('gateway/service/run-gateway.cmd', '@echo off\r\n')
+  w('gateway/service-unix/_common.sh', '#!/bin/sh\necho ok\n')   // LF：合规
+  w('gateway/service-unix/start-gateway.sh', '#!/bin/sh\necho ok\n')
+  w('gateway/service-unix/run-gateway.sh', '#!/bin/sh\necho ok\n')
+  w('gateway/service-unix/stop-gateway.sh', '#!/bin/sh\necho ok\n')
+  w('gateway/service-unix/install-autostart.sh', '#!/bin/sh\necho ok\n')
+  w('gateway/service-unix/uninstall-autostart.sh', '#!/bin/sh\necho ok\n')
   w('gateway/node_modules/chatgpt-bridge/dist/cli.js', '//\n')  // node_modules 不参与路径扫描
   w('gateway/patches/keep.patch', '')
   w('frontend/dist/index.html', '<html></html>')

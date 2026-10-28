@@ -160,9 +160,29 @@ sequenceDiagram
 
 | 部分 | 支持 |
 |---|---|
-| Windows 发布包（绿色版 zip） | 仅 Windows |
-| 网关源码运行 | 跨平台：macOS / Linux 装 Node.js 18+ 后 `gateway/start-unix.sh` 直接跑 |
+| Windows 发布包（绿色版 zip） | 仅 Windows x64（内含 node 运行时，双击即用） |
+| 网关源码运行 | 跨平台：macOS / Linux 装 Node.js 20+ 后 `gateway/start-unix.sh` 直接跑 |
+| 开机自启 | Windows：`gateway/service/install-autostart.vbs`（计划任务）；macOS：launchd；Linux：systemd `--user`。unix 侧见下 |
 | 局域网客户端接入 | 跨平台：接入页任意浏览器可用；脚本任意 Node.js 16+ 系统可用 |
+
+#### macOS / Linux 的启动与自启
+
+Windows 那套 `.vbs + schtasks` 在 unix 上没有等价物，用系统原生的守护方式：
+
+```bash
+cd <解压目录>/gateway/service-unix
+
+./start-gateway.sh          # 手动前台启动（--lan + 打开浏览器，Ctrl+C 停止）
+./start-gateway.sh --local  # 只监听 127.0.0.1
+
+./install-autostart.sh      # 注册开机自启（macOS = launchd，Linux = systemd --user）
+./stop-gateway.sh           # 停止（会先让守护别再拉起来，再杀进程）
+./uninstall-autostart.sh    # 取消自启（不动账号 / Key / 日志）
+```
+
+- 运行时查找顺序：`CGW_NODE` 环境变量 → 包内 `gateway/runtime/bin/node` → `PATH` 里的 `node`；找不到会明确报错（退出码 127）而不是静默失败
+- 日志：`gateway/logs/service.log`，上一轮留存为 `service.log.1`；systemd 还可 `journalctl --user -u codex-gateway -f`
+- Linux 下若希望注销登录后仍运行，需 `sudo loginctl enable-linger $USER`（安装脚本会检测并提示）
 
 ### 安全边界
 

@@ -1717,6 +1717,8 @@ const server = http.createServer(async (req, res) => {
         // 实例池视图：每个账号的端口 / 状态 / 在途请求数，供控制台展示与排障
         bridgeInstances: bridgePool.list(),
         bridgePool: bridgePool.stats(),
+        // 当前激活账号：前端用来在实例列表里标出「就是这一条在服务」
+        activeAccountId: primaryAccountId(),
         metrics,
         apikeysCount: listApiKeys().length,
         tokensTotal: listApiKeys().reduce((s, k) => s + (k.tokens || 0), 0),
@@ -1754,13 +1756,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/__gw/account/quota' && req.method === 'GET') {
-      return sendJson(res, 200, await getAccountQuota(gwConfig))
+      // 端口必须按「激活账号」给：池化后每个账号一个 bridge，限流头只在自己那个进程里
+      return sendJson(res, 200, await getAccountQuota({ ...gwConfig, bridgePort: defaultBridgePort() }))
     }
 
     if (p === '/__gw/account/quota' && req.method === 'POST') {
       const body = await readBody(req).catch(() => ({}))
       try {
-        return sendJson(res, 200, await saveAccountQuota(body || {}))
+        return sendJson(res, 200, await saveAccountQuota(body || {}, null, { ...gwConfig, bridgePort: defaultBridgePort() }))
       } catch (e) {
         return sendJson(res, 400, { error: 'quota_save_failed', detail: e.message })
       }
@@ -1865,6 +1868,7 @@ const server = http.createServer(async (req, res) => {
         bridgePoolMax: BRIDGE_POOL_MAX,
         bridgeIdleMs: BRIDGE_IDLE_MS,
         bridgeInstances: bridgePool.list(),
+        activeAccountId: primaryAccountId(),
         frontendDir: FRONTEND_DIR,
         autoStart: AUTOSTART,
         mode: gwConfig.mode,

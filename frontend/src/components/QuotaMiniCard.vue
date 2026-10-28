@@ -31,6 +31,16 @@ const tightest = computed(() => {
   return list.reduce((a, b) => (b.remainingPercent < a.remainingPercent ? b : a))
 })
 
+// 距上次真实观测多久（上游只在真实调用后才回限流头）
+const ageText = computed(() => {
+  const s = q.value?.ageSec
+  if (typeof s !== 'number') return ''
+  if (s < 60) return '刚刚'
+  if (s < 3600) return Math.floor(s / 60) + ' 分钟前'
+  return Math.floor(s / 3600) + ' 小时前'
+})
+const isEmpty = computed(() => q.value?.source === 'none')
+
 async function load() {
   const r = await api.getAccountQuota().catch(() => null)
   if (r) q.value = r
@@ -54,10 +64,16 @@ onUnmounted(() => {
         <span v-if="planTone" class="qs-expire" :class="planTone">
           {{ planTone === 'rose' ? '订阅已过期' : '订阅 ' + plan.expiresInText }}
         </span>
-        <span v-if="q.source === 'realtime'" class="qs-rt" title="用量来自 Codex 上游限流头，真实调用后自动更新">实时</span>
-        <span v-if="q.sample" class="qs-sample" title="示例数据，去账号页卡片里「编辑」填真实值">示例</span>
+        <span v-if="q.source === 'realtime'" class="qs-rt" :title="'用量来自 Codex 上游限流头，仅在上游真实响应后更新（最近一次：' + (ageText || '未知') + '）'">实时<span v-if="ageText"> · {{ ageText }}</span></span>
+        <span v-else-if="q.source === 'manual'" class="qs-manual" title="上游还没回过限流头，显示的是手动填写的值">手动</span>
+        <span v-if="q.stale" class="qs-stale" title="超过 30 分钟没再观测到上游限流头，数字可能已经变了">可能已过期</span>
+        <span v-if="q.sample" class="qs-sample" title="旧版本自动生成的示例数据，到账号页「编辑」保存一次即可覆盖">示例</span>
       </div>
       <div class="qs-account">{{ account.name }}</div>
+    </div>
+
+    <div v-if="isEmpty" class="qs-empty">
+      还没有观测到额度——用它跑一次对话，这里就会自动出现真实余量（ChatGPT 未公开额度接口）
     </div>
 
     <div class="qs-mid" v-if="weekly">
@@ -108,6 +124,16 @@ onUnmounted(() => {
   font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; cursor: help;
   color: #fbbf24; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.35);
 }
+.qs-manual {
+  font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; cursor: help;
+  color: var(--text-2); background: rgba(255,255,255,0.06); border: 1px solid var(--border-strong);
+}
+.qs-stale {
+  font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; cursor: help;
+  color: #fbbf24; background: rgba(245,158,11,0.1); border: 1px dashed rgba(245,158,11,0.45);
+}
+/* 空态不画进度条：画了就是「还剩 100%」的假信息 */
+.qs-empty { flex: 1; font-size: 12px; color: var(--text-3); }
 .qs-badge {
   font-size: 10.5px; font-weight: 700; color: #04130d;
   background: var(--emerald); border-radius: 5px; padding: 1px 6px;

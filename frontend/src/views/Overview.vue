@@ -9,6 +9,7 @@ import ModelsCard from '../components/ModelsCard.vue'
 import LogsCard from '../components/LogsCard.vue'
 import QuotaMiniCard from '../components/QuotaMiniCard.vue'
 import LanMiniCard from '../components/LanMiniCard.vue'
+import BridgePoolCard from '../components/BridgePoolCard.vue'
 import SetupModal from '../components/SetupModal.vue'
 
 const { status, account, logs, capabilities, capabilitiesBase, gw, gwBusy, gwRestart, loadingDiagnose, diagnoseError, health, toggleCapability, diagnose } =
@@ -100,6 +101,13 @@ const authHint = computed(() => {
       <StatusCard :status="status" />
       <AccountCard :account="account" @manage="showSetup = true" />
     </div>
+
+    <!-- Row 1.5：实例池（多账号各自一个 bridge 进程，端口/状态/在途） -->
+    <BridgePoolCard
+      :instances="gw.bridgeInstances || []"
+      :pool="gw.bridgePool || {}"
+      :active-account-id="gw.activeAccountId || ''"
+    />
 
     <!-- Row 2：用量快照（含原「用量监控」页的限流占比） -->
     <div class="row">

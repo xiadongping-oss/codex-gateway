@@ -1,6 +1,8 @@
 # Codex 网关 · 快速上手（普通用户版）
 
 > 3 分钟把你的 ChatGPT 订阅变成一个本地 API + 网页控制台。无需安装 Node、无需命令行。
+>
+> 本文针对 **Windows 绿色版**。macOS / Linux 用户请见 `README.md` 的「运行平台」章节（`gateway/service-unix/`）。
 
 ## 这是什么
 

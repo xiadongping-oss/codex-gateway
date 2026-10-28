@@ -301,6 +301,13 @@ const REQUIRED = [
   'gateway/service/start-gateway.vbs',
   'gateway/service/stop-gateway.vbs',
   'gateway/service/run-gateway.cmd',
+  // macOS / Linux 的启动与自启（launchd / systemd --user）
+  'gateway/service-unix/_common.sh',
+  'gateway/service-unix/start-gateway.sh',
+  'gateway/service-unix/run-gateway.sh',
+  'gateway/service-unix/stop-gateway.sh',
+  'gateway/service-unix/install-autostart.sh',
+  'gateway/service-unix/uninstall-autostart.sh',
   'gateway/node_modules/chatgpt-bridge/dist/cli.js',
   'gateway/patches',
   'frontend/dist/index.html',

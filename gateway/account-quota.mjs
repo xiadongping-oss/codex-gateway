@@ -2,8 +2,12 @@
 //
 // 数据契约：返回当前激活账号的订阅 / 用量摘要，结构固定，来源可替换。
 //   真实身份（账号名 / 邮箱 / userId）来自 accounts.json + auth.json 的 id_token；
-//   订阅与用量来自 gateway/data/account-quota.json（用户维护，ChatGPT 不公开这些额度 API）。
-//   后续若接上真实来源，只需替换 readConfig()，前端契约保持不变。
+//   用量只认**上游自己给的限流头**（x-codex-*）——ChatGPT 不公开额度 API，
+//   任何本地推算出来的百分比都是猜的，所以这里不猜：
+//     1) realtime：该账号自己的 bridge 最近一次真实上游响应带回的限流头（首选）
+//     2) manual：用户在界面上手填（旧版行为，保留但不生成假数据）
+//     3) none：两者都没有，前端显示空态并提示「发一次调用后自动同步」
+//   account-quota.json 现在只是**缓存与手动覆盖**，不再是数据来源。
 //
 // 多账号隔离（重要）：
 //   网关支持多账号，额度必须按账号走，否则切换账号后数字不变会误导人。
@@ -22,7 +26,8 @@ import { jwtClaims, loadAccounts, accountAuthPath } from './auth-core.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DATA_DIR = path.join(__dirname, 'data')
-const QUOTA_FILE = path.join(DATA_DIR, 'account-quota.json')
+// CGW_QUOTA_FILE 让测试与沙盒指到临时文件，避免写坏真实数据目录
+const QUOTA_FILE = process.env.CGW_QUOTA_FILE || path.join(DATA_DIR, 'account-quota.json')
 
 const ACCOUNT_TYPES = ['标准', '优先', '团队', '企业']
 
@@ -34,33 +39,18 @@ function readJsonSafe(p) {
   }
 }
 
-function ensureSampleFile() {
-  if (fs.existsSync(QUOTA_FILE)) return
+// 以前这里会写一份「示例数据」（PRO 20X / 周用量 31%），但它既不是用户填的、
+// 也不是上游给的，却被当成真实额度展示——demo 标记还因为 plan/weekly 存在而不亮。
+// 现在只保证目录存在，绝不凭空造数字。
+function ensureDataDir() {
   try {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true })
-    const sample = {
-      _note:
-        '示例数据，请替换为真实额度。字段：usedPercent = 已用百分比(0-100)；resetsAt = 重置时刻(ISO，留空则用 resetText)；plan.expiresAt = 订阅到期。' +
-        'accounts[账号id] 为该账号专属额度（优先），shared 为所有账号共用缺省。账号名/邮箱/ID 由 auth.json 自动覆盖，不用手填。',
-      shared: {
-        plan: { name: 'PRO', multiplier: '20X', expiresAt: '2026-09-05T23:15:00Z' },
-        teamName: '个人账户',
-        weekly: { label: 'Weekly', usedPercent: 31, resetText: '4d 18h 12m', resetsAt: '2026-09-07T10:34:00Z' },
-        models: [
-          { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol 5h', usedPercent: 22, resetText: '2h 41m', resetsAt: null },
-          { id: 'gpt-6.1-terra', label: 'GPT-6.1 Terra 5h', usedPercent: 82, resetText: '4h 59m', resetsAt: null },
-          { id: 'gpt-6-astra', label: 'GPT-6 Astra Weekly', usedPercent: 96, resetText: '6d 23h 59m', resetsAt: null }
-        ],
-        accountType: '标准'
-      },
-      accounts: {}
-    }
-    fs.writeFileSync(QUOTA_FILE, JSON.stringify(sample, null, 2), { mode: 0o600 })
+    const dir = path.dirname(QUOTA_FILE)
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   } catch {}
 }
 
 // 距离某个 ISO 时刻还剩多久；已过期返回 '已重置'
-function countdownText(iso) {
+export function countdownText(iso) {
   if (!iso) return null
   const ms = new Date(iso).getTime() - Date.now()
   if (Number.isNaN(ms)) return null
@@ -88,7 +78,7 @@ function toneOf(remaining) {
   return 'emerald'
 }
 
-function normalizeQuota(raw = {}) {
+export function normalizeQuota(raw = {}) {
   const used = Number(raw.usedPercent)
   const u = Number.isFinite(used) ? Math.min(100, Math.max(0, used)) : 0
   const remaining = 100 - u
@@ -105,7 +95,7 @@ function normalizeQuota(raw = {}) {
 
 // ---------- 多账号解析 ----------
 // 返回 { config, scope }；scope: 'account' | 'shared'
-function resolveScope(cfg, accountId) {
+export function resolveScope(cfg, accountId) {
   const accounts =
     cfg && cfg.accounts && typeof cfg.accounts === 'object' && !Array.isArray(cfg.accounts)
       ? cfg.accounts
@@ -136,46 +126,83 @@ function activeAccountId() {
 }
 
 // ---------- 实时额度：读 bridge 捕获的上游 x-codex-* 限流头 ----------
-// bridge（vendored 补丁版）在每次真实上游响应后记录最近限流头，经 /health 透出；
-// 这里取最近一次（at 距今 <24h 视为有效），映射为主窗口(weekly) + 次窗口/模型专属窗口
+// 池化之后每个账号跑在自己的 bridge 进程上（端口不同、限流头也不同）。
+// 以前这里写死 BRIDGE_PORT || 10531：切到第二个账号后读的还是第一个账号的
+// 那个 bridge，于是「明明切了账号，余量数字一点没变」——正是多账号最忌讳的误导。
+// 现在端口由调用方按激活账号传入。
 const RT_FRESH_MS = 24 * 3600 * 1000
+const RT_STALE_MS = 30 * 60 * 1000 // 超 30 分钟没观测到就标 stale：仍展示，但提示可能过期
 
-async function fetchRealtimeQuota() {
+async function fetchRealtimeQuota(port) {
+  const p = Number(port) || Number(process.env.BRIDGE_PORT || 10531)
   try {
-    const port = Number(process.env.BRIDGE_PORT || 10531)
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 1200)
-    const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: ctrl.signal })
+    const res = await fetch(`http://127.0.0.1:${p}/health`, { signal: ctrl.signal })
     clearTimeout(timer)
     if (!res.ok) return null
     const j = await res.json()
     const lul = j?.last_upstream_limits
     if (!lul || !lul.at || Date.now() - lul.at > RT_FRESH_MS) return null
-    const rt = realtimeQuotaFrom(lul.headers || {}, lul.at)
-    if (rt) persistRealtimeSnapshot(rt)
-    return rt
+    return realtimeQuotaFrom(lul.headers || {}, lul.at)
   } catch {
     return null
   }
 }
 
-// 重启后 bridge 内存里的限流头快照会丢：把最近一次实时额度缓存进 account-quota.json，
-// 24h 内重启网关/bridge 也不退回示例数据（只在 syncedAt 变化时落盘，避免 30s 轮询反复写）
-function persistRealtimeSnapshot(rt) {
-  try {
-    const raw = readJsonSafe(QUOTA_FILE) || {}
-    if (raw._realtime?.syncedAt === rt.syncedAt) return
-    raw._realtime = rt
-    fs.writeFileSync(QUOTA_FILE, JSON.stringify(raw, null, 2))
-  } catch {}
+// 缓存结构 v2：{ version: 2, byAccount: { [accountId]: snapshot } }
+// 旧版是单个扁平快照（根上带 syncedAt），迁移时归到当时那个账号，之后不再跨账号复用。
+function realtimeCacheOf(raw) {
+  const rt = raw && raw._realtime
+  if (rt && rt.version === 2 && rt.byAccount && typeof rt.byAccount === 'object') {
+    return { version: 2, byAccount: { ...rt.byAccount } }
+  }
+  return null // 空或旧扁平结构，交给调用方决定归属
 }
 
-function cachedRealtime() {
+function freshSnapshot(snap) {
+  if (!snap || typeof snap.syncedAt !== 'string') return null
+  const at = new Date(snap.syncedAt).getTime()
+  if (Number.isNaN(at)) return null
+  return Date.now() - at <= RT_FRESH_MS ? snap : null
+}
+
+export function readCachedRealtime(accountId) {
+  const raw = readJsonSafe(QUOTA_FILE) || {}
+  const cache = realtimeCacheOf(raw)
+  if (!cache) return null
+  return freshSnapshot(accountId ? cache.byAccount[accountId] : null)
+}
+
+// 旧扁平快照没有账号归属：第一次读到时就落到当前账号名下，顺带把结构升级掉。
+// 不保留「所有账号共用同一份」的读路径——那等于把 A 的余量当成 B 的。
+export function migrateLegacyRealtime(accountId) {
   try {
-    const rt = (readJsonSafe(QUOTA_FILE) || {})._realtime
-    if (rt?.syncedAt && Date.now() - new Date(rt.syncedAt).getTime() <= RT_FRESH_MS) return rt
+    const raw = readJsonSafe(QUOTA_FILE) || {}
+    if (realtimeCacheOf(raw)) return null
+    const legacy = freshSnapshot(raw._realtime)
+    if (!legacy) return null
+    raw._realtime = { version: 2, byAccount: { [accountId || '__shared']: legacy } }
+    fs.writeFileSync(QUOTA_FILE, JSON.stringify(raw, null, 2), { mode: 0o600 })
+    return legacy
+  } catch {
+    return null
+  }
+}
+
+export function persistRealtimeSnapshot(accountId, rt) {
+  try {
+    const raw = readJsonSafe(QUOTA_FILE) || {}
+    const cache = realtimeCacheOf(raw) || { version: 2, byAccount: {} }
+    for (const [k, v] of Object.entries(cache.byAccount)) {
+      if (!freshSnapshot(v)) delete cache.byAccount[k] // 顺手清过期条目，文件别越攒越大
+    }
+    const key = accountId || '__shared'
+    if (cache.byAccount[key]?.syncedAt === rt.syncedAt) return // 30s 轮询不必反复落盘
+    cache.byAccount[key] = rt
+    raw._realtime = cache
+    fs.writeFileSync(QUOTA_FILE, JSON.stringify(raw, null, 2), { mode: 0o600 })
   } catch {}
-  return null
 }
 
 function rtSecToIso(v) {
@@ -183,7 +210,7 @@ function rtSecToIso(v) {
   return Number.isFinite(n) && n > 0 ? new Date(n * 1000).toISOString() : null
 }
 
-function realtimeQuotaFrom(headers = {}, at = 0) {
+export function realtimeQuotaFrom(headers = {}, at = 0) {
   const num = (k) => {
     const v = headers[k]
     if (v == null || v === '') return null
@@ -245,7 +272,7 @@ function realtimeQuotaFrom(headers = {}, at = 0) {
 }
 
 export async function getAccountQuota(gwConfig = {}) {
-  ensureSampleFile()
+  ensureDataDir()
 
   // 1. 真实账号身份：accounts.json（激活项）+ auth.json 的 id_token
   let email = ''
@@ -277,30 +304,51 @@ export async function getAccountQuota(gwConfig = {}) {
     }
   } catch {}
 
-  // 2. 额度配置：账号专属 → 共用缺省
+  // 2. 手动配置：账号专属 → 共用缺省。没有就是没有，不再补示例。
   const raw = readJsonSafe(QUOTA_FILE) || {}
   const { config: cfg, scope } = resolveScope(raw, accountId)
-  const isDemo = !cfg.plan && !cfg.weekly
+  const hasLocal = !!(
+    cfg.plan ||
+    cfg.weekly ||
+    (Array.isArray(cfg.models) && cfg.models.length) ||
+    cfg.teamName ||
+    cfg.accountType
+  )
+  // 老版本自动生成的示例文件带 _note；用户手动存过一次就不会再被视为示例
+  const legacySample = !!raw._note && raw._sample !== false
 
   const plan = cfg.plan || {}
   const expiresInDays = daysUntil(plan.expiresAt)
-  let weekly = normalizeQuota({ ...(cfg.weekly || {}), label: cfg.weekly?.label || 'Weekly' })
+  // 没有任何数据时不给「剩余 100%」这种假数字，宁可给 null 让界面显示空态
+  let weekly = cfg.weekly ? normalizeQuota({ ...cfg.weekly, label: cfg.weekly.label || 'Weekly' }) : null
   let models = Array.isArray(cfg.models) ? cfg.models.map(normalizeQuota) : []
 
-  // 3. 实时覆盖：bridge 内存快照优先，重启后退回本地持久化缓存（均限 24h 内）
-  const rt = (await fetchRealtimeQuota()) || cachedRealtime()
+  // 3. 实时优先：该账号自己的 bridge（端口由 launcher 按激活账号给出）
+  let rt = await fetchRealtimeQuota(gwConfig.bridgePort)
+  if (rt) persistRealtimeSnapshot(accountId, rt)
+  if (!rt) rt = readCachedRealtime(accountId)
+  if (!rt) rt = migrateLegacyRealtime(accountId)
   if (rt) {
-    if (rt.weekly) weekly = normalizeQuota({ ...rt.weekly, label: rt.weekly.label || weekly.label })
-    if (rt.models && rt.models.length) models = rt.models.map((m) => normalizeQuota(m))
+    if (rt.weekly) weekly = normalizeQuota({ ...rt.weekly, label: rt.weekly.label || weekly?.label || 'Weekly' })
+    // 一旦拿到实时数据，模型窗口就只认上游这一份。
+    // 上游这次只回了主窗口、没回模型级窗口时，宁可空着——把上次手填的数字
+    // 贴在「实时同步」标签底下，正是这轮要消灭的那类误导。
+    models = (rt.models || []).map((m) => normalizeQuota(m))
   }
   const effPlan = rt?.plan || plan
 
+  const syncedAt = rt?.syncedAt || null
+  const ageSec = syncedAt ? Math.max(0, Math.round((Date.now() - new Date(syncedAt).getTime()) / 1000)) : null
+  const source = rt ? 'realtime' : hasLocal ? 'manual' : 'none'
+
   return {
     ok: true,
-    demo: isDemo,
-    sample: rt ? false : cfg._sample === true, // 有实时数据时示例标记自动熄灭
-    source: rt ? 'realtime' : 'local', // realtime = 来自上游限流头的真实用量
-    syncedAt: rt?.syncedAt || null,
+    demo: source === 'none', // 「什么都没有」才是示例/空态
+    sample: legacySample && source !== 'realtime',
+    source, // realtime = 上游限流头；manual = 用户手填；none = 无数据
+    syncedAt,
+    ageSec, // 距上次真实观测的秒数，前端用来显示「N 分钟前」
+    stale: ageSec != null && ageSec * 1000 > RT_STALE_MS,
     scope, // 'account' = 该账号专属；'shared' = 所有账号共用
     accountId: accountId || null,
     account: {
@@ -337,8 +385,8 @@ export async function getAccountQuota(gwConfig = {}) {
 
 // 保存到「当前激活账号」名下；原共用配置会自动作为初始值继承，不会清空
 // patch.reset === true 时删除该账号专属配置，回落共用缺省（撤销用）
-export async function saveAccountQuota(patch = {}, accountId = null) {
-  ensureSampleFile()
+export async function saveAccountQuota(patch = {}, accountId = null, gwConfig = {}) {
+  ensureDataDir()
   const raw = readJsonSafe(QUOTA_FILE) || {}
   const targetId = accountId || activeAccountId()
 
@@ -376,7 +424,7 @@ export async function saveAccountQuota(patch = {}, accountId = null) {
   }
 
   fs.writeFileSync(QUOTA_FILE, JSON.stringify(next, null, 2), { mode: 0o600 })
-  return getAccountQuota()
+  return getAccountQuota(gwConfig)
 }
 
 // ---------- 写入清洗（前端可编辑后必须做，别信输入） ----------

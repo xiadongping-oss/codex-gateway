@@ -47,6 +47,14 @@ const syncedText = computed(() => {
   const p2 = (n) => String(n).padStart(2, '0')
   return `${p2(t.getHours())}:${p2(t.getMinutes())}`
 })
+// 距上次真实观测多久：上游只在真实调用后才回限流头，隔得久就说明数字可能已经变了
+const ageText = computed(() => {
+  const s = q.value?.ageSec
+  if (typeof s !== 'number') return ''
+  if (s < 60) return '刚刚'
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`
+  return `${Math.floor(s / 3600)} 小时前`
+})
 
 // ---- 编辑态 ----
 const editing = ref(false)
@@ -185,7 +193,7 @@ onUnmounted(() => {
   <div class="card">
     <div class="q-head">
       <div class="card-title">账号额度</div>
-      <span v-if="q && q.demo" class="demo-tag">示例数据</span>
+      <span v-if="q && q.demo" class="demo-tag">暂无观测数据</span>
       <span v-if="q" class="scope-tag" :class="isOwn ? 'own' : 'shared'">
         {{ isOwn ? '本账号专属' : '共用配置' }}
       </span>
@@ -210,8 +218,10 @@ onUnmounted(() => {
             <span v-if="planUrgent" class="expire-chip" :class="planUrgent">
               {{ planUrgent === 'rose' ? '订阅已过期' : '订阅 ' + plan.expiresInText }}
             </span>
-            <span v-if="q.source === 'realtime'" class="rt-chip" title="用量来自 Codex 上游限流头，真实调用后自动更新">实时同步<span v-if="syncedText"> · {{ syncedText }}</span></span>
-            <span v-if="q.sample" class="sample-chip" title="当前是示例数据，点右上角「编辑」填入真实值后保存，此标签自动消失">示例数据</span>
+            <span v-if="q.source === 'realtime'" class="rt-chip" :title="'用量来自 Codex 上游限流头，仅在上游真实响应后更新（最近一次：' + (ageText || '未知') + '）'">实时同步<span v-if="ageText"> · {{ ageText }}</span></span>
+            <span v-else-if="q.source === 'manual'" class="rt-chip manual" title="上游还没回过限流头，当前显示的是你手动填的值">手动填写</span>
+            <span v-if="q.stale" class="stale-chip" title="超过 30 分钟没再观测到上游限流头，数字可能已经变了">可能已过期</span>
+            <span v-if="q.sample" class="sample-chip" title="这是旧版本自动生成的示例数据，点右上角「编辑」保存一次即可覆盖">示例数据</span>
           </div>
           <div class="id-mail">{{ maskedEmail }}</div>
         </div>
@@ -297,6 +307,16 @@ onUnmounted(() => {
       </div>
 
       <template v-else>
+      <!-- 空态：没有任何观测值时不画进度条，画一条就默认「还剩 100%」，那是假信息 -->
+      <div v-if="q.source === 'none'" class="q-blank">
+        <div class="q-blank-title">还没有这个账号的额度数据</div>
+        <div class="q-blank-body">
+          ChatGPT 没有公开额度查询接口，网关只能在真实调用拿到上游响应头时顺手记一笔。
+          用它跑一次对话（WorkBuddy 里发一句话即可），30 秒内这里就会出现真实的剩余比例。
+        </div>
+        <div class="q-blank-alt">如果要先手填一个大概值，点右上角「编辑」。</div>
+      </div>
+
       <!-- 周用量 -->
       <div class="q-block" v-if="weekly">
         <div class="blk-head">
@@ -334,9 +354,10 @@ onUnmounted(() => {
       </template>
 
       <div class="q-note">
-        身份（账号名 / 邮箱 / ID）来自本地登录态；订阅与用量为本地维护数据，ChatGPT 未公开对应接口。
-        额度按账号隔离，点「编辑」直接在卡片里改，保存到当前激活账号名下（<code>accounts[账号id]</code>）；
-        <code>shared</code> 为所有账号共用缺省。也可直接改 <code>gateway/data/account-quota.json</code>。
+        身份（账号名 / 邮箱 / ID）来自本地登录态。用量优先取该账号自己那个 bridge 观测到的上游限流头
+        （<code>source: realtime</code>，每个账号独立缓存，切账号不会串号）；没有观测值时显示你手填的配置
+        （<code>manual</code>），两者都没有就留空——不会编数字。手填值保存到当前激活账号名下
+        （<code>accounts[账号id]</code>），<code>shared</code> 为共用缺省。
       </div>
     </template>
 
@@ -362,6 +383,13 @@ onUnmounted(() => {
   font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; cursor: help;
   color: #fbbf24; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.35);
 }
+.rt-chip.manual {
+  color: var(--text-2); background: rgba(255, 255, 255, 0.06); border-color: var(--border-strong);
+}
+.stale-chip {
+  font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; cursor: help;
+  color: #fbbf24; background: rgba(245,158,11,0.1); border: 1px dashed rgba(245,158,11,0.45);
+}
 .scope-tag { font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; }
 .scope-tag.own { color: var(--emerald-light); background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.3); }
 .scope-tag.shared { color: var(--text-2); background: rgba(255,255,255,0.06); border: 1px solid var(--border-strong); }
@@ -375,6 +403,14 @@ onUnmounted(() => {
 .btn-ghost.sm:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
 .q-err { font-size: 12px; color: var(--rose); margin-bottom: 12px; }
 .q-empty { font-size: 12.5px; color: var(--text-3); padding: 8px 0; }
+/* 空态：不画进度条，改成说明 + 下一步动作 */
+.q-blank {
+  padding: 16px; border-radius: 10px; background: var(--bg);
+  border: 1px dashed var(--border-strong);
+}
+.q-blank-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.q-blank-body { font-size: 12px; color: var(--text-2); margin-top: 6px; line-height: 1.65; }
+.q-blank-alt { font-size: 11.5px; color: var(--text-3); margin-top: 8px; }
 
 /* 身份 */
 .q-id { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
