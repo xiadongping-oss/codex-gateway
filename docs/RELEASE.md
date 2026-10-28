@@ -43,15 +43,16 @@ print(f'{n} files → release/{top}-win64.zip')
 "
 
 # 3. 端到端验证（发布前必做）
-#   3.1 结构自检：顶层必须恰好一个目录，且无机密（一行验证）
-python -c "
-import zipfile, collections, sys
-z = zipfile.ZipFile('release/codex-gateway-v${VER}-win64.zip'); names = z.namelist()
-tops = set(n.split('/')[0] for n in names)
-bad = [n for n in names if any(k in n for k in ('admin-token.json','api-keys.json','accounts.json','.gw-config.json','.codex-client-identity'))]
-print('顶层目录:', tops, '| 机密命中:', bad or '无')
-sys.exit(0 if len(tops) == 1 and not bad else 1)
-"
+#   3.1 结构自检：一条命令校验顶层目录、机密文件、个人绝对路径与换行符
+node build-release.mjs --verify-zip
+#   校验项（任一不满足即退出码 1，禁止分发）：
+#     · 顶层恰好一个目录且与版本同名（防 v1.1.0 那种双目录坏包）
+#     · 无 gateway/data、gateway/tests、admin-token.json 等数据与机密
+#     · 无 C:\Users\<真实用户名> 这类打包机绝对路径
+#     · 所有 .sh 为 LF、.cmd/.bat 为 CRLF
+#   打包阶段已先跑过同样的检查（对着 staging）；--verify-zip 补的是
+#   「压缩时选错根目录」这一类 staging 看不出来的问题。
+#   需要复核历史产物：node build-release.mjs --verify-zip --zip=<路径>
 #   3.2 解压 zip 到干净目录，独立端口试跑：
 #     cd <解压目录>/codex-gateway-v${VER}/gateway
 #     LAUNCHER_PORT=4174 node launcher.mjs --open

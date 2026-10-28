@@ -24,7 +24,7 @@ services:
       - CHATGPT_BRIDGE_AUTH_FILE=/home/node/.codex/auth.json
     volumes:
       # 把本机 Codex 登录态挂载进容器（只读）。Windows 请在 .env 里填绝对路径，
-      # 例如 CODEX_AUTH_DIR=C:/Users/Designer/.codex
+      # 例如 CODEX_AUTH_DIR=C:/Users/你的用户名/.codex
       - "${CODEX_AUTH_DIR:-$HOME/.codex}:/home/node/.codex:ro"
     # 安全：仅本地回环，且不对公网开放
     networks:

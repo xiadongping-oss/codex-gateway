@@ -62,7 +62,7 @@ node node_modules/chatgpt-bridge/dist/cli.js serve         # 默认 127.0.0.1:10
 cp .env.example .env          # 改 CODEX_AUTH_DIR 指向本机 ~/.codex
 docker compose up -d
 ```
-> Windows + Docker Desktop：`.env` 里 `CODEX_AUTH_DIR` 填 Windows 绝对路径（如 `C:/Users/Designer/.codex`），
+> Windows + Docker Desktop：`.env` 里 `CODEX_AUTH_DIR` 填 Windows 绝对路径（如 `C:/Users/你的用户名/.codex`），
 > 且 Docker Desktop 需已共享该盘符。
 
 ## 健康检查

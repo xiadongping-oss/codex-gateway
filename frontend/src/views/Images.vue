@@ -509,7 +509,7 @@ const emptyText = computed(() => {
 
         <template v-if="form.type === 'local'">
           <label class="f-label">目录路径</label>
-          <input class="f-input mono" v-model="form.dir" placeholder="例如 C:\Users\Designer\Pictures\assets" />
+          <input class="f-input mono" v-model="form.dir" placeholder="例如 C:\Users\你的用户名\Pictures\assets" />
         </template>
 
         <template v-else-if="form.type === 's3'">
