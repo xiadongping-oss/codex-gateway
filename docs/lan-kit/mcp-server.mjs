@@ -18,14 +18,16 @@ import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
-// 版本号以 package.json 为准，不在这里硬编码——历史上这里写死 1.1.0，落后了三个
-// 版本，客户端 initialize 拿到的版本号是错的。读不到时如实报 unknown。
+// 版本号以仓库根 package.json 为准，不在这里硬编码——历史上这里写死 1.1.0，
+// 落后了三个版本，客户端 initialize 拿到的版本号是错的。
+// 只认 name = codex-gateway 的那份（gateway/package.json 是 0.1.0，读了会报错版本），
+// 读不到就如实报 unknown。
 const SERVER_VERSION = (() => {
   const dir = path.dirname(fileURLToPath(import.meta.url))
-  for (const p of [path.join(dir, '..', 'package.json'), path.join(dir, 'package.json')]) {
+  for (const rel of ['../package.json', '../../package.json']) {
     try {
-      const v = JSON.parse(fs.readFileSync(p, 'utf8')).version
-      if (v) return v
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, rel), 'utf8'))
+      if (pkg.name === 'codex-gateway' && pkg.version) return pkg.version
     } catch { /* 试下一个候选 */ }
   }
   return 'unknown'

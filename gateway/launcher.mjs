@@ -85,16 +85,18 @@ import { getAccountQuota, saveAccountQuota } from './account-quota.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-// 应用版本：以 package.json 为准，**不要在这里硬编码**。
+// 应用版本：以仓库根 package.json 为准，**不要在这里硬编码**。
 // 此前 MCP 的 serverInfo 写死 '1.2.0-http'，发版时没人记得同步，客户端日志里
-// 报的版本和实际包对不上，排障时先误导自己一次。改为读包内声明后，改
-// package.json 一处即全站一致；读不到时如实报 unknown，不假装是某个版本。
+// 报的版本和实际包对不上，排障时先误导自己一次。
+// 只认 name = codex-gateway 的那份：gateway/package.json 是 launcher 自己的依赖
+// 清单（version 0.1.0），读错会报出一个「看起来合理但其实不对」的版本号——
+// 宁可报 unknown，也不要报一个错的。
 function resolveAppVersion() {
-  for (const p of [path.join(__dirname, '..', 'package.json'), path.join(__dirname, 'package.json')]) {
+  for (const rel of ['../package.json', '../../package.json']) {
     try {
-      const v = JSON.parse(fs.readFileSync(p, 'utf8')).version
-      if (v) return v
-    } catch { /* 找不到就用下一个候选 */ }
+      const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, rel), 'utf8'))
+      if (pkg.name === 'codex-gateway' && pkg.version) return pkg.version
+    } catch { /* 试下一个候选 */ }
   }
   return 'unknown'
 }
