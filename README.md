@@ -55,10 +55,22 @@ flowchart LR
 ```bash
 npm run setup   # 首次：安装本地代理（已内置，离线可用）
 npm run login   # 首次：ChatGPT OAuth 登录
-npm start       # 启动并打开控制台 http://127.0.0.1:4173
+npm start       # 启动并自动打开控制台 http://127.0.0.1:4173
 ```
 
-启动后确认 `http://127.0.0.1:4173/__gw/status` 显示 `health.ok=true`，即可接入客户端。
+启动后会在默认浏览器打开控制台（如果浏览器没弹出，手动访问 `http://127.0.0.1:4173`，页面会提示如何登录）。
+
+### 控制台登录（管理令牌）
+
+控制面 `/__gw/*`（账号、API Key、配置）默认启用管理令牌保护，防止本机上任意脚本无凭据读走明文 Key：
+
+- **日常**：`npm start` / 双击启动图标会自动带上一次性登录链接打开控制台，无感。
+- **手动**：`npm run admin` 打印一条一次性登录链接（60 秒内有效，使用后即失效）。
+- **脚本/curl**：`npm run admin` 的同级命令 `node gateway/launcher.mjs admin-token` 打印令牌，请求时带 `Authorization: Bearer cgwadm-...`。
+- 登录后浏览器持有 14 天本机会话 Cookie，期间无需重复登录。
+- 关闭该保护（仅限完全可信的机器）：启动前设 `CGW_ADMIN_AUTH=0`。
+
+数据面 `/v1/*` 的 `cgw-` API Key 用法完全不受影响。
 
 ## 模型
 

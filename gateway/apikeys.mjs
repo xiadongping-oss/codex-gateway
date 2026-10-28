@@ -229,9 +229,31 @@ export function revealApiKey(id) {
   return { ok: true, id: k.id, name: k.name, token, mask: k.mask }
 }
 
+// 显示名规范化（纵深防御）。
+// 前端渲染已全程走 textContent，存 <script> 也不会 XSS；这里额外挡两类
+// 「看着正常但实际是陷阱」的输入：
+//   · 控制字符（\n \r \t 等）——会撑破控制台表格、污染日志行格式，
+//     甚至伪造出一行假的 pushLog 记录来误导排查。
+//   · 零宽字符与 Unicode 双向覆写（U+202E 等）——可以让两个不同的 Key
+//     显示成同一个名字，或让 "abc" 显示为 "cba"，用于界面伪装。
+// 顺便折叠连续空白并限长，保证 UI 不被引爆。
+export function sanitizeDisplayName(raw, fallback = '未命名', max = 40) {
+  let s = String(raw == null ? '' : raw)
+  s = s
+    // C0 / C1 控制符 → 空格：直接删会把 'abc\ndef' 粘成 'abcdef'，
+    // 换成空格既能断词，又保证名字里再也放不下换行（日志无法被伪造行注入）
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    // 零宽 + BiDi 覆写 → 直接删：它们不占视觉宽度，留着只能用来做同名伪装
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!s) return fallback
+  return s.slice(0, max)
+}
+
 // 创建 key。返回 { id, name, token, mask, accountIds, ... }，token 仅此一次可读。
 export function createApiKey({ name, accountId = null, accountIds = null } = {}) {
-  const cleanName = String(name || '').trim().slice(0, 40) || '未命名'
+  const cleanName = sanitizeDisplayName(name)
   const ids = normalizeAccountIds(accountIds, accountId)
   const token = issueToken()
   const id = genKeyId()

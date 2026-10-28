@@ -25,7 +25,7 @@
 import http from 'node:http'
 import https from 'node:https'
 import { Transform, Readable } from 'node:stream'
-import { spawn } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import crypto from 'node:crypto'
@@ -76,10 +76,23 @@ import {
 import { ensureBridgePatched } from './bridge-patches.mjs'
 import { recordCallLog, getCallLogs } from './call-logs.mjs'
 import { handleAssets } from './assets.mjs'
+import { createBridgeScheduler } from './bridge-scheduler.mjs'
+import {
+  createAdminAuth, loadOrCreateAdminToken, SESSION_COOKIE, BOOTSTRAP_PARAM, DEFAULT_SESSION_TTL_MS
+} from './admin-auth.mjs'
 import { mergeModelList, resolveModelId, defaultChatModel, IMAGE_MODEL } from './model-catalog.mjs'
 import { getAccountQuota, saveAccountQuota } from './account-quota.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+// ---- 控制面管理鉴权（原 F-01） ----
+// 令牌落在 __dirname（与 api-keys.json 同级，不进 git）。想指定自己的令牌用
+// 环境变量 CGW_ADMIN_TOKEN；想彻底关掉这项保护用 CGW_ADMIN_AUTH=0（不建议）。
+const ADMIN_AUTH_DISABLED = process.env.CGW_ADMIN_AUTH === '0'
+const adminToken = ADMIN_AUTH_DISABLED
+  ? { token: '', source: 'disabled' }
+  : loadOrCreateAdminToken(__dirname)
+const adminAuth = ADMIN_AUTH_DISABLED ? null : createAdminAuth({ token: adminToken.token })
 
 // 多模式配置：bridge（复用 codex login OAuth）/ openai（自带 API Key 直连）
 let gwConfig = loadConfig()
@@ -98,6 +111,42 @@ const BRIDGE_NODE = process.env.BRIDGE_NODE || process.execPath
 const BRIDGE_ARGS = (process.env.BRIDGE_ARGS || 'serve').split(/\s+/).filter(Boolean)
 const AUTOSTART = process.env.DISABLE_AUTOSTART !== '1'
 const BRIDGE_URL = `http://127.0.0.1:${BRIDGE_PORT}`
+
+// ---- CLI：控制台登录入口（对齐 model-gateway 的 `admin` 子命令）----
+//   node launcher.mjs admin        签发一次性登录链接
+//   node launcher.mjs admin-token  打印管理令牌，供 curl / 脚本使用
+if (process.argv[2] === 'admin' || process.argv[2] === 'admin-token') {
+  const cmd = process.argv[2]
+  if (ADMIN_AUTH_DISABLED) {
+    console.log('控制面管理鉴权已用 CGW_ADMIN_AUTH=0 关闭，访问控制台无需登录。')
+    process.exit(0)
+  }
+  const base = `http://127.0.0.1:${LAUNCHER_PORT}`
+  try {
+    await fetch(base + '/health')
+  } catch {
+    console.error(`✗ 网关似乎没在运行（${base}）。请先启动网关，再执行本命令。`)
+    process.exit(1)
+  }
+  if (cmd === 'admin-token') {
+    console.log(adminAuth.token)
+    console.error(`\n脚本用法：  curl -H "Authorization: Bearer ${adminAuth.token}" ${base}/__gw/status`)
+    process.exit(0)
+  }
+  const r = await fetch(base + '/__gw/admin/bootstrap', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + adminAuth.token, Origin: base }
+  })
+  const j = await r.json().catch(() => ({}))
+  if (!r.ok || !j.ok) {
+    console.error('✗ 签发失败：' + JSON.stringify(j))
+    process.exit(1)
+  }
+  console.log('控制台登录链接（60 秒内有效，使用后即失效）：\n')
+  console.log('  ' + j.url + '\n')
+  console.log(`用本机浏览器打开即可进入控制台，会话有效期 ${j.sessionDays} 天。`)
+  process.exit(0)
+}
 
 // ---- 生图实际使用的模型（重要） ----
 // ChatGPT 订阅通道**没有独立的图片模型**：bridge 的 /v1/images/generations
@@ -128,6 +177,9 @@ const flagValue = (name) => {
   return hit ? hit.slice(name.length + 1) : ''
 }
 const LAN_ENABLED = hasFlag('--lan') || hasFlag('--lan-host') || process.env.GW_LAN === '1'
+// 启动后自动打开控制台。桌面快捷方式（start-gateway.vbs → run-gateway.cmd）与 npm start
+// 会带上 --open；命令行手工排查、CI、测试脚本不带，避免每次都被弹一个标签页。
+const OPEN_BROWSER = hasFlag('--open') || process.env.CGW_OPEN_BROWSER === '1'
 const LAN_HOST = flagValue('--lan-host') || process.env.GW_LAN_HOST || '0.0.0.0'
 const LISTEN_HOST = LAN_ENABLED ? LAN_HOST : '127.0.0.1'
 
@@ -137,6 +189,94 @@ function isLoopbackReq(req) {
   if (!addr) return true // 拿不到就当作本机（保守起见放行控制面，避免把自己锁在门外）
   const a = addr.replace(/^::ffff:/i, '')
   return a === '127.0.0.1' || a === '::1' || a === 'localhost' || a.startsWith('127.')
+}
+
+// ---- 控制面浏览器来源防护（Host 校验 + CSRF）----
+// 控制面只认本机.caller，网络层已用 isLoopbackReq 拦了局域网来源；但**本机浏览器**
+// 仍然可以被任意网页驱动：恶意页面用 XHR/fetch 直指 127.0.0.1:4173/__gw/*，
+// 源 IP 就是回环，网络层拦不住。两道应用层闸门补齐：
+//
+//   1) Host 白名单 —— 挡 DNS rebinding：攻击者域名解析到本机后，浏览器发来的
+//      Host 是 evil.com 而非 127.0.0.1 / 本机 IP，直接拒绝。
+//   2) 同源校验   —— Origin / Referer 的 host 必须等于请求的 Host。跨站页面发起的
+//      写请求（如偷偷 POST /__gw/apikeys 给自己签发一个 Key）会被拒。
+//
+// 程序化客户端（curl、MCP client、lan-kit setup-client.mjs）不发 Origin/Referer，
+// 走「无来源标记 → 放行」分支，兼容性不受影响。
+const LOCAL_HOSTS = (() => {
+  const set = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
+  try {
+    for (const list of Object.values(os.networkInterfaces())) {
+      for (const ni of list || []) {
+        if (ni.family === 'IPv4' || ni.family === 4) set.add(ni.address)
+      }
+    }
+  } catch {}
+  return set
+})()
+
+// '127.0.0.1:4173' → '127.0.0.1'；'[::1]:4173' → '[::1]'
+function hostOf(h) {
+  const s = String(h || '').trim().toLowerCase()
+  if (!s) return ''
+  if (s.startsWith('[')) {
+    const end = s.indexOf(']')
+    return end > 0 ? s.slice(0, end + 1) : s
+  }
+  return s.split(':')[0]
+}
+
+// 返回 null 表示放行；否则返回用于报错的来源标记
+function crossSiteOrigin(req) {
+  const raw = req.headers['origin'] || req.headers['referer']
+  if (!raw) return null // 非浏览器客户端，放行
+  let u
+  try {
+    u = new URL(String(raw))
+  } catch {
+    return 'malformed'
+  }
+  return hostOf(u.host) === hostOf(req.headers['host']) ? null : hostOf(u.host)
+}
+
+// 控制面统一守卫。返回 true 表示已响应、调用方应结束处理。
+//
+// 三道闸门，缺一不可：
+//   1) Host 白名单  —— 挡 DNS rebinding
+//   2) 同源校验    —— 挡浏览器 CSRF
+//   3) 管理鉴权    —— 挡本机其它进程无凭据读写 Key / 配置 / 账号（原 F-01）
+function controlPlaneGuard(req, res) {
+  const h = hostOf(req.headers['host'])
+  // HTTP/1.0 或无 Host 头时无法判断，放行以免影响本机命令行工具
+  if (h && !LOCAL_HOSTS.has(h)) {
+    res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({
+      error: 'host_not_allowed',
+      reason: `Host 必须是本机地址（收到 ${h}）。这是 DNS rebinding 防护：域名必须指向本机才能访问控制面。`
+    }))
+    return true
+  }
+  const bad = crossSiteOrigin(req)
+  if (bad) {
+    res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify({
+      error: 'cross_origin_denied',
+      reason: `控制面不接受跨站请求（收到来源 ${bad}）。命令行 / curl / MCP 客户端不发 Origin，不受影响。`
+    }))
+    return true
+  }
+  if (adminAuth && !adminAuth.verifyRequest(req).ok) {
+    recordCallLog({ method: req.method, endpoint: req.url?.split('?')[0] || '/__gw', model: '—', status: 401, latency: 0, tokens: null })
+    const hint = '控制台已启用管理令牌保护。浏览器请用一次性登录链接进入：在本机运行 ' +
+      `\`node launcher.mjs admin\`；脚本调用请带 Authorization: Bearer <管理令牌>（用 \`node launcher.mjs admin-token\` 查看）。`
+    res.writeHead(401, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'WWW-Authenticate': 'Bearer realm="codex-gateway control plane"'
+    })
+    res.end(JSON.stringify({ error: 'admin_auth_required', reason: hint }))
+    return true
+  }
+  return false
 }
 
 // 本机所有可用的局域网 IPv4（用于给前端展示「接口地址」）
@@ -214,62 +354,74 @@ function startBridge() {
     startedAt = null
   })
   child.on('error', (e) => pushLog('[spawn error] ' + e.message))
+  // bridge 起来了 → 调度器记住它当前加载的账号
+  bridgeScheduler.setLoaded(gwConfig.authFilePath || null)
   return { ok: true }
 }
 function stopBridge() {
   if (!child) return { ok: false, msg: '未运行' }
   child.kill('SIGTERM')
+  // 进程没了就等于「当前加载」失效，否则下一个请求会误以为目标已就绪
+  bridgeScheduler.forget()
   pushLog('■ 发送 SIGTERM')
   return { ok: true }
 }
 
-// 热切换 bridge 到指定账号：若当前 activeId 与之不同则 stop+start。
+// 热切换 bridge 到指定账号：若当前已加载的账号与之不同则 stop+start。
 // API Key 鉴权在请求到达时调用，确保该 key 绑定的账号被 bridge 加载。
-// 同步等待，对调用方而言表现是首跨账号请求会停顿 ~200ms（实际表现取决于 spawn/启动开销）。
 //
-// 并发保护：多个 key 绑不同账号时，请求会并发到达。若不加锁，两个请求会同时
-// 对 bridge 进程 kill/start —— 互相踩踏，最终 child 指针指向已死进程，
-// 表现为随机的 502 / bridge_unreachable。这里用 promise 链把切换串行化，
-// 并在队首做一次「目标是否已生效」复检，避免串行化后重复切换。
-let bridgeSwitchChain = Promise.resolve()
-function ensureBridgeForAccount(accountId) {
-  if (!accountId) return Promise.resolve({ ok: true })
-  const task = bridgeSwitchChain.then(() => doEnsureBridgeForAccount(accountId))
-  // 无论成功失败都要让链继续，否则一次异常会卡死后续所有切换
-  bridgeSwitchChain = task.then(() => {}, () => {})
-  return task
-}
+// 调度语义见 bridge-scheduler.mjs：**同账号的请求完全并行**，只有跨账号才需要
+// 独占切换，且切换前会等所有在途请求退场 —— 消除旧实现的 TOCTOU 串号窗口。
+//
+// 返回值里多了一个 release()：**调用方必须持有到本请求的转发真正结束**。
+// 早退会让写者以为无人使用而切走 bridge，把还在转发的请求换到别人的凭据上。
+const bridgeScheduler = createBridgeScheduler({
+  onEvent: (level, msg) => pushLog(level === 'warn' ? '⚠ ' + msg : '· ' + msg)
+})
 
-async function doEnsureBridgeForAccount(accountId) {
-  const target = accountAuthPath(accountId)
-  if (!fs.existsSync(target)) return { ok: false, msg: '账号 auth 文件不存在：' + target }
-  if (gwConfig.authFilePath === target && child) return { ok: true }
+async function doSwitchBridge(target) {
   gwConfig.authFilePath = target
   saveConfig(gwConfig)
-  pushLog(`● 切换 bridge 鉴权至账号 ${accountId}`)
-  if (child) {
-    const dying = child
+  pushLog('● 切换 bridge 鉴权至账号 ' + path.basename(target, '.json'))
+  const previous = child
+  if (previous) {
     child = null
     startedAt = null
-    dying.kill('SIGTERM')
-    // 给子进程机会退出，但不让上层 hang 太久
+    previous.kill('SIGTERM')
+    // 给子进程体面退出的机会，但不让上层 hang 太久
     await new Promise((r) => {
-      if (!dying || dying.exitCode != null) return r()
-      const t = setTimeout(() => { try { dying.kill('SIGKILL') } catch {} ; r() }, 1200)
-      dying.once('exit', () => { clearTimeout(t); r() })
+      if (previous.exitCode != null) return r()
+      const t = setTimeout(() => {
+        try { previous.kill('SIGKILL') } catch {}
+        r()
+      }, 1200)
+      previous.once('exit', () => { clearTimeout(t); r() })
     })
   }
   const r = startBridge()
-  // 等 bridge 真的起来，否则接下来 proxy 会 502
-  for (let i = 0; i < 30 && !child; i++) await new Promise((r) => setTimeout(r, 80))
+  // 等 bridge 真的站起来，否则接下来的转发会直接 502
+  for (let i = 0; i < 30 && !child; i++) await new Promise((res) => setTimeout(res, 80))
   if (r.ok) {
-    // 等首条 /health 200，确认 auth 已加载
     const h = await fetchBridgeHealth()
-    if (!h.ok) {
-      pushLog('⚠ bridge 健康检查未过，但已监听：' + (h.status || '—'))
-    }
+    if (!h.ok) pushLog('⚠ bridge 健康检查未过，但已监听：' + (h.status || '—'))
   }
+  // 切换失败不要假装成功：让上层把错误报给调用方，而不是用错误的凭据继续转发
+  if (!child) return { ok: false, msg: 'bridge 未能启动' }
   return r
+}
+
+async function ensureBridgeForAccount(accountId) {
+  if (!accountId) return { ok: true, release: () => {} }
+  const target = accountAuthPath(accountId)
+  if (!fs.existsSync(target)) return { ok: false, msg: '账号 auth 文件不存在：' + target }
+
+  const slot = await bridgeScheduler.acquire(target, doSwitchBridge)
+
+  // bridge 进程可能已被手动停止或崩溃。这里兜底拉起：
+  // startBridge 自带 `if (child)` 重入保护，并发调用是安全的。
+  if (!child) startBridge()
+
+  return { ok: true, release: slot.release }
 }
 
 // 当前激活账号摘要（与 engine.js getActiveAccountSummary 对齐）：
@@ -761,6 +913,97 @@ function isInsideDir(base, target) {
 
 // 静态文件 ETag 缓存：以 mtime + size 为键，命中则 304，避免重复读盘与传输
 const staticCache = new Map() // filePath -> { etag, buf, mtime, size, ext }
+
+// 未登录访问控制台的引导页。
+// 为什么需要它：前端 SPA 首屏会立刻请求 /__gw/*，没有会话时全部 401，
+// 用户只会看到一个空白/报错的控制台，完全不知道"要去终端拿登录链接"。
+// 这里在服务端直接给一张能自助完成的页面：粘贴一次管理令牌 → 换 14 天会话。
+const ADMIN_GATE_HTML = `<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codex 网关 · 控制台登录</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1a1d23;--dim:#6b7280;--line:#e3e6eb;--accent:#2563eb;--err:#dc2626}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--fg);
+  font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;padding:24px}
+.card{width:100%;max-width:460px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:30px 30px 26px;
+  box-shadow:0 2px 16px rgba(16,24,40,.06)}
+h1{margin:0 0 6px;font-size:18px;font-weight:650;letter-spacing:-.01em}
+.sub{margin:0 0 22px;color:var(--dim);font-size:12.5px}
+label{display:block;font-size:12px;font-weight:600;color:var(--dim);margin-bottom:7px}
+input{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;font:13px ui-monospace,Menlo,Consolas,monospace;
+  color:var(--fg);background:#fbfcfd;outline:none}
+input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.12);background:#fff}
+button{width:100%;margin-top:12px;padding:10px;border:0;border-radius:8px;background:var(--accent);color:#fff;
+  font-size:13.5px;font-weight:600;cursor:pointer}
+button:hover{background:#1d4ed8}button:disabled{opacity:.6;cursor:default}
+.hint{margin:20px 0 0;padding-top:18px;border-top:1px solid var(--line);font-size:12.5px;color:var(--dim)}
+.hint b{color:var(--fg);font-weight:600}
+code{background:#eef1f5;border-radius:4px;padding:1.5px 5px;font:12px ui-monospace,Menlo,Consolas,monospace;color:#111827}
+.msg{margin-top:12px;font-size:12.5px;color:var(--err);min-height:18px}
+.note{background:#fff8e6;border:1px solid #f5e0a3;color:#8a6100;border-radius:8px;padding:10px 12px;font-size:12.5px;margin:0 0 20px}
+</style></head><body><div class="card">
+<h1>Codex 网关 · 管理控制台</h1>
+<p class="sub">控制面已启用管理令牌保护，进入前需要一次身份确认。</p>
+<div id="lan" class="note" style="display:none">当前是<b>局域网访问</b>。控制台只能在网关所在的机器本机打开，局域网设备请使用 <code>/setup</code> 页配置客户端。</div>
+<label for="tk">管理令牌</label>
+<input id="tk" type="password" placeholder="cgwadm-..." autocomplete="off" spellcheck="false">
+<button id="go">进入控制台</button>
+<div class="msg" id="msg"></div>
+<div class="hint">
+  <b>令牌在哪？</b><br>
+  · 双击网关启动图标：启动器会自动打开登录链接，正常不会看到这一页<br>
+  · 终端：在 <code>gateway</code> 目录运行 <code>node launcher.mjs admin</code>（一次性链接）<br>
+  · 或运行 <code>node launcher.mjs admin-token</code> 打印令牌，粘贴到上面
+</div>
+</div>
+<script>
+(function(){
+  var loopback = __IS_LOOPBACK__;
+  if (!loopback) {
+    document.getElementById('lan').style.display = 'block';
+    document.getElementById('tk').disabled = true;
+    document.getElementById('go').disabled = true;
+    return;
+  }
+  var input = document.getElementById('tk'), btn = document.getElementById('go'), msg = document.getElementById('msg');
+  async function enter(){
+    var t = input.value.trim();
+    if (!t) { msg.textContent = '请先粘贴管理令牌'; return }
+    btn.disabled = true; msg.textContent = '';
+    try {
+      var r = await fetch('/__gw/admin/bootstrap', { method: 'POST', headers: { Authorization: 'Bearer ' + t } });
+      if (r.status === 401) { msg.textContent = '管理令牌不正确。请用 node launcher.mjs admin-token 查看最新令牌。'; return }
+      if (!r.ok) { msg.textContent = '登录失败（HTTP ' + r.status + '）'; return }
+      var j = await r.json();
+      if (!j || !j.url) { msg.textContent = '服务端未返回登录链接'; return }
+      location.replace(j.url);
+    } catch (e) {
+      msg.textContent = '请求失败：' + (e && e.message ? e.message : '网络错误');
+    } finally { btn.disabled = false }
+  }
+  btn.addEventListener('click', enter);
+  input.addEventListener('keydown', function(e){ if (e.key === 'Enter') enter() });
+  input.focus();
+})();
+</script></body></html>`
+
+function adminGatePage(isLoopback) {
+  return ADMIN_GATE_HTML.replace('__IS_LOOPBACK__', isLoopback ? 'true' : 'false')
+}
+
+// 尽力用系统默认浏览器打开（失败就静默，不影响网关运行）
+function openInBrowser(url) {
+  try {
+    const opts = { windowsHide: true, stdio: 'ignore', detached: true }
+    if (process.platform === 'win32') execFile('cmd', ['/c', 'start', '', url], opts).unref()
+    else if (process.platform === 'darwin') execFile('open', [url], opts).unref()
+    else execFile('xdg-open', [url], opts).unref()
+    return true
+  } catch { return false }
+}
+
 function makeEtag(stat) {
   return `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`
 }
@@ -949,18 +1192,66 @@ function deleteGenImage(name, keyId) {
 
 // 严格鉴权：开启后所有 /v1/* 请求必须携带有效 cgw- API Key（/health 保持开放）
 // 局域网模式下强制开启——匿名放行等于把你的 ChatGPT 订阅开放给整个局域网。
+// Key 校验失败：reason 给机器码（便于脚本分支处理），message 给可操作文案（便于人排查）。
+// 修复前一律返回 missing_api_key，用户明明复制错了 key，却被告知"忘记带 key"。
+const AUTH_REASON = {
+  bad_prefix: {
+    message: 'Key 格式不对：网关只认 cgw- 开头的 Key。看起来是贴错了厂商的 Key（如 OpenAI 的 sk-）或只复制了一半。'
+  },
+  not_found: {
+    message: '这个 Key 不在本网关的登记表里：可能已被删除，或来自另一台机器 / 另一次安装的网关。请在控制台新建一个。'
+  },
+  disabled: {
+    message: '这个 Key 已被停用。请在控制台「API Key」页重新启用后重试。'
+  }
+}
+const KEY_PREFIX_AUTH = 'cgw-'
+
+// 取原始 Bearer 值（不限前缀）。extractBearerToken 会自动丢弃非 cgw- 前缀的值，
+// 但排查时「贴了别的厂商的 Key」和「压根没贴」是两种完全不同的错误，区别对待。
+function rawBearer(req) {
+  const m = String(req.headers['authorization'] || '').match(/^Bearer\s+(.+)$/i)
+  return m ? m[1].trim() : null
+}
+
+function authRejectBody(v) {
+  const detail = AUTH_REASON[v.reason]
+  return {
+    error: 'invalid_api_key',
+    reason: v.reason,
+    message: detail ? detail.message : 'Key 校验未通过。',
+    hint: '请把控制台「API Key」页生成的完整 Key 放进 Authorization 头：Authorization: Bearer <cgw- Key>'
+  }
+}
+
 function strictAuthReject(req, res, p) {
   const enforced = gwConfig.strictAuth || LAN_ENABLED
   if (!enforced) return false
-  const t = extractBearerToken(req.headers['authorization'])
-  if (t && verifyApiKey(t).ok) return false
+  const raw = rawBearer(req)
+  if (raw) {
+    // 带了凭据但前缀不对：明确告诉用户贴错厂商了，而不是含糊说"缺少 key"
+    if (!raw.startsWith(KEY_PREFIX_AUTH)) {
+      recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify(authRejectBody({ reason: 'bad_prefix' })))
+      return true
+    }
+    const v = verifyApiKey(raw)
+    if (v.ok) return false
+    recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
+    res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify(authRejectBody(v)))
+    return true
+  }
   recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
   res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify({
     error: 'missing_api_key',
-    reason: LAN_ENABLED
+    reason: 'missing',
+    message: LAN_ENABLED
       ? '局域网模式：/v1 必须携带有效的 cgw- API Key'
-      : '严格鉴权已开启：/v1 需要有效的 cgw- API Key（设置页可关闭）'
+      : '严格鉴权已开启：/v1 需要有效的 cgw- API Key（设置页可关闭）',
+    hint: '请在请求头加 Authorization: Bearer <cgw- Key>；Key 可在控制台「API Key」页生成。'
   }))
   return true
 }
@@ -1123,7 +1414,7 @@ async function handleMcpEndpoint(req, res) {
     if (!v.ok) {
       recordCallLog({ method: req.method, endpoint: '/mcp', model: '—', status: 401, latency: 0, tokens: null })
       res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
-      return res.end(JSON.stringify({ error: 'invalid_api_key', reason: v.reason }))
+      return res.end(JSON.stringify(authRejectBody(v)))
     }
     caller = { keyId: v.keyId, keyName: v.name }
   }
@@ -1273,6 +1564,27 @@ const server = http.createServer(async (req, res) => {
         error: 'control_plane_local_only',
         reason: '局域网模式下控制接口仅允许本机访问；请使用 /v1/* 接口并携带 cgw- API Key'
       }))
+    }
+    // 应用层闸门：即使来源是回环（本机浏览器可能被任意网页驱动），
+    // 也要求 Host 指向本机 + Origin 同源，挡 DNS rebinding 与 CSRF。
+    if (controlPlaneGuard(req, res)) return
+    // ---- 管理鉴权自身 ----
+    // 签发一次性登录链接：60 秒有效、用过即废。CLI 用管理令牌换取。
+    if (p === '/__gw/admin/bootstrap' && req.method === 'POST') {
+      const nonce = adminAuth.issueBootstrap()
+      const host = String(req.headers['host'] || `127.0.0.1:${LAUNCHER_PORT}`)
+      const url = `http://${host}/?${BOOTSTRAP_PARAM}=${encodeURIComponent(nonce)}`
+      pushLog('◆ 已签发一次性控制台登录链接（60 秒内有效，使用后即失效）')
+      return sendJson(res, 200, { ok: true, url, expiresInSec: 60, sessionDays: Math.floor(DEFAULT_SESSION_TTL_MS / 86400000) })
+    }
+    // 当前管理令牌本身（已通过上述守卫，调用方必然已持有凭据）
+    if (p === '/__gw/admin/token' && req.method === 'GET') {
+      return sendJson(res, 200, { ok: true, token: adminAuth.token, source: adminToken.source, sessionDays: Math.floor(DEFAULT_SESSION_TTL_MS / 86400000) })
+    }
+    // 会话自检：前端/脚本用来判断凭据是否仍然有效
+    if (p === '/__gw/admin/session' && req.method === 'GET') {
+      const v = adminAuth.verifyRequest(req)
+      return sendJson(res, 200, { ok: true, authenticated: v.ok, via: v.via || null })
     }
     if (p === '/__gw/status') {
       const health = await fetchBridgeHealth()
@@ -1768,7 +2080,7 @@ const server = http.createServer(async (req, res) => {
       if (!v.ok) {
         recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
         res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
-        return res.end(JSON.stringify({ error: 'invalid_api_key', reason: v.reason }))
+        return res.end(JSON.stringify(authRejectBody(v)))
       }
       authKeyId = v.keyId
       authOwner = { keyId: v.keyId, keyName: v.name }
@@ -1779,6 +2091,14 @@ const server = http.createServer(async (req, res) => {
         if (!sw.ok) {
           res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' })
           return res.end(JSON.stringify({ error: 'bridge_switch_failed', detail: sw.msg }))
+        }
+        // 名额必须一直持有到本次响应真正结束。过早释放 = 写者会以为无人使用而
+        // 切走 bridge，正在转发的请求就换成了别人的凭据（这正是 F-03 的串号窗口）。
+        // release 自身幂等，因此三个结束信号都挂上、谁先到算谁，无需去重。
+        if (sw.release) {
+          res.once('close', sw.release)
+          res.once('finish', sw.release)
+          res.once('error', sw.release)
         }
       } else if (targetAccountId && gwConfig.mode === 'openai') {
         // API Key + openai 直连模式没有"账号"概念，忽略
@@ -1825,6 +2145,38 @@ const server = http.createServer(async (req, res) => {
     return proxy(req, res, p + (url.search || ''), authKeyId, authOwner)
   }
 
+  // ---- 一次性登录链接兑换：带有效 nonce 访问任意页面即种下本机会话 Cookie ----
+  // 走 Cookie 的好处是前端 SPA 一行都不用改：同源请求由浏览器自动携带。
+  if (url.searchParams.has(BOOTSTRAP_PARAM)) {
+    if (!isLoopbackReq(req)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' })
+      return res.end('控制台登录仅限本机完成：请从本机浏览器打开该链接。')
+    }
+    const r = adminAuth.consumeBootstrap(url.searchParams.get(BOOTSTRAP_PARAM))
+    if (!r.ok) {
+      const why = { expired: '这条登录链接已过期（一次性链接 60 秒内有效）', already_used: '这条登录链接已被使用过', bad_signature: '这条登录链接无效' }[r.reason] || '这条登录链接无效'
+      res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' })
+      return res.end(`<meta charset="utf-8"><body style="font:14px system-ui;padding:40px;color:#c00">${why}。<br><br>请在网关所在机器重新运行 <code>node launcher.mjs admin</code> 获取新链接。</body>`)
+    }
+    res.writeHead(302, {
+      'Set-Cookie': adminAuth.sessionCookieHeader(),
+      Location: '/',
+      'Cache-Control': 'no-store'
+    })
+    pushLog('✔ 控制台会话已建立（来自一次性登录链接）')
+    return res.end()
+  }
+
+  // ---- 未登录访问控制台首页 → 引导页（而不是让 SPA 白屏） ----
+  if (adminAuth && req.method === 'GET' && (p === '/' || p === '/index.html') && !adminAuth.verifyRequest(req).ok) {
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Frame-Options': 'DENY'
+    })
+    return res.end(adminGatePage(isLoopbackReq(req)))
+  }
+
   // ---- 静态前端 ----
   return serveStatic(req, res, p)
 })
@@ -1840,6 +2192,23 @@ setInterval(() => {
 
 server.listen(LAUNCHER_PORT, LISTEN_HOST, () => {
   pushLog(`◆ 启动器已就绪：http://127.0.0.1:${LAUNCHER_PORT}`)
+  if (adminAuth) {
+    pushLog('◆ 控制台已启用管理令牌保护')
+    pushLog(`  · 浏览器进入：在本机运行 node launcher.mjs admin（一次性链接，60 秒内有效）`)
+    pushLog('  · 脚本进入：Authorization: Bearer <管理令牌>，令牌见 node launcher.mjs admin-token')
+    // 由桌面启动器（start-gateway.vbs / run-gateway.cmd）或 npm start 触发时，
+    // 自动打开带一次性令牌的控制台 —— 保持"双击图标就能用"的原体验，
+    // 否则用户只会看到一个 401 白屏控制台。
+    if (OPEN_BROWSER) {
+      const nonce = adminAuth.issueBootstrap(5 * 60 * 1000)
+      const url = `http://127.0.0.1:${LAUNCHER_PORT}/?${BOOTSTRAP_PARAM}=${encodeURIComponent(nonce)}`
+      setTimeout(() => {
+        if (openInBrowser(url)) pushLog('◆ 已在默认浏览器打开控制台（登录链接 5 分钟内有效，仅可用一次）')
+      }, 400)
+    }
+  } else {
+    pushLog('⚠ 控制面管理鉴权已关闭（CGW_ADMIN_AUTH=0）：本机任意进程可直接读写 Key 与配置')
+  }
   if (LAN_ENABLED) {
     pushLog(`◆ 局域网模式已开启：监听 ${LAN_HOST}:${LAUNCHER_PORT}`)
     pushLog('  · 控制面 /__gw/* 仅限本机访问（账号/密钥/配置不外泄）')

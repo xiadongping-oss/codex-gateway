@@ -7,7 +7,7 @@ cd /d "%DIR%.."
 if not exist "logs" mkdir "logs"
 if exist "logs\service.log" move /y "logs\service.log" "logs\service.log.1" >nul
 set "NODE_EXE=%DIR%node\node.exe"
-if not exist "%NODE_EXE%" set "NODE_EXE=C:\Users\Designer\.workbuddy\binaries\node\versions\22.22.2-6\node.exe"
+rem 发布包内置运行时；缺失时退回 PATH 里的 node（不要写死开发机路径）
 if not exist "%NODE_EXE%" set "NODE_EXE=node"
-"%NODE_EXE%" launcher.mjs --lan >> "logs\service.log" 2>&1
+"%NODE_EXE%" launcher.mjs --lan --open >> "logs\service.log" 2>&1
 endlocal

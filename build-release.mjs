@@ -36,6 +36,8 @@ function copyFile(src, dest) {
 const GATEWAY_DENY = new Set([
   'accounts', 'accounts.json', 'api-keys.json', 'api-keys.json.tmp',
   'data', 'logs', 'launcher.log',
+  // 管理令牌等同于控制台管理员口令：一旦打进发布包，所有下载者共享同一枚令牌。
+  'admin-token.json',
   '.codex-client-identity', '.gw-config.json', '.gw-config.json.tmp'
 ])
 
@@ -94,7 +96,7 @@ if (missing.length) {
 }
 
 // 泄漏自检：机密文件绝不能出现在 staging
-const SECRETS = ['accounts.json', 'api-keys.json', '.codex-client-identity', '.gw-config.json']
+const SECRETS = ['accounts.json', 'api-keys.json', '.codex-client-identity', '.gw-config.json', 'admin-token.json', 'api-keys.json.tmp', '.gw-config.json.tmp']
 const leaked = []
 function scanSecrets(dir) {
   for (const name of fs.readdirSync(dir)) {

@@ -5,6 +5,10 @@ gateway/.gw-config.json
 gateway/api-keys.json
 gateway/api-keys.json.tmp
 
+# 控制面管理令牌（F-01 引入）：持它即可读写全部 Key / 账号 / 配置，
+# 等同于本机管理员口令。绝不能进 public 仓库。
+gateway/admin-token.json
+
 # 多账号 OAuth 凭据：gateway/accounts/*.json 里是真实的 id_token / refresh_token，
 # gateway/accounts.json 里是账号 ID、邮箱与登录指纹 —— 全部属于凭据，不可入库。
 gateway/accounts/
