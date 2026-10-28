@@ -16,13 +16,15 @@ npm test
 bash gateway/tests/run.sh --live
 ```
 
-## 四个脚本各管什么
+## 五个脚本各管什么
 
 | 命令 | 脚本 | 作用 |
 |---|---|---|
 | `npm test` | `run.sh` + `audit.mjs` | 63 例功能与安全回归，覆盖 API Key 生命周期、`/v1` 鉴权、远程 MCP、素材归属、文件伺服、控制面隔离、管理鉴权、多账号实例池架构 |
 | `npm run test:unit` | `bridge-pool.test.mjs` | bridge 实例池语义单测（启动互斥 / 一账号一端口 / 空闲回收 / 池满淘汰 / 崩溃自愈） |
+| `npm run test:build` | `build-release.test.mjs` | **打包闸门回归**：`--verify-zip` / `--verify-build` / 运行时锁 / 复制黑名单。18 例，在临时「假仓库」里跑同一份 `build-release.mjs`，不碰真产物 |
 | `npm run test:mutate` | `mutate.mjs` | **变异测试**：往沙盒代码注入 19 个真实缺陷，验证回归能否逐个抓住。存活 = 测试盲区 |
+| `npm run test:mutate:build` | `mutate-build.mjs` | 打包闸门的变异测试：注入 7 种「闸门失效」，验证 `test:build` 能把它们逐个抓住 |
 | `npm run test:attack` | `pentest.mjs` | 攻击者视角攻防，含原始 socket 绕 URL 规范化、跨站伪造、路径穿越、凭据变形 |
 | `npm run test:bench` | `bench-concurrency.mjs` | 并发吞吐量化对比（修复前 vs 修复后） |
 
@@ -35,6 +37,16 @@ bash gateway/tests/run.sh --live
 - `gateway/assets.mjs`（文件伺服、路径校验）
 - `gateway/bridge-pool.mjs`（按账号的 bridge 实例池）
 - `gateway/admin-auth.mjs`（管理鉴权）
+
+改了 **`build-release.mjs`**（含新增校验、调整黑名单、改锁逻辑）后，**跑 `npm run test:build` + `npm run test:mutate:build`**，再出包。
+
+## 打包闸门为什么值得单独测
+
+`--verify-zip` / `--verify-build` / 运行时锁 守的是「发给别人的唯一凭证」。它们过去只被手工负样本验证过一次——重构构建脚本时可能静默失效，而坏包照样发得出去（v1.1.0 双目录包、v1.2.0 家目录泄露都是这么出去的）。
+
+`build-release.test.mjs` 用**临时假仓库**跑同一份构建脚本：脚本以自身位置推导 `ROOT`，所以换掉 `package.json`、锁文件、目录树即可精确构造任意缺陷，不必真造 83MB 的 `node.exe`，也不写 `release/`。造 zip 依赖 `python`（与 `--verify-zip` 本身的前提一致）。
+
+一个容易写成假测试的地方：`gateway/data`、`api-keys.json` 等在**复制阶段**就被黑名单滤掉，根本进不了 staging，所以「结构自检拦住它们」这种用例永远触发不到。真正该断言的不变量是「**没有**被复制进去」；staging 上的 `DIR_DENY` 是第二层防线（防的正是有人把复制黑名单改坏），由变异体 MB5 验证。
 
 ## 写用例时的两条硬规矩
 

@@ -65,7 +65,9 @@ PID=$!
 
 for i in $(seq 1 40); do
   code=$(curl -s -m 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health" 2>/dev/null || echo 0)
-  [ "$code" = "200" ] || [ "$code" = "502" ] && break
+  # 任意 HTTP 响应即算起来：沙盒无账号时 /health 明确返回 503 bridge_not_running
+  # （v1.3.0 起；502 是更早的语义）。只认 200 会白等到超时。
+  { [ "$code" = "200" ] || [ "$code" = "502" ] || [ "$code" = "503" ]; } && break
   sleep 0.25
 done
 [ "${code:-0}" = "0" ] && { echo "✗ 沙盒实例未起来，日志："; tail -20 "$ROOT/sandbox.log"; exit 1; }

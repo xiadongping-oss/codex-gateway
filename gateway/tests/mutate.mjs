@@ -201,7 +201,10 @@ async function waitReady() {
   for (let i = 0; i < 60; i++) {
     try {
       const r = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(1500) })
-      if (r.status === 200 || r.status === 502) return true
+      // 只要拿到 HTTP 响应就算起来了。**不能只认 200**：沙盒里没有账号，
+      // v1.3.0 起 /health 明确返回 503 bridge_not_running（502 是更早的语义）。
+      // 按 200 判定会让整个变异框架一个都跑不起来，还把「框架崩了」误报成「全部盲区」。
+      if ([200, 502, 503].includes(r.status)) return true
     } catch {}
     await sleep(250)
   }
@@ -214,9 +217,14 @@ async function startGateway() {
     env: { ...process.env, USERPROFILE: path.join(SB, 'home'), HOME: path.join(SB, 'home'), LAUNCHER_PORT: String(PORT), BRIDGE_PORT: '10999', DISABLE_AUTOSTART: '1' },
     stdio: ['ignore', 'pipe', 'pipe']
   })
-  p.stderr.on('data', () => {})
+  // 留一段 stderr 尾巴：启动失败时能直接看到原因，而不是只有一句「网关未能启动」。
+  let tail = ''
+  p.stderr.on('data', (d) => { tail = (tail + d).slice(-800) })
   p.stdout.on('data', () => {})
-  if (!(await waitReady())) { p.kill('SIGKILL'); throw new Error('网关未能启动') }
+  if (!(await waitReady())) {
+    p.kill('SIGKILL')
+    throw new Error('网关未能启动' + (tail ? `：${tail.trim().split('\n').slice(-3).join(' / ')}` : ''))
+  }
   return p
 }
 
@@ -291,7 +299,7 @@ for (const m of MUTANTS) {
   //   expect=kill    必须 died=true  → 否则是测试盲区
   //   expect=survive 必须 died=false → 否则说明单一防线失效就崩（防线太薄）
   const good = errored ? false : (expect === 'kill' ? died : !died)
-  rows.push({ ...m, expect, died, good, detail, failures })
+  rows.push({ ...m, expect, died, good, detail, failures, errored })
   const tag = errored ? `${C.y}执行异常${C.x}` : (expect === 'kill'
     ? (died ? `${C.g}已杀死${C.x}` : `${C.r}存活→盲区${C.x}`)
     : (died ? `${C.y}防线偏薄${C.x}` : `${C.g}被兜住${C.x}`))
@@ -300,15 +308,23 @@ for (const m of MUTANTS) {
 }
 
 const okCount = rows.filter((r) => r.good).length
-const blind = rows.filter((r) => r.expect === 'kill' && !r.died)
+// 「执行异常」必须与「测试盲区」分开统计：前者是框架/环境坏了（比如网关没起来），
+// 后者才是测试真的漏了。混在一起会得出「17 个盲区」这种假结论——发生过一次，
+// 实际原因只是 /health 语义从 502 改成 503 后 waitReady 再也等不到就绪。
+const erroredRows = rows.filter((r) => r.errored)
+const blind = rows.filter((r) => r.expect === 'kill' && !r.died && !r.errored)
 console.log('\n' + '─'.repeat(70))
 console.log(`  变异体 ${rows.length} · 符合预期 ${C.g}${okCount}${C.x} · 不符合 ${okCount === rows.length ? 0 : rows.length - okCount}${C.x}`)
-console.log(`  需杀死的变异 ${rows.filter((r) => r.expect === 'kill').length} 个，测试盲区 ${blind.length} 个`)
+console.log(`  需杀死的变异 ${rows.filter((r) => r.expect === 'kill').length} 个，测试盲区 ${blind.length} 个，执行异常 ${erroredRows.length} 个`)
+if (erroredRows.length === rows.length) {
+  console.log(`${C.r}⚠ 全部变异体都执行异常 —— 这是框架/环境问题，不是测试盲区。${C.x}`)
+  console.log(`${C.d}  先确认沙盒能起来：cd ${path.relative(process.cwd(), SB) || '.'} && node launcher.mjs --lan${C.x}`)
+}
 console.log('─'.repeat(70))
 if (blind.length) {
   console.log(`${C.r}需要补测试（这些缺陷目前漏得出去）：${C.x}`)
   for (const b of blind) console.log(`  · ${b.id} ${b.desc}`)
-} else {
+} else if (!erroredRows.length) {
   console.log(`${C.g}所有「必须被杀死」的变异都被捕获 —— audit.mjs 不是假测试。${C.x}`)
 }
 console.log(`${C.d}标「被兜住」的变异体刻意保留：它们证明同一条攻击面存在多层独立防线。${C.x}`)

@@ -55,6 +55,13 @@ print(f'{n} files → release/{top}-win64.zip')
 "
 
 # 3. 端到端验证（发布前必做）
+#   3.0 闸门自测：验证下面这些校验本身没坏（改了 build-release.mjs 后务必跑）
+npm run test:build && npm run test:mutate:build
+#   在临时「假仓库」里跑同一份构建脚本，覆盖 --verify-zip / --verify-build /
+#   运行时锁 / 复制黑名单四类闸门；第二句再注入 7 种「闸门失效」确认能逐个抓住。
+#   为什么要测闸门本身：它们守的是「发给别人的唯一凭证」，静默失效的事故已经发生过两次
+#   （v1.1.0 双目录包、v1.2.0 家目录泄露），而闸门自己此前没有任何自动化回归。
+#   依赖：造测试用 zip 需要 python（与 --verify-zip 的前提一致）。
 #   3.1 结构自检：一条命令校验顶层目录、机密文件、个人绝对路径与换行符
 node build-release.mjs --verify-zip
 #   校验项（任一不满足即退出码 1，禁止分发）：
