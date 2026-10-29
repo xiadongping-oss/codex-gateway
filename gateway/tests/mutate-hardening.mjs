@@ -29,8 +29,10 @@ const C = { g: '\x1b[32m', r: '\x1b[31m', y: '\x1b[33m', d: '\x1b[2m', b: '\x1b[
 // data-root.mjs import './ref-roots.mjs'（isInsideRoot），同样必须整组带。
 // auth-core.mjs import './data-root.mjs'（resolveDataRoot / normalizeAuthFilePath）——
 // 它测的是 inspectCodexCliAuth / codexCliAuthPath，但模块加载时有副作用，整组复制。
-const FILES = ['atomic-write.mjs', 'assets.mjs', 'ref-roots.mjs', 'secret-perms.mjs', 'data-root.mjs', 'auth-core.mjs']
-const TEST_FILE = 'hardening.test.mjs'
+// official-login / api-providers：官方登录与供应商的变异同样整组带。
+const FILES = ['atomic-write.mjs', 'assets.mjs', 'ref-roots.mjs', 'secret-perms.mjs', 'data-root.mjs', 'auth-core.mjs', 'codex-official-login.mjs', 'api-providers.mjs']
+// 测试网：hardening 之外，token 解析 / 官方登录 / 供应商的用例也参与杀死判定
+const TEST_FILES = ['hardening.test.mjs', 'token-text.test.mjs', 'official-login.test.mjs', 'api-providers.test.mjs']
 
 const MUTANTS = [
   {
@@ -189,6 +191,48 @@ const MUTANTS = [
     desc: 'refresh_token 校验删除 —— 导入无续期能力的残缺凭据，access_token 一过期账号就静默失效',
     from: "if (data.auth_mode !== 'api_key' && !data.tokens?.refresh_token) {",
     to: 'if (false) {'
+  },
+  {
+    id: 'MH24',
+    file: 'auth-core.mjs',
+    desc: 'at-/sk- 令牌识别失效 —— 个人访问令牌被误判成 refresh_token 去联网换取，导入直接报错',
+    from: "if (/^(at-|sk-)/.test(raw)) {",
+    to: "if (/^$/.test(raw)) {"
+  },
+  {
+    id: 'MH25',
+    file: 'auth-core.mjs',
+    desc: 'refresh 换取丢 grant_type —— OAuth 端点必然拒绝，文本导入 refresh_token 功能全废',
+    from: "grant_type: 'refresh_token',",
+    to: "grant_type: 'authorization_code',"
+  },
+  {
+    id: 'MH26',
+    file: 'auth-core.mjs',
+    desc: 'Sub2API 嵌套探测删除 —— 嵌套形态的导出 JSON 全部导入失败',
+    from: "if (!raw.__nestedLookup) {",
+    to: 'if (false) {'
+  },
+  {
+    id: 'MH27',
+    file: 'codex-official-login.mjs',
+    desc: '官方登录凭据探测只认 API Key 不认 OAuth tokens —— 正常登录后一直报「没有读到登录信息」',
+    from: "const at = j?.tokens?.access_token || j?.access_token",
+    to: "const at = null"
+  },
+  {
+    id: 'MH28',
+    file: 'codex-official-login.mjs',
+    desc: '登录超时判定删除 —— 用户忘关客户端时轮询永不结束',
+    from: 'if (now - session.startedAt > LOGIN_TIMEOUT_MS) {',
+    to: 'if (false) {'
+  },
+  {
+    id: 'MH29',
+    file: 'api-providers.mjs',
+    desc: '供应商去重失效 —— 同一 baseUrl 无限堆积，快选列表越来越乱',
+    from: 'const rest = store.saved.filter((p) => p.baseUrl !== u)',
+    to: 'const rest = store.saved'
   }
 ]
 
@@ -196,18 +240,20 @@ function makeCopy() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cgw-mut-hardening-'))
   fs.mkdirSync(path.join(dir, 'tests'), { recursive: true })
   for (const f of FILES) fs.copyFileSync(path.join(GW, f), path.join(dir, f))
-  fs.copyFileSync(path.join(HERE, TEST_FILE), path.join(dir, 'tests', TEST_FILE))
+  for (const tf of TEST_FILES) fs.copyFileSync(path.join(HERE, tf), path.join(dir, 'tests', tf))
   return dir
 }
 
 function runTest(dir) {
   try {
-    execFileSync(process.execPath, ['--test', '--test-timeout=30000', path.join(dir, 'tests', TEST_FILE)], {
-      cwd: dir,
-      stdio: 'ignore',
-      timeout: 120000,
-      env: { ...process.env, CGW_TEST_SRC: dir }
-    })
+    for (const tf of TEST_FILES) {
+      execFileSync(process.execPath, ['--test', '--test-timeout=30000', path.join(dir, 'tests', tf)], {
+        cwd: dir,
+        stdio: 'ignore',
+        timeout: 120000,
+        env: { ...process.env, CGW_TEST_SRC: dir }
+      })
+    }
     return true
   } catch {
     return false

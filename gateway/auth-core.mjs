@@ -40,7 +40,7 @@ export function loadConfig() {
   // proxy: 出网代理地址，如 http://127.0.0.1:7897；留空表示直连
   // （Tailscale exit node / 系统层方案无需填写，因为它们对应用透明）
   // referenceRoot: 参考图允许所在的根目录，留空 = 用默认（gateway/references）
-  const base = { mode: 'bridge', openaiApiKey: '', authFilePath: defaultAuthFilePath(), autoStart: true, proxy: '', referenceRoot: '' }
+  const base = { mode: 'bridge', openaiApiKey: '', openaiBaseUrl: '', authFilePath: defaultAuthFilePath(), autoStart: true, proxy: '', referenceRoot: '' }
   try {
     const txt = fs.readFileSync(CONFIG_PATH, 'utf-8')
     const j = JSON.parse(txt)
@@ -58,6 +58,7 @@ export function saveConfig(cfg) {
     writeJsonAtomic(CONFIG_PATH, {
       mode: cfg.mode,
       openaiApiKey: cfg.openaiApiKey,
+      openaiBaseUrl: cfg.openaiBaseUrl || '',
       authFilePath: cfg.authFilePath,
       autoStart: cfg.autoStart,
       proxy: cfg.proxy || '',
@@ -153,7 +154,13 @@ export async function writeAuthFile(filePath, data) {
   writeTextAtomic(filePath, JSON.stringify(data, null, 2) + '\n')
 }
 
-// 把用户粘贴/导入的任意 JSON 规范化为 bridge 形态
+// 把用户粘贴/导入的任意 JSON 规范化为 bridge 形态。
+// 接受的形态（对齐常见工具的导出格式）：
+//   1. bridge 形态 / 完整 auth.json（tokens 包裹）
+//   2. 裸 access_token / refresh_token（snake_case，可带 id_token）
+//   3. camelCase 单字段（accessToken / refreshToken / idToken）
+//   4. API Key 形态（OPENAI_API_KEY / api_key / apiKey / personal_access_token）
+//   5. Sub2API 等工具的导出 JSON：本层没有凭据字段时，向第一层嵌套对象找一次
 export function normalizeAuthJson(raw) {
   if (!raw || typeof raw !== 'object') throw new Error('auth 内容不是合法 JSON 对象')
   // 已经是 bridge 形态
@@ -185,16 +192,96 @@ export function normalizeAuthJson(raw) {
       last_refresh: new Date().toISOString()
     }
   }
-  // 含 OPENAI_API_KEY 的 API Key 形态
-  if (raw.OPENAI_API_KEY || raw.api_key || raw.apiKey) {
+  // camelCase（部分工具导出 accessToken / refreshToken）
+  if (raw.accessToken || raw.refreshToken) {
+    return normalizeAuthJson({
+      access_token: raw.accessToken ?? null,
+      refresh_token: raw.refreshToken ?? null,
+      id_token: raw.idToken ?? null,
+      account_id: raw.account_id ?? null
+    })
+  }
+  // 含 OPENAI_API_KEY 的 API Key 形态（personal_access_token 同属此类）
+  if (raw.OPENAI_API_KEY || raw.api_key || raw.apiKey || raw.personal_access_token) {
     return {
       auth_mode: 'api_key',
-      OPENAI_API_KEY: raw.OPENAI_API_KEY ?? raw.api_key ?? raw.apiKey,
+      OPENAI_API_KEY: raw.OPENAI_API_KEY ?? raw.api_key ?? raw.apiKey ?? raw.personal_access_token,
       tokens: null,
       last_refresh: new Date().toISOString()
     }
   }
-  throw new Error('无法识别的 auth 结构：需包含 tokens / access_token / OPENAI_API_KEY 之一')
+  // Sub2API 等导出 JSON：凭据在第一层嵌套对象里。只找一层、命中即递归，
+  // 不做全树深搜 —— 防止把任意深层未知 JSON 里的巧合字段误当凭据。
+  if (!raw.__nestedLookup) {
+    const nested = Object.values(raw).find(
+      (v) => v && typeof v === 'object' && !Array.isArray(v) &&
+        (v.tokens || v.access_token || v.refresh_token || v.accessToken ||
+         v.OPENAI_API_KEY || v.api_key || v.apiKey || v.personal_access_token)
+    )
+    if (nested) return normalizeAuthJson({ ...nested, __nestedLookup: true })
+  }
+  throw new Error('无法识别的 auth 结构：需包含 tokens / access_token / accessToken / OPENAI_API_KEY 之一')
+}
+
+// ---------- 凭据文本解析（Token / JSON 标签页） ----------
+// 除 JSON 外还接受三种裸文本形态；纯 refresh_token 会联网换取完整凭据。
+export function looksLikeJwt(text) {
+  return /^eyJ[\w-]+\.[\w-]+\.[\w-]*$/.test(String(text ?? '').trim())
+}
+
+export function parseAuthTokenText(text) {
+  const raw = String(text ?? '').trim()
+  if (!raw) throw new Error('请粘贴凭据内容')
+  if (raw.startsWith('{') || raw.startsWith('[')) {
+    let obj
+    try { obj = JSON.parse(raw) } catch { throw new Error('JSON 解析失败：内容以 { 开头但不是合法 JSON') }
+    return { kind: 'json', data: normalizeAuthJson(obj) }
+  }
+  // 个人访问令牌 / API Key（at-… 与 sk-…）
+  if (/^(at-|sk-)/.test(raw)) {
+    return { kind: 'json', data: normalizeAuthJson({ personal_access_token: raw }) }
+  }
+  // 裸 JWT access token：能导入但无续期能力，调用方应向用户提示
+  if (looksLikeJwt(raw)) {
+    return { kind: 'json', data: normalizeAuthJson({ access_token: raw }), warning: '该凭据没有 refresh_token，到期后需重新导入' }
+  }
+  // 其余非空文本 → 视为 refresh_token，联网换取完整凭据（exchangeRefreshToken）
+  return { kind: 'refresh_token', refreshToken: raw }
+}
+
+// 用 refresh_token 向 OAuth 端点换取完整凭据（grant_type=refresh_token）。
+// fetchImpl 可注入：测试不外联；上层出网代理走 undici 全局 dispatcher。
+export async function exchangeRefreshToken(refreshToken, { fetchImpl = fetch } = {}) {
+  const rt = String(refreshToken ?? '').trim()
+  if (!rt) throw new Error('缺少 refresh_token')
+  let resp
+  try {
+    resp = await fetchImpl(OAUTH_TOKEN_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: rt,
+        client_id: OAUTH_CLIENT_ID
+      })
+    })
+  } catch (e) {
+    throw new Error('refresh_token 换取请求失败（网络或出网代理）：' + e.message)
+  }
+  const bodyText = await resp.text()
+  let j
+  try { j = JSON.parse(bodyText) } catch { throw new Error(`token 端点返回非 JSON（HTTP ${resp.status}）`) }
+  if (!resp.ok || !j.access_token) {
+    throw new Error('refresh_token 换取被拒绝：' + (j.error_description || j.error || `HTTP ${resp.status}`))
+  }
+  return normalizeAuthJson({
+    tokens: {
+      access_token: j.access_token,
+      refresh_token: j.refresh_token || rt,
+      id_token: j.id_token ?? null,
+      account_id: null
+    }
+  })
 }
 
 // ---------- 本机 Codex CLI 登录的无感导入 ----------

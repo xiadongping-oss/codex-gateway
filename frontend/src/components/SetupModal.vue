@@ -1,10 +1,12 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import * as api from '../api/gateway'
+import { PROVIDER_PRESETS, CUSTOM_PROVIDER_ID } from '../api/providerPresets'
 import { copyText as writeClipboard } from '../api/client'
 
 const emit = defineEmits(['close', 'changed'])
 const tabs = [
+  { key: 'tempLogin', label: '官方登录' },
   { key: 'oauth', label: 'OAuth 授权' },
   { key: 'json', label: 'Token / JSON' },
   { key: 'apikey', label: 'API Key' },
@@ -32,16 +34,131 @@ const callbackUrl = ref('')
 const polling = ref(false)
 let pollTimer = null
 
-// Token·JSON
+// Token·JSON（多格式文本，见 parseAuthTokenText）
 const jsonText = ref('')
+const showExamples = ref(false)
 
 // 导入
 const importFile = ref(null)
 
-// API Key
+// API Key（供应商快选 + Key）
+const savedProviders = ref([])
+const providerPresetId = ref(CUSTOM_PROVIDER_ID)
+const providerBaseUrl = ref('')
 const apiKey = ref('')
 const showApiKey = ref(false)
+const activePreset = computed(() => PROVIDER_PRESETS.find((p) => p.id === providerPresetId.value) || null)
 
+// ---------- 官方客户端临时登录（6 步骤流程） ----------
+const TEMP_STEPS = [
+  { key: 'preparing', label: '准备临时配置' },
+  { key: 'launching', label: '打开官方客户端' },
+  { key: 'waiting-login', label: '等待登录完成' },
+  { key: 'closing', label: '关闭官方客户端' },
+  { key: 'importing', label: '读取登录信息' },
+  { key: 'cleaning', label: '清理临时配置' }
+]
+const tempSession = ref(null) // { sessionId, clientPath }
+const tempPhase = ref('idle') // idle | running | completed | failed
+const tempError = ref('')
+const tempDoneSteps = ref(0) // 已完成的步骤数（0-6）
+const tempHint = ref('')
+const tempRunning = computed(() => tempPhase.value === 'running')
+let tempTimer = null
+
+function tempStepState(i) {
+  // i: 0-5；已完成 = index < tempDoneSteps；当前活跃 = index === tempDoneSteps && running
+  if (tempDoneSteps.value > i) return 'done'
+  if (tempRunning.value && tempDoneSteps.value === i) return 'active'
+  return 'pending'
+}
+
+async function startTempLogin() {
+  error.value = ''
+  okMsg.value = ''
+  tempError.value = ''
+  tempDoneSteps.value = 0
+  tempHint.value = ''
+  loading.value = true
+  try {
+    const r = await api.officialLoginStart()
+    if (!r?.ok) return setError(r?.detail || '启动失败')
+    tempSession.value = r
+    tempPhase.value = 'running'
+    tempDoneSteps.value = 2 // preparing + launching 已由后端完成
+    tempHint.value = '官方客户端已打开，请在其中完成 OpenAI 登录；登录完成后关闭客户端窗口。'
+    pollTempLogin()
+  } finally {
+    loading.value = false
+  }
+}
+
+function pollTempLogin() {
+  stopTempPoll()
+  tempTimer = setInterval(async () => {
+    if (!tempSession.value?.sessionId) return stopTempPoll()
+    const st = await api.officialLoginStatus(tempSession.value.sessionId)
+    if (!st) return // 网络抖动，下轮再看
+    if (st.phase === 'waiting-login') {
+      tempDoneSteps.value = 2
+      tempHint.value = `等待登录中…（${st.elapsedSec || 0}s）在打开的官方客户端里完成 OpenAI 登录。`
+    } else if (st.phase === 'logged-in') {
+      tempDoneSteps.value = 3
+      tempHint.value = '已检测到登录信息，请关闭官方客户端窗口。'
+    } else if (st.phase === 'ready') {
+      stopTempPoll()
+      await finishTempLogin()
+    } else if (st.phase === 'failed') {
+      stopTempPoll()
+      tempPhase.value = 'failed'
+      tempError.value = st.error || '登录流程失败'
+    }
+  }, 2000)
+}
+function stopTempPoll() {
+  if (tempTimer) { clearInterval(tempTimer); tempTimer = null }
+}
+async function finishTempLogin() {
+  tempDoneSteps.value = 4
+  tempHint.value = '正在读取登录信息…'
+  try {
+    const r = await api.officialLoginFinish(tempSession.value.sessionId)
+    if (!r?.ok) {
+      tempPhase.value = 'failed'
+      tempError.value = r?.detail || '导入失败（登录信息已保留，可点击重试导入）'
+      return
+    }
+    tempDoneSteps.value = 6
+    tempPhase.value = 'completed'
+    okMsg.value = `官方登录导入成功${r.email ? '（' + r.email + '）' : ''}${r.isExisting ? '，已有账号凭据已更新' : ''}`
+    emit('changed')
+  } catch (e) {
+    tempPhase.value = 'failed'
+    tempError.value = e?.message || '导入失败'
+  }
+}
+async function retryTempImport() {
+  tempPhase.value = 'running'
+  tempError.value = ''
+  await finishTempLogin()
+}
+async function cancelTempLogin() {
+  stopTempPoll()
+  if (tempSession.value?.sessionId) {
+    await api.officialLoginCancel(tempSession.value.sessionId).catch(() => {})
+  }
+  tempSession.value = null
+  tempPhase.value = 'idle'
+  tempDoneSteps.value = 0
+  tempHint.value = ''
+}
+function closeTempLogin() {
+  // 登录进行中关闭弹窗：先取消会话，避免留下无人接管的临时配置
+  if (tempRunning.value) cancelTempLogin()
+  emit('close')
+}
+
+// ---------- 本地状态 ----------
 async function loadState() {
   try {
     const s = await api.getAuthState()
@@ -51,9 +168,14 @@ async function loadState() {
     }
   } catch {}
 }
+async function loadProviders() {
+  const r = await api.getProviders()
+  if (r?.ok) savedProviders.value = r.saved || []
+}
 
 onMounted(() => {
   loadState()
+  loadProviders()
   // Electron 内置窗口回调
   if (window.api?.onOAuthCallback) {
     window.api.onOAuthCallback((data) => {
@@ -68,6 +190,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   stopPoll()
+  stopTempPoll()
   api.cancelBrowserLoginApi().catch(() => {})
   if (window.api?.closeOAuthWindow) window.api.closeOAuthWindow()
 })
@@ -125,24 +248,19 @@ async function savePendingCard() {
   }
 }
 
-// ---------- 发起授权 ----------
+// ---------- OAuth ----------
 async function startAuth() {
   loading.value = true
   error.value = ''
   try {
-    if (authMode.value === 'browser') {
-      const info = await api.startBrowserLoginApi()
-      browser.value = info
-      device.value = null
-      // Electron 下用内置无痕窗口，Web 下回退外部浏览器
-          // 不再自动打开浏览器/内置窗口：用户手动复制或点击下方「在浏览器中打开」用默认浏览器访问
-          setOk(`授权链接已生成，请复制到浏览器打开，或点击下方「在浏览器中打开」`)
-          startBrowserPoll()
+    if (authMode.value === 'device') {
+      const r = await api.startDeviceLogin(currentPayload())
+      if (r?.ok) { device.value = r; setOk('设备授权已发起：打开链接并输入用户码') }
+      else setError(r)
     } else {
-      const info = await api.startDeviceFlowApi()
-      device.value = info
-      browser.value = null
-      setOk('请访问下方链接并输入用户码，完成后点击「我已授权，继续」')
+      const r = await api.startBrowserLogin(currentPayload())
+      if (r?.ok) { browser.value = r; setOk('浏览器授权已发起，请在打开的页面完成登录') }
+      else setError(r)
     }
   } catch (e) {
     setError(e)
@@ -150,64 +268,21 @@ async function startAuth() {
     loading.value = false
   }
 }
-
-function openBrowserLogin() {
-  if (!browser.value) return
-  // 使用系统默认浏览器打开，不再新建 Electron 内置窗口
-  api.openBrowser(browser.value.hostedUrl)
-}
-
-function startBrowserPoll() {
-  if (polling.value) return
-  polling.value = true
-  let failCount = 0
-  const loop = async () => {
-    try {
-      const r = await api.pollBrowserLoginApi(currentPayload())
-      if (!r) {
-        failCount++
-        if (failCount >= 5) {
-          polling.value = false
-          stopPoll()
-          setError('轮询授权状态失败，网关无响应或浏览器登录已过期。请重新发起授权。')
-        }
-        return
-      }
-      failCount = 0
-      if (r.pending) return
-      polling.value = false
-      stopPoll()
-      browser.value = null
-      setOk('浏览器授权成功，已建档并设为当前账号')
-      emit('changed')
-    } catch (e) {
-      polling.value = false
-      stopPoll()
-      setError(e)
-    }
-  }
-  loop()
-  pollTimer = setInterval(loop, 2000)
-}
-
 function stopPoll() {
-  if (pollTimer) clearInterval(pollTimer)
-  pollTimer = null
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
   polling.value = false
 }
-
-// ---------- 手动兜底 ----------
+async function openBrowserLogin() {
+  if (browser.value?.hostedUrl) api.openBrowser(browser.value.hostedUrl)
+}
 async function submitCallback() {
-  if (!callbackUrl.value.trim()) return setError('请粘贴完整的回调地址')
   loading.value = true
   error.value = ''
   try {
-    const r = await api.submitBrowserCallbackApi(callbackUrl.value.trim(), currentPayload())
+    const r = await api.submitBrowserCallback({ callbackUrl: callbackUrl.value, pendingId: pendingId.value || undefined })
     if (r?.ok) {
       stopPoll()
-      browser.value = null
-      callbackUrl.value = ''
-      setOk('已通过回调地址完成授权，已建档并设为当前账号')
+      setOk('授权完成，账号已就绪')
       emit('changed')
     } else setError(r)
   } catch (e) {
@@ -216,28 +291,19 @@ async function submitCallback() {
     loading.value = false
   }
 }
-
 async function continueAuth() {
   loading.value = true
   error.value = ''
   try {
-    const isBrowser = authMode.value === 'browser'
-    const r = isBrowser
-      ? await api.pollBrowserLoginApi(currentPayload())
-      : await api.pollDeviceFlowApi(currentPayload())
-    if (!r) {
-      return setError('查询授权状态失败：网关无响应或登录会话已过期。建议刷新页面后重新发起授权。')
-    }
-    if (r.pending) {
-      return setError('尚未检测到授权完成。请确认已在浏览器完成授权后重试。')
-    }
-    if (r.error) {
-      return setError(r.detail || r.error || '授权处理失败')
-    }
-    device.value = null
-    browser.value = null
-    setOk('OAuth 授权成功，已建档并设为当前账号')
-    emit('changed')
+    const r = await api.pollBrowserLogin({ pendingId: pendingId.value || undefined })
+    if (r?.ok && r.done) {
+      stopPoll()
+      setOk('授权完成，账号已就绪')
+      emit('changed')
+    } else if (r?.pending) {
+      polling.value = true
+      setOk('还没检测到授权完成，完成授权后稍等片刻再点一次')
+    } else setError(r)
   } catch (e) {
     setError(e)
   } finally {
@@ -245,64 +311,86 @@ async function continueAuth() {
   }
 }
 
-// ---------- Token·JSON ----------
-async function saveJson() {
-  loading.value = true
-  error.value = ''
-  try {
-    const parsed = JSON.parse(jsonText.value)
-    const r = await api.addAccount({ provider: 'token', json: parsed })
-    if (r?.ok) {
-      setOk('已添加账号（Token/JSON）并设为当前')
-      emit('changed')
-    } else setError(r)
-  } catch (e) {
-    setError('JSON 解析失败或保存出错：' + (e?.message || e))
-  } finally {
-    loading.value = false
-  }
-}
-
-// ---------- 导入 ----------
-function onFile(e) {
+// ---------- Token / JSON（多格式文本） ----------
+async function onFile(e) {
   const f = e.target.files?.[0]
   if (!f) return
   importFile.value = f
   const reader = new FileReader()
   reader.onload = () => {
     jsonText.value = String(reader.result || '')
+    active.value = 'json'
   }
   reader.readAsText(f)
 }
 async function importSave() {
-  if (!jsonText.value) return setError('请先选择 auth.json 文件')
+  if (!jsonText.value.trim()) return setError('请先粘贴凭据内容或选择文件')
   loading.value = true
   error.value = ''
   try {
-    const parsed = JSON.parse(jsonText.value)
-    const r = await api.addAccount({ provider: 'import', json: parsed })
+    const r = await api.importTokenText(jsonText.value, email.value.trim() || undefined)
     if (r?.ok) {
-      setOk('已导入并添加为账号（设为当前）')
+      setOk((r.warning ? r.warning + '；' : '') + '已导入并添加为账号（设为当前）')
+      jsonText.value = ''
       emit('changed')
     } else setError(r)
   } catch (e) {
-    setError('JSON 解析失败或导入出错：' + (e?.message || e))
+    setError(e)
   } finally {
     loading.value = false
   }
 }
 
-// ---------- API Key ----------
+// ---------- 本机登录导入 ----------
+const localBusy = ref(false)
+async function getLocalAccount() {
+  localBusy.value = true
+  error.value = ''
+  try {
+    const info = await api.inspectCodexLocal()
+    if (!info || info.error === 'not_found') {
+      return setError('本机未检测到 Codex 登录（~/.codex/auth.json 不存在）。请先安装 Codex CLI 并 codex login，或改用浏览器授权。')
+    }
+    if (info.error) {
+      const text = { parse_error: '本机 auth.json 无法解析（文件损坏）', read_error: '本机 auth.json 无法读取（权限不足）', unsupported: '本机登录缺少续期凭据（refresh_token），请重新 codex login' }[info.error] || info.detail || info.error
+      return setError(text)
+    }
+    const r = await api.importCodexLocal()
+    if (r?.ok) {
+      setOk(`已导入本机登录${r.email ? '（' + r.email + '）' : ''}${r.isExisting ? '，凭据已更新' : '并设为当前账号'}`)
+      emit('changed')
+    } else setError(r?.detail || r?.error || '导入失败')
+  } catch (e) {
+    setError(e)
+  } finally {
+    localBusy.value = false
+  }
+}
+
+// ---------- API Key（供应商 + 直连） ----------
+function selectPreset(id) {
+  providerPresetId.value = id
+  const p = PROVIDER_PRESETS.find((x) => x.id === id)
+  if (p) providerBaseUrl.value = p.baseUrl
+}
 async function saveApiKey() {
-  if (!apiKey.value) return setError('请输入 API Key')
+  if (!apiKey.value.trim()) return setError('请输入 API Key')
+  const baseUrl = providerBaseUrl.value.trim()
+  if (providerPresetId.value === CUSTOM_PROVIDER_ID && !baseUrl) return setError('自定义供应商需要填写接口地址（BaseUrl）')
   loading.value = true
   error.value = ''
   try {
-    const r = await api.setAuthMode('openai', apiKey.value)
+    const presetName = activePreset.value?.name
+    const r = await api.setAuthMode('openai', apiKey.value.trim(), baseUrl || undefined)
     if (r?.ok) {
       mode.value = 'openai'
       hasApiKey.value = true
-      setOk('已切换为 API Key 模式（直连 api.openai.com）')
+      // 记住这个供应商供下次快选（失败不影响切换）
+      if (baseUrl) {
+        await api.saveProvider(presetName || baseUrl.replace(/^https?:\/\//, '').split('/')[0], baseUrl).catch(() => {})
+        loadProviders()
+      }
+      setOk(`已切换为 API Key 模式${baseUrl ? '（上游：' + baseUrl + '）' : '（直连 api.openai.com）'}`)
       emit('changed')
     } else setError(r)
   } catch (e) {
@@ -328,8 +416,12 @@ async function switchToBridge() {
   }
 }
 
+// 切到 apikey 标签时刷新已保存供应商
+watch(active, (v) => { if (v === 'apikey') loadProviders() })
+
 // 图标（内联 SVG，零依赖）
 const icons = {
+  monitor: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></svg>',
   globe: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
   fileText: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>',
   key: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3-3.5 3.5Z"/></svg>',
@@ -344,16 +436,18 @@ const icons = {
   eyeOff: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7c.78 0 1.53-.09 2.24-.26"/><path d="M2 2l20 20"/></svg>',
   alert: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
   download: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
-  rotate: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>'
+  rotate: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>',
+  fileUp: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M12 12v6"/><path d="m9 15 3-3 3 3"/></svg>'
 }
+const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'fileText', apikey: 'key', import: 'database' }[k]]
 </script>
 
 <template>
-  <div class="modal-mask" @click.self="emit('close')">
+  <div class="modal-mask" @click.self="tempRunning ? closeTempLogin() : emit('close')">
     <div class="modal">
       <div class="modal-head">
         <div class="modal-title">添加 Codex 账号</div>
-        <button class="x" @click="emit('close')" aria-label="关闭">×</button>
+        <button class="x" @click="tempRunning ? closeTempLogin() : emit('close')" aria-label="关闭">×</button>
       </div>
 
       <div class="tabs">
@@ -362,16 +456,58 @@ const icons = {
           :key="t.key"
           class="tab"
           :class="{ active: active === t.key }"
+          :disabled="tempRunning"
           @click="active = t.key"
         >
-          <span class="tab-icon" v-html="icons[t.key === 'oauth' ? 'globe' : t.key === 'json' ? 'fileText' : t.key === 'apikey' ? 'key' : 'database']"></span>
+          <span class="tab-icon" v-html="tabIcon(t.key)"></span>
           {{ t.label }}
         </button>
       </div>
 
       <div class="modal-body">
+        <!-- 官方登录 -->
+        <div v-if="active === 'tempLogin'" class="pane">
+          <p class="hint">
+            由官方客户端打开浏览器完成登录并处理授权回调。网关在临时客户端关闭后读取最终凭据并导入。
+          </p>
+
+          <div class="steps">
+            <div
+              v-for="(s, i) in TEMP_STEPS"
+              :key="s.key"
+              class="step"
+              :class="tempStepState(i)"
+            >
+              <span class="step-num">{{ tempStepState(i) === 'done' ? '✓' : i + 1 }}</span>
+              <span class="step-label">{{ s.label }}</span>
+            </div>
+          </div>
+
+          <p v-if="tempHint" class="hint live">{{ tempHint }}</p>
+          <p v-if="tempError" class="hint err-hint">
+            <span v-html="icons.alert"></span>
+            {{ tempError }}
+          </p>
+
+          <button v-if="!tempRunning && tempPhase !== 'completed'" class="btn-primary" :disabled="loading" @click="startTempLogin">
+            <span v-html="icons.monitor"></span>
+            打开官方客户端并登录
+          </button>
+          <button v-if="tempRunning" class="btn-outline wide" @click="cancelTempLogin">
+            取消本次官方登录
+          </button>
+          <button v-if="tempPhase === 'failed' && tempDoneSteps >= 4" class="btn-primary" @click="retryTempImport">
+            <span v-html="icons.rotate"></span>
+            重试导入登录信息
+          </button>
+
+          <p class="hint dim">
+            成功导入后会清理临时配置与运行目录；最终导入失败时保留凭据供重试。你已登录的账号不受影响。
+          </p>
+        </div>
+
         <!-- OAuth -->
-        <div v-if="active === 'oauth'" class="pane">
+        <div v-else-if="active === 'oauth'" class="pane">
           <div class="sec-label">待授权账号</div>
           <input v-model="email" class="inp" placeholder="输入 OpenAI 账号邮箱" />
 
@@ -477,47 +613,124 @@ const icons = {
             我已授权，继续
           </button>
 
+          <p class="hint dim">
+            <span v-html="icons.info"></span>
+            授权流量走「设置 → 出网代理」里配置的代理；需要弹窗登录时可在设置里临时清空代理。
+          </p>
+
           <p class="warn" v-if="mode !== 'bridge'">当前为 API Key 模式，OAuth 写入后仍会保持 Bridge 模式并重启代理。</p>
         </div>
 
         <!-- Token / JSON -->
         <div v-else-if="active === 'json'" class="pane">
-          <p class="hint">粘贴 <code>auth.json</code> 内容（来自 <code>~/.codex/auth.json</code> 或导出）。支持 <code>tokens</code> 包裹或平铺的 <code>access_token/refresh_token</code>。</p>
-          <textarea v-model="jsonText" class="ta" placeholder='{"tokens":{"access_token":"...","refresh_token":"..."}}'></textarea>
-          <button class="btn-primary" :disabled="loading || !jsonText" @click="saveJson">
+          <p class="hint">粘贴 <code>auth.json</code>、账号 JSON、Sub2API JSON、<code>accessToken</code>、个人访问令牌 <code>at-…</code> 或 <code>refresh_token</code>。</p>
+
+          <details class="examples" :open="showExamples" @toggle="showExamples = $event.target.open">
+            <summary>必填字段与示例（点击展开）</summary>
+            <div class="examples-body">
+              <p class="hint">
+                支持 session JSON、完整 tokens（id_token + access_token + refresh_token）、
+                Sub2API 导出 JSON、仅 <code>accessToken</code>、个人访问令牌 <code>at-…</code>（按
+                personal_access_token 落盘），或仅 <code>refresh_token</code>——仅 refresh_token
+                会先联网换取完整凭据。
+              </p>
+              <pre class="code-block">示例（session / accessToken / at- / refresh_token）：
+
+{"tokens":{"id_token":"eyJ…","access_token":"eyJ…","refresh_token":"rt…","account_id":"acct-…"}}
+
+{"accessToken":"eyJ…","refreshToken":"rt…"}
+
+at-xxxxxxxxxxxxxxxx
+
+{"refresh_token":"rt…"}</pre>
+            </div>
+          </details>
+
+          <textarea v-model="jsonText" class="ta" placeholder="示例：auth.json 内容、session JSON、accessToken、at-… 个人访问令牌、Sub2API JSON，或仅 refresh_token"></textarea>
+          <button class="btn-primary" :disabled="loading || !jsonText.trim()" @click="importSave">
             <span v-html="icons.download"></span>
-            保存登录态
+            导入
           </button>
         </div>
 
         <!-- API Key -->
         <div v-else-if="active === 'apikey'" class="pane">
-          <p class="hint">使用 OpenAI 官方 API Key 直连 <code>api.openai.com</code>。此模式不走 Codex 登录态，按 API 计费。</p>
-          <div class="link-row">
-            <input :type="showApiKey ? 'text' : 'password'" v-model="apiKey" class="inp" placeholder="sk-..." />
-            <button class="btn-ghost sm" @click="showApiKey = !showApiKey">
-              <span v-html="showApiKey ? icons.eyeOff : icons.eye"></span>
+          <div class="sec-label">已保存供应商</div>
+          <p class="hint" v-if="!savedProviders.length">暂无已保存供应商，可直接填写后自动保存。</p>
+          <div v-else class="chips">
+            <button
+              v-for="p in savedProviders"
+              :key="p.id"
+              class="chip"
+              :class="{ active: providerBaseUrl === p.baseUrl }"
+              @click="providerPresetId = CUSTOM_PROVIDER_ID; providerBaseUrl = p.baseUrl"
+            >
+              {{ p.name }}
+              <span class="chip-x" @click.stop="deleteProvider(p.id); savedProviders = savedProviders.filter((x) => x.id !== p.id)">×</span>
             </button>
           </div>
-          <button class="btn-primary" :disabled="loading || !apiKey" @click="saveApiKey">
+
+          <div class="sec-label">供应商</div>
+          <div class="chips">
+            <button class="chip" :class="{ active: providerPresetId === CUSTOM_PROVIDER_ID }" @click="selectPreset(CUSTOM_PROVIDER_ID)">
+              自定义
+            </button>
+            <button
+              v-for="p in PROVIDER_PRESETS"
+              :key="p.id"
+              class="chip"
+              :class="{ active: providerPresetId === p.id }"
+              @click="selectPreset(p.id)"
+            >
+              {{ p.name }}
+            </button>
+          </div>
+
+          <div v-if="providerPresetId === CUSTOM_PROVIDER_ID" class="field">
+            <div class="sec-label">接口地址（BaseUrl）</div>
+            <input v-model="providerBaseUrl" class="inp" placeholder="https://your-relay.example.com/v1" />
+          </div>
+          <div v-else class="field">
+            <div class="sec-label">接口地址（由供应商预设带入，可改）</div>
+            <input v-model="providerBaseUrl" class="inp" placeholder="https://…" />
+          </div>
+
+          <div class="field">
+            <div class="sec-label">API Key</div>
+            <div class="link-row">
+              <input :type="showApiKey ? 'text' : 'password'" v-model="apiKey" class="inp" placeholder="sk-… / at-…" />
+              <button class="btn-ghost sm" @click="showApiKey = !showApiKey">
+                <span v-html="showApiKey ? icons.eyeOff : icons.eye"></span>
+              </button>
+            </div>
+          </div>
+
+          <button class="btn-primary" :disabled="loading || !apiKey.trim()" @click="saveApiKey">
             <span v-html="icons.key"></span>
-            保存并切换为 API Key 模式
+            添加账号
           </button>
+          <p class="hint dim">此模式不走 Codex 登录态，按所选供应商计费；出网代理同样生效。</p>
           <button class="btn-ghost" :disabled="loading || mode === 'bridge'" @click="switchToBridge">
             切回 Bridge（Codex 登录）模式
           </button>
-          <p class="warn" v-if="mode === 'bridge'">当前为 Bridge 模式；填入 Key 并保存将停止 bridge、改用 API Key 代理。</p>
         </div>
 
         <!-- 导入 -->
         <div v-else-if="active === 'import'" class="pane">
-          <p class="hint">从本机选择 <code>auth.json</code> 文件，内容与 Token / JSON 等效。</p>
-          <input type="file" accept=".json,application/json" @change="onFile" />
-          <div v-if="importFile" class="file-name">已选择：{{ importFile.name }}</div>
-          <button class="btn-primary" :disabled="loading || !importFile" @click="importSave">
-            <span v-html="icons.download"></span>
-            导入并保存
+          <p class="hint">从本机已登录的会话中导入 Codex 账号。</p>
+
+          <button class="btn-primary" :disabled="localBusy" @click="getLocalAccount">
+            <span v-html="icons.database"></span>
+            {{ localBusy ? '正在读取本机登录…' : '获取本地账号' }}
           </button>
+
+          <p class="hint dim">选择 JSON 文件导入账号（支持多种格式，与 Token / JSON 等效）。</p>
+          <button class="btn-outline wide" @click="$refs.fileInput.click()">
+            <span v-html="icons.fileUp"></span>
+            从本地文件导入
+          </button>
+          <input ref="fileInput" type="file" accept=".json,application/json,.txt" style="display: none" @change="onFile" />
+          <div v-if="importFile" class="file-name">已选择：{{ importFile.name }}（已带入 Token / JSON，点「导入」完成）</div>
         </div>
 
         <div v-if="error" class="msg err">{{ error }}</div>
@@ -533,14 +746,15 @@ const icons = {
   display: flex; align-items: center; justify-content: center; z-index: 50;
 }
 .modal {
-  width: 560px; max-width: 92vw; background: #14161a; border: 1px solid #2a2e36;
+  width: 620px; max-width: 94vw; max-height: 88vh; overflow-y: auto;
+  background: #14161a; border: 1px solid #2a2e36;
   border-radius: 16px; padding: 24px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
 .modal-title { font-size: 20px; font-weight: 600; color: #f0f1f5; }
 .x { background: none; border: none; color: #9ca3af; font-size: 20px; cursor: pointer; line-height: 1; }
 
-.tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+.tabs { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
 .tab {
   background: none; border: none; color: #9ca3af; padding: 12px; height: 40px;
   cursor: pointer; font-size: 13px; font-weight: 500; border-radius: 8px;
@@ -548,6 +762,7 @@ const icons = {
 }
 .tab:hover { color: #f0f1f5; }
 .tab.active { background: #1a1d23; color: #f0f1f5; }
+.tab:disabled { opacity: 0.5; cursor: not-allowed; }
 .tab-icon { display: flex; align-items: center; }
 
 .pane { display: flex; flex-direction: column; gap: 16px; }
@@ -559,70 +774,104 @@ const icons = {
 .hint { font-size: 13px; color: #9ca3af; line-height: 1.6; margin: 0; }
 .hint code, .warn code { font-family: var(--mono, monospace); color: #34d399; }
 .hint > span:first-child { display: inline-flex; vertical-align: -3px; margin-right: 6px; }
+.hint.dim { color: #6b7280; font-size: 12.5px; }
+.hint.live { color: #34d399; }
+.hint.err-hint { color: #fda4af; }
+.hint.warn { color: #fbbf24; }
 
-.inp, .ta {
-  width: 100%; background: #1a1d23; border: 1px solid #272a30; border-radius: 8px;
-  padding: 12px; color: #e7e9ec; font-size: 14px; font-family: inherit;
+/* 官方登录 6 步骤条 */
+.steps { display: flex; flex-direction: column; gap: 8px; }
+.step {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+  border: 1px solid #2a2e36; border-radius: 10px; font-size: 13px; color: #6b7280;
 }
-.inp::placeholder { color: #6b7280; }
-.ta {
-  min-height: 120px; font-size: 12.5px; font-family: var(--mono, monospace); resize: vertical;
+.step-num {
+  width: 20px; height: 20px; border-radius: 50%; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-family: var(--mono, monospace);
+  border: 1px solid #3a3f48; color: #6b7280;
 }
-.ta::placeholder { color: #6b7280; }
+.step.active { color: #f0f1f5; border-color: #34d399; }
+.step.active .step-num { border-color: #34d399; color: #34d399; }
+.step.done { color: #9ca3af; }
+.step.done .step-num { background: rgba(16,185,129,0.15); border-color: #34d399; color: #34d399; }
 
-.row-actions { display: flex; gap: 8px; }
-.btn-ghost.sm {
-  padding: 8px; font-size: 13px; font-weight: 500;
+/* 供应商 chip 墙 */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  background: #1a1d23; border: 1px solid #2a2e36; color: #c3c8d2;
+  padding: 6px 12px; border-radius: 999px; font-size: 12.5px; cursor: pointer;
   display: inline-flex; align-items: center; gap: 6px;
 }
-.btn-ghost.sm span { display: flex; align-items: center; }
+.chip:hover { border-color: #3a3f48; }
+.chip.active { border-color: #34d399; color: #34d399; background: rgba(16,185,129,0.08); }
+.chip-x { color: #6b7280; font-size: 14px; line-height: 1; }
+.chip-x:hover { color: #fda4af; }
 
-.seg { display: flex; gap: 4px; background: #1a1d23; border-radius: 8px; padding: 4px; }
+/* Token/JSON 示例折叠 */
+.examples { border: 1px solid #2a2e36; border-radius: 10px; padding: 10px 14px; }
+.examples summary { cursor: pointer; font-size: 13px; color: #9ca3af; user-select: none; }
+.examples-body { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+.code-block {
+  margin: 0; padding: 12px; background: #101216; border: 1px solid #2a2e36;
+  border-radius: 8px; font-family: var(--mono, monospace); font-size: 12px;
+  color: #a7f3d0; white-space: pre-wrap; word-break: break-all; line-height: 1.55;
+}
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+.row-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.inp {
+  width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 13px;
+  color: #f0f1f5; background: #101216; border: 1px solid #2a2e36; border-radius: 10px;
+}
+.inp:focus { outline: none; border-color: #34d399; }
+.ta {
+  min-height: 120px; resize: vertical; padding: 12px; font-size: 12.5px;
+  font-family: var(--mono, monospace); color: #f0f1f5; background: #101216;
+  border: 1px solid #2a2e36; border-radius: 10px; line-height: 1.5;
+}
+.ta:focus { outline: none; border-color: #34d399; }
+.seg { display: flex; background: #101216; border: 1px solid #2a2e36; border-radius: 10px; overflow: hidden; }
 .seg-item {
-  flex: 1; height: 36px; background: none; border: none; border-radius: 6px;
-  color: #9ca3af; font-size: 13px; font-weight: 500; cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  flex: 1; background: none; border: none; color: #9ca3af; padding: 11px;
+  font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
-.seg-item.on { background: #272a30; color: #f0f1f5; }
-
-.auth-box {
-  background: #1a1d23; border: 1px solid #272a30; border-radius: 8px;
-  padding: 16px; display: flex; flex-direction: column; gap: 12px;
-}
-.link-row { display: flex; align-items: center; gap: 8px; overflow: hidden; }
-.link-row .inp { flex: 1; }
+.seg-item.on { color: #34d399; background: rgba(16,185,129,0.08); }
+.auth-box { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid #2a2e36; border-radius: 12px; }
+.link-row { display: flex; gap: 8px; align-items: center; }
 .url-input {
-  flex: 1; min-width: 0; background: #14161a; border: 1px solid #272a30; border-radius: 8px;
-  padding: 10px 12px; color: #e7e9ec; font-size: 12px; font-family: var(--mono, monospace);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; outline: none;
+  flex: 1; min-width: 0; padding: 9px 12px; font-size: 12px; font-family: var(--mono, monospace);
+  color: #9ca3af; background: #101216; border: 1px solid #2a2e36; border-radius: 10px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.url-input:hover, .url-input:focus { overflow-x: auto; }
-.url-input:focus { border-color: #10b981; }
-.code { background: #272a30; padding: 4px 8px; border-radius: 6px; color: #34d399; }
-
+.code {
+  flex: 1; padding: 9px 12px; font-family: var(--mono, monospace); font-size: 14px;
+  letter-spacing: 2px; color: #34d399; background: #101216; border: 1px solid #2a2e36; border-radius: 10px;
+}
+.file-name { font-size: 12.5px; color: #9ca3af; }
 .btn-primary {
-  background: #10b981; color: #0a0b0e; border: none; border-radius: 8px;
-  height: 44px; padding: 0 14px; font-size: 14px; font-weight: 600; cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  background: #10b981; border: none; color: #06281d; font-weight: 600; font-size: 14px;
+  padding: 12px 16px; border-radius: 12px; cursor: pointer;
 }
+.btn-primary:hover { background: #34d399; }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-ghost {
-  background: #1a1d23; color: #9ca3af; border: 1px solid #272a30; border-radius: 8px;
-  height: 44px; padding: 0 14px; font-size: 13px; cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-}
 .btn-outline {
-  background: #1a1d23; color: #34d399; border: 1px solid #10b981; border-radius: 8px;
-  height: 44px; padding: 0 14px; font-size: 13px; font-weight: 500; cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  background: none; border: 1px solid #2a2e36; color: #e5e7eb; font-size: 13.5px;
+  padding: 11px 16px; border-radius: 12px; cursor: pointer;
 }
-.btn-outline.wide { width: 100%; }
+.btn-outline:hover { border-color: #3a3f48; }
 .btn-outline:disabled { opacity: 0.5; cursor: not-allowed; }
-
-.file-name { font-size: 12px; color: #9ca3af; }
-.warn { font-size: 12px; color: #f59e0b; margin: 0; }
-.msg { font-size: 12.5px; padding: 8px 10px; border-radius: 8px; }
-.msg.err { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
-.msg.ok { background: rgba(16, 185, 129, 0.12); color: #34d399; }
+.btn-ghost {
+  background: none; border: none; color: #9ca3af; font-size: 13px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px;
+}
+.btn-ghost:hover { color: #f0f1f5; background: #1a1d23; }
+.btn-ghost.sm { padding: 6px 10px; font-size: 12px; }
+.wide { width: 100%; }
+.msg { padding: 10px 14px; border-radius: 10px; font-size: 13px; line-height: 1.5; }
+.msg.err { background: rgba(244,63,94,0.1); border: 1px solid rgba(244,63,94,0.3); color: #fda4af; }
+.msg.ok { background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); color: #6ee7b7; }
+.warn { font-size: 12.5px; color: #fbbf24; margin: 0; line-height: 1.5; }
 </style>

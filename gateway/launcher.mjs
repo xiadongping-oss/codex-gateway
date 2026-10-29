@@ -62,7 +62,9 @@ import {
   cancelBrowserLogin,
   getBrowserLoginInfo,
   jwtClaims,
-  inspectCodexCliAuth
+  inspectCodexCliAuth,
+  parseAuthTokenText,
+  exchangeRefreshToken
 } from './auth-core.mjs'
 import {
   listApiKeys,
@@ -147,6 +149,29 @@ try { fs.mkdirSync(DATA_ROOT, { recursive: true }) } catch {}
 // 在用户自己打开数据目录排障时混进 ls 结果里干扰判断。开一次即可
 // （递归：data/、accounts/ 子目录里的残留一起清）。
 try { sweepStaleTmpFiles(DATA_ROOT) } catch {}
+
+// ---- 官方客户端临时登录（6 步骤流程，交互对齐 cockpit-tools）----
+import { createOfficialLoginManager } from './codex-official-login.mjs'
+import { listSavedProviders, saveProvider, deleteProvider } from './api-providers.mjs'
+function killTree(pid) {
+  return new Promise((resolve) => {
+    if (process.platform === 'win32') {
+      // /T 连子进程树一起杀；壳进程（cmd /c start /WAIT）和官方客户端一起退
+      execFile('taskkill', ['/PID', String(pid), '/T', '/F'], () => resolve())
+    } else {
+      try { process.kill(pid, 'SIGKILL') } catch {}
+      resolve()
+    }
+  })
+}
+const officialLogin = createOfficialLoginManager({
+  dataRoot: DATA_ROOT,
+  // shell 模式下 args 恒为空数组：完整命令串已在 cmd 里（start/open + 引号转义由模块负责）
+  spawnImpl: (cmd, opts) => spawn(cmd, [], opts),
+  killTree
+})
+// 上次中断的会话：有凭据的保留待导入（用户不必重新登录），没凭据的连同进程清掉
+try { officialLogin.recover() } catch {}
 
 // 参考图目录必须先存在：它同时是 bridge 子进程的 cwd，
 // 目录不存在时 spawn 会直接失败，而这个失败在用户看来只是「bridge 起不来」。
@@ -773,9 +798,13 @@ function readBody(req, max = READ_BODY_MAX) {
 }
 
 // 应用模式切换：bridge ↔ openai，并相应启停 bridge
-async function applyMode(mode, apiKey) {
+async function applyMode(mode, apiKey, { baseUrl } = {}) {
   gwConfig.mode = mode === 'openai' ? 'openai' : 'bridge'
-  if (mode === 'openai') gwConfig.openaiApiKey = apiKey || gwConfig.openaiApiKey || ''
+  if (mode === 'openai') {
+    gwConfig.openaiApiKey = apiKey || gwConfig.openaiApiKey || ''
+    // 上游 baseUrl（API Key 标签页选供应商/自定义中转）。空串=回到官方
+    gwConfig.openaiBaseUrl = String(baseUrl || '').trim()
+  }
   saveConfig(gwConfig)
   if (gwConfig.mode === 'openai') {
     // 直连模式下一个实例都不需要，全部停掉（否则白占内存与端口）
@@ -1092,8 +1121,21 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
 // 【为什么不用 fetch()】
 //   fetch 会自动解压 content-encoding: gzip/br 并保留原头部，
 //   对「字节原样透传」的反向代理是破坏性的。低层 request() 不做解压。
+// API Key 直连模式的上游：默认官方，可用自定义中转（设置页 / API Key 标签页的供应商）。
+// 只接受 http(s) 绝对 URL —— 这个值会被拼进出站请求目标，放任畸形值只会把用户
+// 的请求打到莫名其妙的地方。
+export function openaiBaseUrl() {
+  const raw = String(gwConfig.openaiBaseUrl || '').trim().replace(/\/+$/, '')
+  if (!raw) return 'https://api.openai.com'
+  try {
+    const u = new URL(raw)
+    if (u.protocol === 'https:' || u.protocol === 'http:') return raw
+  } catch { /* 落到默认 */ }
+  return 'https://api.openai.com'
+}
+
 async function pipeOpenAi(req, res, targetPath, headers, bodyBuf, attachUsageTap) {
-  const target = 'https://api.openai.com' + targetPath
+  const target = openaiBaseUrl() + targetPath
   const mod = await getUndici().catch(() => null)
   if (!mod) {
     // 极端降级：undici 缺失时退回裸 https（无代理能力），至少功能可用
@@ -1127,8 +1169,14 @@ async function pipeOpenAi(req, res, targetPath, headers, bodyBuf, attachUsageTap
   }
 }
 
-// 降级路径：undici 不可用时的裸 https 直连（无代理）
+// 降级路径：undici 不可用时的裸 https 直连（无代理）。
+// 自定义 http 上游无法用 node:https 表达时直接报错（极罕见路径，不值得引 http 模块）。
 function pipeOpenAiDirect(req, res, targetPath, headers, bodyBuf, attachUsageTap) {
+  const base = openaiBaseUrl()
+  if (!base.startsWith('https://api.openai.com')) {
+    if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' })
+    return res.end(JSON.stringify({ error: 'openai_unreachable', detail: '自定义上游需要 undici（内置运行时自带），请检查网关安装完整性' }))
+  }
   const opts = {
     host: 'api.openai.com',
     port: 443,
@@ -2476,8 +2524,8 @@ async function handleHttpRequest(req, res) {
     if (p === '/__gw/auth/mode' && req.method === 'POST') {
       try {
         const body = await readBody(req)
-        const cfg = await applyMode(body.mode, body.apiKey)
-        return sendJson(res, 200, { ok: true, mode: cfg.mode, hasApiKey: !!cfg.openaiApiKey })
+        const cfg = await applyMode(body.mode, body.apiKey, { baseUrl: body.baseUrl })
+        return sendJson(res, 200, { ok: true, mode: cfg.mode, hasApiKey: !!cfg.openaiApiKey, baseUrl: openaiBaseUrl() })
       } catch (e) {
         return sendJson(res, 400, { error: 'mode_failed', detail: e.message })
       }
@@ -2512,6 +2560,34 @@ async function handleHttpRequest(req, res) {
         return sendJson(res, 200, { ok: true, accountId: acct.id, activeId: acct.reg.activeId })
       } catch (e) {
         return sendJson(res, 400, { error: 'add_account_failed', detail: e.message })
+      }
+    }
+    // ---- Token / JSON 标签页的多格式文本导入 ----
+    // 与 /__gw/accounts（结构化 JSON）互补：这里接受裸 accessToken、at-/sk- 令牌、
+    // 纯 refresh_token（联网换取）等文本形态，解析见 auth-core.parseAuthTokenText。
+    if (p === '/__gw/accounts/import-text' && req.method === 'POST') {
+      try {
+        const body = await readBody(req)
+        const parsed = parseAuthTokenText(body.text)
+        let data = parsed.data
+        let warning = parsed.warning || null
+        if (parsed.kind === 'refresh_token') {
+          data = await exchangeRefreshToken(parsed.refreshToken)
+          warning = '已用 refresh_token 换取完整凭据'
+        }
+        const acct = await addAccount({
+          name: body.name,
+          provider: data.auth_mode === 'api_key' ? 'apikey' : 'token',
+          mode: 'bridge',
+          data
+        })
+        gwConfig.authFilePath = acct.path
+        saveConfig(gwConfig)
+        pushLog('● 已通过文本导入添加账号：' + acct.path)
+        if (gwConfig.mode === 'bridge') restartBridgeFor(acct.id, '文本导入账号')
+        return sendJson(res, 200, { ok: true, accountId: acct.id, activeId: acct.reg.activeId, warning })
+      } catch (e) {
+        return sendJson(res, 400, { error: 'import_text_failed', detail: e.message })
       }
     }
     // ---- 本机 Codex CLI 登录无感导入 ----
@@ -2550,7 +2626,81 @@ async function handleHttpRequest(req, res) {
         return sendJson(res, 400, { error: 'import_local_failed', detail: e.message })
       }
     }
-    if (p === '/__gw/accounts/pending' && req.method === 'POST') {
+    // ---- 官方客户端临时登录（6 步骤流程）----
+    // start 拉起带临时 CODEX_HOME 的官方客户端 → 前端轮询 status 推进步骤条 →
+    // finish 读最终凭据注册账号并清理临时目录。见 codex-official-login.mjs。
+    if (p === '/__gw/codex-official-login/start' && req.method === 'POST') {
+      try {
+        const r = await officialLogin.start()
+        pushLog('● 官方客户端临时登录已发起：' + r.clientPath)
+        return sendJson(res, 200, { ok: true, ...r })
+      } catch (e) {
+        return sendJson(res, 400, { error: 'official_login_start_failed', detail: e.message })
+      }
+    }
+    if (p === '/__gw/codex-official-login/status' && req.method === 'GET') {
+      const u = new URL(req.url, 'http://x')
+      return sendJson(res, 200, await officialLogin.status(u.searchParams.get('sessionId')))
+    }
+    if (p === '/__gw/codex-official-login/finish' && req.method === 'POST') {
+      try {
+        const body = await readBody(req).catch(() => ({}))
+        const r = await officialLogin.finish(body.sessionId)
+        const data = normalizeAuthJson(r.authJson)
+        const email = jwtClaims(data.tokens?.id_token)?.email || null
+        const acct = await addAccount({
+          name: body.name || email || '官方客户端登录',
+          provider: data.auth_mode === 'api_key' ? 'apikey' : 'oauth',
+          mode: 'bridge',
+          data
+        })
+        gwConfig.authFilePath = acct.path
+        saveConfig(gwConfig)
+        pushLog('● 官方客户端登录导入成功：' + (email || acct.id))
+        if (gwConfig.mode === 'bridge') restartBridgeFor(acct.id, '官方登录')
+        return sendJson(res, 200, {
+          ok: true, accountId: acct.id, activeId: acct.reg.activeId,
+          isExisting: acct.isExisting === true, email, cleaned: r.cleaned
+        })
+      } catch (e) {
+        return sendJson(res, 400, { error: 'official_login_finish_failed', detail: e.message })
+      }
+    }
+    if (p === '/__gw/codex-official-login/cancel' && req.method === 'POST') {
+      try {
+        const body = await readBody(req).catch(() => ({}))
+        await officialLogin.cancel(body.sessionId)
+        pushLog('○ 官方客户端临时登录已取消')
+        return sendJson(res, 200, { ok: true })
+      } catch (e) {
+        return sendJson(res, 400, { error: 'official_login_cancel_failed', detail: e.message })
+      }
+    }
+    // ---- 已保存供应商（API Key 标签页快选）----
+    if (p === '/__gw/providers' && req.method === 'GET') {
+      return sendJson(res, 200, { ok: true, saved: listSavedProviders() })
+    }
+    if (p === '/__gw/providers' && req.method === 'POST') {
+      try {
+        const body = await readBody(req)
+        const name = String(body.name || '').trim()
+        const baseUrl = String(body.baseUrl || '').trim()
+        if (!name || !baseUrl) return sendJson(res, 400, { error: 'missing_fields', detail: 'name 与 baseUrl 必填' })
+        saveProvider({ name, baseUrl })
+        return sendJson(res, 200, { ok: true, saved: listSavedProviders() })
+      } catch (e) {
+        return sendJson(res, 400, { error: 'save_provider_failed', detail: e.message })
+      }
+    }
+    if (p === '/__gw/providers/delete' && req.method === 'POST') {
+      try {
+        const body = await readBody(req)
+        deleteProvider(body.id)
+        return sendJson(res, 200, { ok: true, saved: listSavedProviders() })
+      } catch (e) {
+        return sendJson(res, 400, { error: 'delete_provider_failed', detail: e.message })
+      }
+    }    if (p === '/__gw/accounts/pending' && req.method === 'POST') {
       try {
         const body = await readBody(req)
         const r = addPendingAccount({

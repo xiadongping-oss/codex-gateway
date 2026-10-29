@@ -1,0 +1,48 @@
+// 供应商预设清单（API Key 标签页快选）。
+// 仅收录公开服务的名称与默认接入地址（事实性数据，随上游更新）；
+// 自定义中转直接在「自定义」里手填，填过一次会自动存入「已保存供应商」。
+export const PROVIDER_PRESETS = [
+  { id: "openai_official", name: "OpenAI Official", baseUrl: "https://api.openai.com/v1" },
+  { id: "packycode", name: "PackyCode", baseUrl: "https://www.packyapi.com/v1" },
+  { id: "cubence", name: "Cubence", baseUrl: "https://api.cubence.com/v1" },
+  { id: "aigocode", name: "AIGoCode", baseUrl: "https://api.aigocode.com" },
+  { id: "rightcode", name: "RightCode", baseUrl: "https://right.codes/codex/v1" },
+  { id: "sssaicode", name: "SSSAiCode", baseUrl: "https://node-hk.sssaicode.com/api/v1" },
+  { id: "micu", name: "Micu", baseUrl: "https://www.openclaudecode.cn/v1" },
+  { id: "x_code_api", name: "X-Code API", baseUrl: "https://x-code.cc/v1" },
+  { id: "ctok_ai", name: "CTok.ai", baseUrl: "https://api.ctok.ai/v1" },
+  { id: "aihubmix", name: "AiHubMix", baseUrl: "https://aihubmix.com/v1" },
+  { id: "dmxapi", name: "DMXAPI", baseUrl: "https://www.dmxapi.cn/v1" },
+  { id: "compshare", name: "优云智算", baseUrl: "https://api.modelverse.cn/v1" },
+  { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
+  { id: "aicodemirror", name: "AICodeMirror", baseUrl: "https://api.aicodemirror.com/api/codex/backend-api/codex" },
+  { id: "aicoding", name: "AICoding", baseUrl: "https://api.aicoding.sh" },
+  { id: "crazyrouter", name: "CrazyRouter", baseUrl: "https://crazyrouter.com/v1" },
+  { id: "moonshot", name: "Moonshot", baseUrl: "https://api.moonshot.cn/v1" },
+  { id: "siliconflow", name: "SiliconFlow", baseUrl: "https://api.siliconflow.cn/v1" },
+  { id: "siliconflow_en", name: "SiliconFlow en", baseUrl: "https://api.siliconflow.com/v1" },
+  { id: "zhipu_glm", name: "Zhipu GLM", baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4" },
+  { id: "zhipu_glm_en", name: "Zhipu GLM en", baseUrl: "https://api.z.ai/api/coding/paas/v4" },
+  { id: "volcengine_agentplan", name: "火山Agentplan", baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3" },
+  { id: "byteplus", name: "BytePlus", baseUrl: "https://ark.ap-southeast.bytepluses.com/api/coding/v3" },
+  { id: "doubaoseed", name: "DouBaoSeed", baseUrl: "https://ark.cn-beijing.volces.com/api/v3" },
+  { id: "qianfan_coding", name: "Baidu Qianfan Coding Plan", baseUrl: "https://qianfan.baidubce.com/v2/coding" },
+  { id: "bailian", name: "Bailian", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+  { id: "stepfun", name: "StepFun", baseUrl: "https://api.stepfun.com/step_plan/v1" },
+  { id: "stepfun_en", name: "StepFun en", baseUrl: "https://api.stepfun.ai/step_plan/v1" },
+  { id: "modelscope", name: "ModelScope", baseUrl: "https://api-inference.modelscope.cn/v1" },
+  { id: "longcat", name: "Longcat", baseUrl: "https://api.longcat.chat/openai/v1" },
+  { id: "bailing", name: "BaiLing", baseUrl: "https://api.tbox.cn/api/llm/v1" },
+  { id: "xiaomi_mimo", name: "Xiaomi MiMo", baseUrl: "https://api.xiaomimimo.com/v1" },
+  { id: "xiaomi_mimo_token_plan", name: "Xiaomi MiMo Token Plan", baseUrl: "https://token-plan-cn.xiaomimimo.com/v1" },
+  { id: "novita", name: "Novita AI", baseUrl: "https://api.novita.ai/openai/v1" },
+  { id: "nvidia", name: "Nvidia", baseUrl: "https://integrate.api.nvidia.com/v1" },
+  { id: "runapi", name: "RunAPI", baseUrl: "https://runapi.co/v1" },
+  { id: "relaxycode", name: "RelaxyCode", baseUrl: "https://www.relaxycode.com/v1" },
+  { id: "compshare_coding", name: "Compshare Coding Plan", baseUrl: "https://cp.compshare.cn/v1" },
+  { id: "lemondata", name: "E-FlowCode", baseUrl: "https://api.lemondata.cc/v1" },
+  { id: "pipellm", name: "PIPELLM", baseUrl: "https://cc-api.pipellm.ai/v1" },
+  { id: "therouter", name: "TheRouter", baseUrl: "https://api.therouter.ai/v1" }
+]
+
+export const CUSTOM_PROVIDER_ID = "custom"

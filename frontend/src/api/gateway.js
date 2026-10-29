@@ -311,8 +311,38 @@ export async function cancelBrowserLoginApi() {
 }
 
 // ---------- 授权：Token·JSON 保存 / 模式切换 ----------
-export async function setAuthMode(mode, apiKey) {
-  return await gwRequest('/__gw/auth/mode', 'POST', { mode, apiKey }).catch(() => null)
+export async function setAuthMode(mode, apiKey, baseUrl) {
+  return await gwRequest('/__gw/auth/mode', 'POST', { mode, apiKey, baseUrl }).catch(() => null)
+}
+
+// ---------- 官方客户端临时登录（6 步骤流程） ----------
+export async function officialLoginStart() {
+  return await gwRequest('/__gw/codex-official-login/start', 'POST', {}).catch(() => null)
+}
+export async function officialLoginStatus(sessionId) {
+  return await gwRequest('/__gw/codex-official-login/status?sessionId=' + encodeURIComponent(sessionId || ''), 'GET').catch(() => null)
+}
+export async function officialLoginFinish(sessionId, name) {
+  return await gwRequest('/__gw/codex-official-login/finish', 'POST', { sessionId, name }).catch(() => null)
+}
+export async function officialLoginCancel(sessionId) {
+  return await gwRequest('/__gw/codex-official-login/cancel', 'POST', { sessionId }).catch(() => null)
+}
+
+// ---------- Token / JSON 多格式文本导入 ----------
+export async function importTokenText(text, name) {
+  return await gwRequest('/__gw/accounts/import-text', 'POST', { text, name }).catch(() => null)
+}
+
+// ---------- 已保存供应商（API Key 快选） ----------
+export async function getProviders() {
+  return await gwRequest('/__gw/providers', 'GET').catch(() => null)
+}
+export async function saveProvider(name, baseUrl) {
+  return await gwRequest('/__gw/providers', 'POST', { name, baseUrl }).catch(() => null)
+}
+export async function deleteProvider(id) {
+  return await gwRequest('/__gw/providers/delete', 'POST', { id }).catch(() => null)
 }
 
 // ---------- 多账号管理 ----------
