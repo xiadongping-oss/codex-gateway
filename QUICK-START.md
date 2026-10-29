@@ -14,7 +14,7 @@
 
 ## 安装（推荐：一键安装）
 
-1. **双击** `gateway\service\install-app.vbs`
+1. **双击解压文件夹里的 `install.vbs`**（就在最外层，和本文件并排）
    - 程序装到 `%LOCALAPPDATA%\Programs\CodexGateway`，开始菜单出现「Codex Gateway」
    - 账号 / API Key / 日志住进 `%LOCALAPPDATA%\CodexGateway` —— 与程序分离，卸载升级不丢数据
    - Windows「设置 → 应用」里会出现卸载入口，随装随卸
@@ -23,7 +23,7 @@
 
 > 不想安装也行：双击 `gateway\service\start-gateway.vbs` 直接以绿色版运行，
 > 数据会放在解压目录内（`gateway\data` 等）。两种形态的数据布局一致，随时可以
-> 双击 install-app.vbs 转成安装版，已有数据自动搬进数据目录。
+> 双击 install.vbs 转成安装版，已有数据自动搬进数据目录。
 
 ## 首次配置（网页里点一点）
 

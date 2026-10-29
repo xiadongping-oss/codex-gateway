@@ -200,6 +200,11 @@ copyTree(path.join(ROOT, 'docs', 'lan-kit'), path.join(STAGING, 'lan-kit'))
 copyFile(path.join(ROOT, 'package.json'), path.join(STAGING, 'package.json'))
 copyFile(path.join(ROOT, 'README.md'), path.join(STAGING, 'README.md'))
 copyFile(path.join(ROOT, 'QUICK-START.md'), path.join(STAGING, 'QUICK-START.md'))
+// ---------- 包根一键入口 ----------
+// 用户双击的第一入口必须在 zip 解压后的顶层，不该让人钻进 gateway\service\。
+// 与 service 副本是同一份脚本（双位置自适应定位包根），这里只是换个名字放到顶层。
+copyFile(path.join(ROOT, 'gateway', 'service', 'install-app.vbs'), path.join(STAGING, 'install.vbs'))
+copyFile(path.join(ROOT, 'gateway', 'service', 'uninstall-app.vbs'), path.join(STAGING, 'uninstall.vbs'))
 
 // service/ 已随 gateway/ 复制；内置运行时
 let nodeInfo = null
@@ -304,6 +309,9 @@ const REQUIRED = [
   // 一键安装 / 卸载（普通用户的推荐入口；缺了它们发布包就退化成纯绿色版）
   'gateway/service/install-app.vbs',
   'gateway/service/uninstall-app.vbs',
+  // 包根一键入口（构建时由上面两个文件复制生成；缺了用户就得钻子目录找安装器）
+  'install.vbs',
+  'uninstall.vbs',
   // macOS / Linux 的启动与自启（launchd / systemd --user）
   'gateway/service-unix/_common.sh',
   'gateway/service-unix/start-gateway.sh',

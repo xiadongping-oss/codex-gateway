@@ -374,6 +374,24 @@ test('结构自检：源里 CRLF 的 .sh 会被规范化，产物必须是 LF', 
   assert.equal(buf.toString(), '#!/bin/sh\necho hi\n')
 })
 
+// ======================= 包根一键入口 =======================
+// 入口必须在 zip 解压后的顶层——要让用户钻进 gateway\service\ 才能装的包，不算一键安装。
+test('构建：包根生成 install.vbs / uninstall.vbs，与 service 副本字节一致且为 CRLF', () => {
+  const { root, script } = fakeRepo()
+  const r = run(script, ['--no-runtime'], { cwd: root })
+  assert.equal(r.code, 0, r.out)
+  const stage = path.join(root, 'release', 'staging', NAME)
+  for (const [top, svc] of [
+    ['install.vbs', 'gateway/service/install-app.vbs'],
+    ['uninstall.vbs', 'gateway/service/uninstall-app.vbs']
+  ]) {
+    const topBuf = fs.readFileSync(path.join(stage, top))
+    const svcBuf = fs.readFileSync(path.join(stage, svc))
+    assert.ok(topBuf.equals(svcBuf), `${top} 必须与 ${svc} 字节一致`)
+    assert.ok(topBuf.includes(0x0d), `${top} 必须是 CRLF（Windows 脚本）`)
+  }
+})
+
 // ======================= 运行时锁（构建阶段） =======================
 test('构建：内置运行时与锁文件不一致时中止，并给出两条出路', () => {
   const { root, script } = fakeRepo({ lockSha: 'a'.repeat(64) })

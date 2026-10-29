@@ -172,7 +172,7 @@ http://100.122.232.106:4173/v1   (Tailscale)                    ← 仅 Tailscal
 
 | 部分 | 支持 |
 |---|---|
-| Windows 发布包 | 仅 Windows x64（内含 node 运行时）。推荐双击 `gateway\service\install-app.vbs` 一键安装（程序进 `%LOCALAPPDATA%\Programs`、数据进 `%LOCALAPPDATA%\CodexGateway`、开始菜单 + 可卸载）；也可直接双击 `start-gateway.vbs` 以绿色版运行（数据长在解压目录内） |
+| Windows 发布包 | 仅 Windows x64（内含 node 运行时）。推荐双击解压后**顶层**的 `install.vbs` 一键安装（程序进 `%LOCALAPPDATA%\Programs`、数据进 `%LOCALAPPDATA%\CodexGateway`、开始菜单 + 可卸载）；也可双击 `gateway\service\start-gateway.vbs` 以绿色版运行（数据长在解压目录内） |
 | 网关源码运行 | 跨平台：macOS / Linux 装 Node.js 20+ 后 `gateway/start-unix.sh` 直接跑 |
 | 开机自启 | Windows：`gateway/service/install-autostart.vbs`（计划任务）；macOS：launchd；Linux：systemd `--user`。unix 侧见下 |
 | 局域网客户端接入 | 跨平台：接入页任意浏览器可用；脚本任意 Node.js 16+ 系统可用 |

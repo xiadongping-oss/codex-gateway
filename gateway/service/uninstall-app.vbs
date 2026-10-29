@@ -16,9 +16,25 @@ Dim sh, fso, dstDir, dataDir, q
 Set sh  = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 q = """"
-dstDir  = fso.GetParentFolderName(fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName)))
-' 本脚本位于 <安装>\gateway\service\uninstall-app.vbs，向上三层就是安装根目录
+' 双位置：脚本既在 <安装>\gateway\service\（注册表/开始菜单指向这里，
+' 向上三层 = 安装根，卸载「自己所在的这份」），也可能在解压包根
+' （uninstall.vbs 入口 / 包根副本）——此时按固定安装位置卸载。
+Dim here, up3, installedAt
+here = fso.GetParentFolderName(WScript.ScriptFullName)
+up3  = fso.GetParentFolderName(fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName)))
+installedAt = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs\CodexGateway"
+If LCase(up3) = LCase(installedAt) Then
+  dstDir = up3
+Else
+  dstDir = installedAt
+End If
 dataDir = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\CodexGateway"
+
+If Not fso.FolderExists(dstDir) Then
+  MsgBox "没有检测到已安装的 Codex Gateway：" & vbCrLf & dstDir, _
+         64, "卸载 Codex Gateway"
+  WScript.Quit 0
+End If
 
 If MsgBox("确定卸载 Codex Gateway 吗？" & vbCrLf & vbCrLf & _
           "程序目录：" & dstDir & vbCrLf & _

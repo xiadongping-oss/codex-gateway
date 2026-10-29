@@ -127,7 +127,8 @@ bridge 补丁快照、service 启动器（run/start/stop/自启）、frontend/di
 
 - 仅面向 **Windows x64**（启动器是 .vbs/.cmd，node.exe 是 win 版）
 - zip 内 exe/vbs 带 Mark-of-the-Web，Windows 可能弹 SmartScreen——QUICK-START 已写处理方式
-- 数据目录：默认与程序同目录（绿色软件约定）；用 `gateway/service/install-app.vbs`
+- 数据目录：默认与程序同目录（绿色软件约定）；用户双击**包根**的 `install.vbs`
+  （构建时从 `gateway/service/install-app.vbs` 复制生成，同一脚本、双位置自适应）
   一键安装后，数据/日志分离到 `%LOCALAPPDATA%\CodexGateway`，
   程序装到 `%LOCALAPPDATA%\Programs\CodexGateway` 并注册进「应用和功能」。
   无论哪种形态，升级 = 覆盖程序目录但**保留**数据侧的

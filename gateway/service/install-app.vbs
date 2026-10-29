@@ -21,8 +21,16 @@ srcDir  = fso.GetParentFolderName(WScript.ScriptFullName)
 dstDir  = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs\CodexGateway"
 dataDir = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\CodexGateway"
 
+' 本脚本同时存在于包根（install.vbs 入口）与 gateway\service\（安装后副本），
+' 以「自身父目录」或「再上一级」定位包根——两种位置都能直接双击运行。
 If Not fso.FolderExists(srcDir & "\gateway") Then
-  MsgBox "请在解压后的安装包文件夹里运行 install-app.vbs。" & vbCrLf & _
+  Dim up1
+  up1 = fso.GetParentFolderName(srcDir)
+  If fso.FolderExists(up1 & "\gateway") Then srcDir = up1
+End If
+
+If Not fso.FolderExists(srcDir & "\gateway") Then
+  MsgBox "请在解压后的安装包文件夹里运行 install.vbs（包根目录）。" & vbCrLf & _
          "当前文件夹里没有 gateway 子目录：" & vbCrLf & srcDir, 48, "Codex Gateway 安装"
   WScript.Quit 1
 End If
@@ -76,6 +84,10 @@ ReplaceTree "README.md"
 ReplaceTree "QUICK-START.md"
 ReplaceTree "package.json"
 ReplaceTree "BUILD-INFO.json"
+' 包根一键入口：release 包里构建时生成，随升级一起进安装目录根
+' （源码树里没有这两个文件，ReplaceTree 对不存在的源直接跳过）
+ReplaceTree "install.vbs"
+ReplaceTree "uninstall.vbs"
 
 ' ---------- 3) 写 installed.env：run-gateway.cmd 读它注入 CGW_DATA_DIR ----------
 ' 用系统 ANSI 编码（CreateTextFile 默认），cmd 的 for /f 读的也是 ANSI，
