@@ -21,6 +21,7 @@
 
 import fs from 'node:fs'
 import crypto from 'node:crypto'
+import { writeJsonAtomic } from './atomic-write.mjs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -113,11 +114,8 @@ function scheduleWrite() {
     if (writing) { writeAgain = true; return }
     writing = true
     try {
-      const data = JSON.stringify(regCache, null, 2)
-      const tmp = KEYS_FILE + '.tmp'
-      fs.mkdirSync(path.dirname(KEYS_FILE), { recursive: true })
-      fs.writeFileSync(tmp, data, { encoding: 'utf-8', mode: 0o600 })
-      fs.renameSync(tmp, KEYS_FILE)
+      // 走统一原子写入：顺带拿到「tmp 名带 pid+随机串」与 Windows 上的 ACL 收紧
+      writeJsonAtomic(KEYS_FILE, regCache)
     } catch {}
     writing = false
     if (writeAgain) { writeAgain = false; scheduleWrite() }
@@ -378,11 +376,7 @@ export function flushApiKeys() {
     writeTimer = null
   }
   try {
-    const data = JSON.stringify(regCache, null, 2)
-    const tmp = KEYS_FILE + '.tmp'
-    fs.mkdirSync(path.dirname(KEYS_FILE), { recursive: true })
-    fs.writeFileSync(tmp, data, { encoding: 'utf-8', mode: 0o600 })
-    fs.renameSync(tmp, KEYS_FILE)
+    writeJsonAtomic(KEYS_FILE, regCache)
   } catch {}
 }
 

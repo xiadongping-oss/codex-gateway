@@ -208,3 +208,145 @@ test('非 http(s) 协议一律拒绝', () => {
     assert.throws(() => assertOutboundUrl(u, 'endpoint'), `${u} 应被拒绝`)
   }
 })
+
+// ---------- 参考图路径白名单（ref-roots.mjs） ----------
+
+const {
+  isInsideRoot, isRemoteRef, resolveReferencePath, checkReferencePaths, defaultReferenceRoot
+} = await import(toUrl('ref-roots.mjs'))
+
+test('白名单内的绝对路径放行，且返回归一化后的绝对路径', () => {
+  const root = tmpDir()
+  const r = resolveReferencePath(path.join(root, 'a.png'), root)
+  assert.ok(r.ok)
+  assert.equal(path.resolve(r.path), path.resolve(path.join(root, 'a.png')))
+})
+
+test('相对路径按根目录解析，而不是按进程 cwd 解析', () => {
+  const root = tmpDir()
+  const r = resolveReferencePath('a.png', root)
+  assert.ok(r.ok)
+  assert.equal(path.resolve(r.path), path.resolve(path.join(root, 'a.png')))
+})
+
+test('越界绝对路径拒绝', () => {
+  const root = tmpDir()
+  const outside = path.join(path.dirname(root), 'elsewhere.png')
+  const r = resolveReferencePath(outside, root)
+  assert.deepEqual(r, { ok: false, reason: 'outside' })
+})
+
+test('目录穿越（..）拒绝', () => {
+  const root = tmpDir()
+  const r = resolveReferencePath(path.join('..', 'secret.png'), root)
+  assert.equal(r.ok, false)
+})
+
+test('前缀相似但不构成子目录的名字不放进白名单（/refs 不能放进 /refs-other）', () => {
+  const parent = tmpDir()
+  const refs = path.join(parent, 'refs')
+  const other = path.join(parent, 'refs-other')
+  assert.equal(isInsideRoot(other, refs), false)
+  // 反向也要成立：refs-other 里的文件不能通过 refs 的校验
+  assert.equal(resolveReferencePath(path.join(other, 'a.png'), refs).ok, false)
+})
+
+test('Windows 大小写不敏感：盘符与目录名大小写差异不造成放行', () => {
+  const root = tmpDir()
+  const inside = path.join(root, 'A.png')
+  assert.ok(isInsideRoot(inside, root.toUpperCase()))
+  const outside = path.join(path.dirname(root), 'OTHER', 'x.png')
+  assert.equal(isInsideRoot(outside, root), false)
+})
+
+test('URL 与 data-URL 不经本地磁盘，直接放行', () => {
+  const root = tmpDir()
+  for (const raw of ['https://example.com/a.png', 'http://example.com/a.png', 'data:image/png;base64,iVBORw0KGgo=']) {
+    const r = resolveReferencePath(raw, root)
+    assert.ok(r.ok && r.remote, `${raw} 应作为远程引用放行`)
+  }
+  assert.ok(isRemoteRef('data:image/png;base64,x'))
+  assert.ok(!isRemoteRef('a.png'))
+})
+
+test('空条目与含 NUL 的条目拒绝', () => {
+  const root = tmpDir()
+  assert.equal(resolveReferencePath('', root).ok, false)
+  assert.equal(resolveReferencePath('   ', root).ok, false)
+  assert.equal(resolveReferencePath('a\0.png', root).ok, false)
+})
+
+test('checkReferencePaths：全部合规时通过，有越界时拒绝且不回显路径', () => {
+  const root = tmpDir()
+  const good = checkReferencePaths([path.join(root, 'a.png'), 'b.png'], root)
+  assert.ok(good.ok && good.paths.length === 2)
+  const bad = checkReferencePaths([path.join(root, 'a.png'), path.join(path.dirname(root), 'x.png')], root)
+  assert.equal(bad.ok, false)
+  assert.ok(!('resolved' in bad) && !('path' in bad), '拒绝结果里不应携带具体路径，否则就是文件存在性 oracle')
+})
+
+test('defaultReferenceRoot 落在网关目录下', () => {
+  const r = defaultReferenceRoot(path.join(os.tmpdir(), 'fake-gw'))
+  assert.ok(r.endsWith(path.join('fake-gw', 'references')))
+})
+
+// ---------- 凭据 ACL（secret-perms.mjs + atomic-write 接线） ----------
+
+const { icaclsArgsFor, currentUserForAcl, hardenSecretFile } = await import(toUrl('secret-perms.mjs'))
+
+test('icacls 参数形状：去掉继承 + 只授予当前用户', () => {
+  const args = icaclsArgsFor('C://x//api-keys.json', 'alice')
+  assert.ok(Array.isArray(args))
+  assert.ok(args.includes('/inheritance:r'), '必须去掉继承，否则父目录的 Users/Everyone 仍生效')
+  assert.ok(args.includes('/grant:r'), '必须用替换而非追加')
+  assert.ok(args.some((a) => /^alice:(F|:F)$/.test(a) || a === 'alice:F'), '授权对象应是当前用户')
+})
+
+test('缺文件或缺用户名时不拼参数', () => {
+  assert.equal(icaclsArgsFor('', 'alice'), null)
+  assert.equal(icaclsArgsFor('x.json', ''), null)
+})
+
+test('hardenSecretFile：非 Windows 走 chmod，Windows 走 icacls；失败不抛出', () => {
+  if (process.platform !== 'win32') {
+    const dir = tmpDir()
+    const f = path.join(dir, 'k.json')
+    fs.writeFileSync(f, '{}')
+    assert.ok(hardenSecretFile(f))
+    assert.equal(fs.statSync(f).mode & 0o777, 0o600)
+    return
+  }
+  const user = currentUserForAcl()
+  assert.ok(user, 'Windows 上必须能取到当前用户名')
+  const dir = tmpDir()
+  const f = path.join(dir, 'k.json')
+  fs.writeFileSync(f, '{}')
+  assert.ok(hardenSecretFile(f))
+  const out = require_child_process().execFileSync('icacls', [f], { encoding: 'utf8' })
+  assert.ok(out.includes(user), '应保留当前用户权限')
+  // 判断「收紧成功」的正确信号是**没有任何 (I) 继承标记**，而不是枚举宽权限名单：
+  // 新建文件继承自父目录，条目随环境变化（有的机器是 Users，有的只有
+  // SYSTEM/Administrators），枚举永远追不全；(I) 则是继承的直接标记。
+  assert.ok(!/\(I\)/.test(out), `不应再有任何继承来的权限：${out}`)
+})
+
+test('写入凭据文件后 ACL 自动收紧（atomic-write 接线）', () => {
+  if (process.platform !== 'win32') return
+  const user = currentUserForAcl()
+  const dir = tmpDir()
+  const target = path.join(dir, '.gw-config.json')
+  writeJsonAtomic(target, { openaiApiKey: 'CANARY' })
+  const out = require_child_process().execFileSync('icacls', [target], { encoding: 'utf8' })
+  assert.ok(out.includes(user))
+  assert.ok(!/\(I\)/.test(out), `原子写入后仍带着继承权限：${out}`)
+})
+
+test('hardenSecretFile 对不存在的文件返回 false 而不抛出', () => {
+  assert.equal(hardenSecretFile(path.join(tmpDir(), 'nope.json')), false)
+})
+
+// 小工具：hardenSecretFile 的断言要在 win32 上看真实 ACL
+import { execFileSync } from 'node:child_process'
+function require_child_process() {
+  return { execFileSync }
+}

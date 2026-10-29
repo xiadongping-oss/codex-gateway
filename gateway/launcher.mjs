@@ -83,6 +83,7 @@ import {
 import { ensureBridgePatched } from './bridge-patches.mjs'
 import { recordCallLog, getCallLogs, flushCallLogs } from './call-logs.mjs'
 import { writeJsonAtomic, sweepStaleTmpFiles } from './atomic-write.mjs'
+import { defaultReferenceRoot, checkReferencePaths } from './ref-roots.mjs'
 import { handleAssets } from './assets.mjs'
 import { createBridgePool } from './bridge-pool.mjs'
 import {
@@ -134,6 +135,10 @@ if (_reg.activeId) gwConfig.authFilePath = accountAuthPath(_reg.activeId)
 // 清掉上次被强杀留下的 .xxx.tmp。它们不会被任何逻辑读到，但会越积越多，
 // 在用户自己打开数据目录排障时混进 ls 结果里干扰判断。开一次即可。
 try { sweepStaleTmpFiles(__dirname) } catch {}
+
+// 参考图目录必须先存在：它同时是 bridge 子进程的 cwd，
+// 目录不存在时 spawn 会直接失败，而这个失败在用户看来只是「bridge 起不来」。
+try { ensureReferenceRoot() } catch {}
 
 // 应用出网代理（仅影响本进程 fetch；bridge 子进程的代理在 startBridge 中注入）
 try { applyProxy(gwConfig.proxy || '') } catch {}
@@ -439,7 +444,11 @@ function spawnBridgeProcess(accountId, port) {
   // 直接用本机 node 跑本地 cli.js（离线、不依赖 npx 解析）
   const args = [BRIDGE_CLI, ...BRIDGE_ARGS, '--host', '127.0.0.1', '--port', String(port)]
   pushLog(`▶ 启动 bridge[${label}] 端口 ${port} · auth=${path.basename(authFile)}`)
-  const c = spawn(BRIDGE_NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
+  // cwd 钉到参考图根目录：bridge 内部的附件校验用 `process.cwd()` 当 allowedRoot，
+  // 不指定它就等于「用户从哪个目录启动网关，哪个目录就整体可读」。
+  // 目录缺失会让 spawn 直接失败，所以兜一层创建。
+  try { fs.mkdirSync(referenceRootDir(), { recursive: true }) } catch {}
+  const c = spawn(BRIDGE_NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'], cwd: referenceRootDir() })
   // 多实例并存，日志必须带账号前缀，否则排障时分不清是哪条通道在说话
   c.stdout.on('data', (d) => String(d).split('\n').forEach((l) => l.trim() && pushLog(`[${label}] ${l}`)))
   c.stderr.on('data', (d) => String(d).split('\n').forEach((l) => {
@@ -629,6 +638,27 @@ function getActiveAccountSummary() {
     expiresIn,
     detail
   }
+}
+
+// 远程 /health：只回答「通不通」，不回答「你是谁、剩多少额度、什么版本」。
+//
+// 语义刻意与文档保持一致 —— 局域网用户仍靠 200 / 503 判断通道，只是拿不到内部字段。
+// 说明文字也只给「该找宿主机」这类动作指引，不回显实例池规模等内部状态。
+async function publicHealthSummary(req, res) {
+  if (gwConfig.mode !== 'openai') {
+    if (!primaryInstance()) {
+      return sendJson(res, 503, {
+        ok: false,
+        error: 'bridge_not_running',
+        detail: '宿主机尚未登录账号，请找宿主机完成授权。'
+      })
+    }
+    const h = await fetchBridgeHealth(req.__bridgePort || defaultBridgePort())
+    if (!h.ok) {
+      return sendJson(res, 503, { ok: false, error: 'bridge_unhealthy', detail: '宿主机账号通道当前不可用，请找宿主机确认。' })
+    }
+  }
+  return sendJson(res, 200, { ok: true })
 }
 
 // 轻量健康检查：请求指定实例的 /health（默认激活账号那个），带 1.2s 超时
@@ -1138,6 +1168,21 @@ function proxy(req, res, targetPath, keyId, owner) {
   return pipeProxy(req, res, targetPath, keyId, null)
 }
 
+// 从生图请求体里取出 reference_images 并逐个校验落盘范围。
+// 返回 null 表示请求里没有参考图（不必校验），否则返回 checkReferencePaths 的结果。
+function checkReferencePathsIn(bodyBuf) {
+  let list = null
+  try {
+    const j = JSON.parse(bodyBuf.toString('utf8'))
+    if (j && Array.isArray(j.reference_images)) list = j.reference_images
+    else if (j && Array.isArray(j.reference)) list = j.reference
+  } catch {
+    return null // 解析不了的请求体交给下游去报错，不在这里抢答
+  }
+  if (!list || !list.length) return null
+  return checkReferencePaths(list, referenceRootDir())
+}
+
 // /v1/images/generations 专用反代（bridge 模式）：缓冲 JSON 响应 → 落盘 → 补 url/local_path
 function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
   const t0 = Date.now()
@@ -1157,6 +1202,20 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
       }
     }
   } catch {}
+
+  // 参考图路径必须在白名单目录内。这里是唯一收口：/mcp 的 reference_paths
+  // 也是转成 reference_images 后走这条链路，直接打 /v1 的调用方同样经过这里。
+  // 越界直接 400，且**不回显具体路径、不区分「不存在」与「不允许」** ——
+  // 否则报错本身就变成了探测网关主机上有哪些文件的 oracle。
+  const refCheck = checkReferencePathsIn(body)
+  if (refCheck && !refCheck.ok) {
+    recordCallLog({ method: req.method, endpoint: '/v1/images/generations', model: model || '—', status: 400, latency: Date.now() - t0, tokens: null })
+    pushLog('⛔ 参考图路径越界，已拒绝：' + refCheck.reason)
+    return sendJson(res, 400, {
+      error: 'reference_path_outside_root',
+      detail: `参考图必须位于网关的参考图目录内：${referenceRootDir()}。请把图片放进该目录后改用目录内路径（相对路径按该目录解析）。URL 与 data-URL 不受限制。`
+    })
+  }
   const port = req.__bridgePort || defaultBridgePort()
   const headers = { ...req.headers, host: `127.0.0.1:${port}` }
   delete headers['content-length']
@@ -1485,6 +1544,23 @@ function safeDecodeName(raw) {
 function genImagesDir() {
   return path.join(os.homedir(), '.chatgpt-bridge', 'gen-images')
 }
+
+// 参考图根目录：调用方传的 reference_paths / reference_images 只允许落在这个目录里。
+//
+// 这一层约束是必要的：bridge 内部的 allowedRoot 取的是 `process.cwd()`，
+// 而我们 spawn 它时若不指定 cwd，它继承的就是「用户从哪个目录启动了网关」——
+// 从桌面启动整个桌面可读，范围完全由启动姿势决定，这不是能接受的设计。
+// 现在两侧都钉到同一个目录（见 spawnBridgeProcess 的 cwd 与 imagesGenProxy 的校验），
+// 网关侧越界直接 400，直接打 /v1 的调用方也会撞上 bridge 自己的 allowedRoot。
+function referenceRootDir() {
+  const configured = String(gwConfig?.referenceRoot || '').trim()
+  if (configured) return path.resolve(configured)
+  return defaultReferenceRoot(__dirname)
+}
+
+function ensureReferenceRoot() {
+  try { fs.mkdirSync(referenceRootDir(), { recursive: true }) } catch {}
+}
 // /v1/images/generations 响应增强：b64 落盘 + 附加 url / local_path（供外部模型/客户端直接取用）
 // owner：生成者身份 { keyId, keyName }。落盘同时写入 index.json，
 // 供「分用户素材站」按人生成 / 按人看图 / 按人删图（遗留无主图仅宿主机控制台可见）。
@@ -1676,7 +1752,7 @@ const MCP_HTTP_TOOLS = [
         quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], description: '质量，缺省 high（网关最高质量策略）' },
         reference_paths: {
           type: 'array', items: { type: 'string' },
-          description: '可选：参考图路径（最多 8 张），生成风格/构图与之协调的新图。注意：路径以「网关主机」磁盘视角解析——网关主机本机调用传本机路径；局域网客户端必须传网关主机上的路径，传客户端本机路径无效'
+          description: '可选：参考图（最多 8 张），生成风格/构图与之协调的新图。可传 http(s) URL 或 data-URL；若传本地路径，必须位于网关的参考图目录内（相对路径按该目录解析），越界会被拒绝。注意：本地路径以「网关主机」磁盘视角解析——局域网客户端传客户端本机路径无效'
         }
       },
       required: ['prompt']
@@ -2570,13 +2646,23 @@ async function handleHttpRequest(req, res) {
     if (p.startsWith('/v1/') && strictAuthReject(req, res, p)) return
     // /health 是透传给 bridge 的探活端点。没有任何实例时不要往虚空转发——
     // 那会得到 502 bridge_unreachable，看日志的人分不清「没启动」和「刚崩了」。
-    if (p === '/health' && gwConfig.mode !== 'openai' && !primaryInstance()) {
-      return sendJson(res, 503, {
-        ok: false,
-        error: 'bridge_not_running',
-        detail: '当前没有运行中的 bridge 实例（通常是尚未添加账号）。完成授权后会自动拉起。',
-        pool: bridgePool.stats()
-      })
+    if (p === '/health') {
+      // 非本机调用只给结论，不给内部细节。
+      //
+      // /health 必须保持匿名：局域网装机流程就是靠「打开 /health 看 200 还是 503」
+      // 来确认通道通不通（INSTALL.md、AGENT-PROMPT 都这么写），改成要 Key 是破坏性变更。
+      // 但把完整的 bridge /health 原样透出去，等于告诉任何能连到这个端口的人：
+      // 这台机器跑着 codex-gateway、账号是否已登录、限流与版本 —— 纯属多余的指纹。
+      // 所以按来源分档：本机（控制台要用）保持完整响应，远程只留 ok 与错误码。
+      if (!isLoopbackReq(req)) return publicHealthSummary(req, res)
+      if (gwConfig.mode !== 'openai' && !primaryInstance()) {
+        return sendJson(res, 503, {
+          ok: false,
+          error: 'bridge_not_running',
+          detail: '当前没有运行中的 bridge 实例（通常是尚未添加账号）。完成授权后会自动拉起。',
+          pool: bridgePool.stats()
+        })
+      }
     }
     const token = extractBearerToken(req.headers['authorization'])
     let authKeyId = null

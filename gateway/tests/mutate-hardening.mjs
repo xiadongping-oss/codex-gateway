@@ -26,7 +26,7 @@ const C = { g: '\x1b[32m', r: '\x1b[31m', y: '\x1b[33m', d: '\x1b[2m', b: '\x1b[
 // 被测文件必须整组复制：assets.mjs 内部会 import './atomic-write.mjs'，
 // 只复制其中一个的话，另一个仍指向真源码，变异就白变了 ——
 // 这正是本 runner 最初写错、导致 7 个变异体全部「存活」的原因。
-const FILES = ['atomic-write.mjs', 'assets.mjs']
+const FILES = ['atomic-write.mjs', 'assets.mjs', 'ref-roots.mjs', 'secret-perms.mjs']
 const TEST_FILE = 'hardening.test.mjs'
 
 const MUTANTS = [
@@ -92,6 +92,55 @@ const MUTANTS = [
     desc: '丢掉整个内网黑名单 —— 这是最粗暴的退化，必须被立刻抓住',
     from: 'return BLOCKED_HOST_PATTERNS.some((re) => re.test(h))',
     to: 'return false'
+  },
+  {
+    id: 'MH10',
+    file: 'ref-roots.mjs',
+    desc: '前缀比较不带分隔符 —— /refs-other 会被当成 /refs 的子目录放行',
+    from: "const prefix = b.endsWith(sep) ? b : b + sep\n  return process.platform === 'win32'\n    ? a.toLowerCase().startsWith(prefix.toLowerCase())\n    : a.startsWith(prefix)",
+    to: "return process.platform === 'win32'\n    ? a.toLowerCase().startsWith(b.toLowerCase())\n    : a.startsWith(b)"
+  },
+  {
+    id: 'MH11',
+    file: 'ref-roots.mjs',
+    desc: 'Windows 上前缀比较不做大小写归一 —— C:/REFS 与 c:/refs 被当成两个目录，大小写变体绕过白名单',
+    from: '? a.toLowerCase().startsWith(prefix.toLowerCase())',
+    to: '? a.startsWith(prefix)'
+  },
+  {
+    id: 'MH12',
+    file: 'ref-roots.mjs',
+    desc: '相对路径退回按进程 cwd 解析 —— 与 bridge 侧（按根目录）分叉，逃逸窗口重开',
+    from: 'const resolved = path.isAbsolute(s) ? path.resolve(s) : path.resolve(root, s)',
+    to: 'const resolved = path.resolve(s)'
+  },
+  {
+    id: 'MH13',
+    file: 'ref-roots.mjs',
+    desc: '放行 data-URL 之外的任意字符串当成远程引用 —— 任意路径可读',
+    from: "return /^https?:\\/\\//i.test(s) || /^data:/i.test(s)",
+    to: 'return true'
+  },
+  {
+    id: 'MH14',
+    file: 'ref-roots.mjs',
+    desc: '越界结果回显解析后的完整路径 —— 报错本身变成文件存在性 oracle',
+    from: "if (!isInsideRoot(resolved, root)) return { ok: false, reason: 'outside' }",
+    to: "if (!isInsideRoot(resolved, root)) return { ok: false, reason: 'outside', resolved }"
+  },
+  {
+    id: 'MH15',
+    file: 'secret-perms.mjs',
+    desc: '不去掉继承 —— 父目录的 Users/Everyone 权限原样保留，收紧等于没做',
+    from: "return [file, '/inheritance:r', '/grant:r', `${user}:F`]",
+    to: "return [file, '/grant:r', `${user}:F`]"
+  },
+  {
+    id: 'MH16',
+    file: 'atomic-write.mjs',
+    desc: '写入后不再收紧 ACL —— 0600 在 Windows 上本来就不生效，等于完全没防护',
+    from: 'hardenSecretFile(target)\n    return true',
+    to: 'return true'
   }
 ]
 

@@ -34,7 +34,8 @@ const CONFIG_PATH = path.join(__dirname, '.gw-config.json')
 export function loadConfig() {
   // proxy: 出网代理地址，如 http://127.0.0.1:7897；留空表示直连
   // （Tailscale exit node / 系统层方案无需填写，因为它们对应用透明）
-  const base = { mode: 'bridge', openaiApiKey: '', authFilePath: defaultAuthFilePath(), autoStart: true, proxy: '' }
+  // referenceRoot: 参考图允许所在的根目录，留空 = 用默认（gateway/references）
+  const base = { mode: 'bridge', openaiApiKey: '', authFilePath: defaultAuthFilePath(), autoStart: true, proxy: '', referenceRoot: '' }
   try {
     const txt = fs.readFileSync(CONFIG_PATH, 'utf-8')
     const j = JSON.parse(txt)
@@ -52,7 +53,8 @@ export function saveConfig(cfg) {
       authFilePath: cfg.authFilePath,
       autoStart: cfg.autoStart,
       proxy: cfg.proxy || '',
-      strictAuth: !!cfg.strictAuth
+      strictAuth: !!cfg.strictAuth,
+      referenceRoot: cfg.referenceRoot || ''
     })
   } catch (e) {
     // 以前是纯吞：磁盘只读 / 被占用时 saveConfig 一声不响，

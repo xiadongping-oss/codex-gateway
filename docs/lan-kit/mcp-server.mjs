@@ -54,7 +54,7 @@ const TOOLS = [
         quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], description: '质量，缺省 high（网关最高质量策略）' },
         reference_paths: {
           type: 'array', items: { type: 'string' },
-          description: '可选：参考图路径（最多 8 张），生成风格/构图与之协调的新图。注意：路径以「网关主机」磁盘视角解析——本机模式=本机路径；局域网模式必须传网关主机上的路径，传客户端本机路径无效'
+          description: '可选：参考图（最多 8 张），生成风格/构图与之协调的新图。可传 http(s) URL 或 data-URL；若传本地路径，必须位于网关的参考图目录内（相对路径按该目录解析），越界会被拒绝。注意：本地路径以「网关主机」磁盘视角解析——局域网模式传客户端本机路径无效'
         }
       },
       required: ['prompt']

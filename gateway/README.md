@@ -27,7 +27,10 @@ npm start       # = node launcher.mjs  → 自动拉起 bridge + 托管前端
 启动器会：
 1. **自动拉起** chatgpt-bridge 子进程（用本机 `node` 跑 `node_modules/chatgpt-bridge/dist/cli.js`，可用控制接口启停/重启）
 2. **托管前端**：把 `../frontend/dist` 当作静态资源服务（无需单独起 Vite）
-3. **反向代理**：`/v1/*` 与 `/health` 转发到 bridge（`127.0.0.1:10531`）
+3. **反向代理**：`/v1/*` 与 `/health` 转发到 bridge（`127.0.0.1:10531`）。
+   `/health` 按来源分档：本机返回完整状态（控制台要用）；远程只返回
+   `{"ok":true}` 或 `503 {"ok":false,"error":...}` —— 仍可用来判断通道通不通，
+   但不暴露登录态 / 限流 / 版本等内部信息
 4. **控制接口**：`/__gw/*` 供前端托管与使用后端
 
 环境变量：`LAUNCHER_PORT`（默认 4173）、`BRIDGE_PORT`（默认 10531）、

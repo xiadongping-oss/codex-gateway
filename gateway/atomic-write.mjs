@@ -18,9 +18,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { hardenSecretFile } from './secret-perms.mjs'
 
 // 0o600：这些文件里有 openaiApiKey 之类的明文凭据。
 // 旧的 .gw-config.json 用的是默认权限（Windows 上继承目录 ACL，Linux 上 0644）。
+//
+// 但要清楚这条在 Windows 上**不够**：Node 只处理只读属性，ACL 完全不动
+// （实测请求 0600 → 实际 666）。所以落盘之后还要再调 hardenSecretFile()，
+// 在 Windows 上用 icacls 真正去掉继承、只留当前用户。
 const WRITE_OPTS = { encoding: 'utf-8', mode: 0o600 }
 
 function tmpPathFor(target) {
@@ -40,6 +45,10 @@ export function writeTextAtomic(target, text) {
   try {
     fs.writeFileSync(tmp, text, WRITE_OPTS)
     fs.renameSync(tmp, target)
+    // 必须放在 rename 之后：rename 保留的是 tmp 文件的 ACL，
+    // 而 tmp 是新建的、继承的是父目录的宽松权限 —— 先收紧再改名的结果会被丢掉。
+    // 收紧失败不影响写入结果，所以不接返回值。
+    hardenSecretFile(target)
     return true
   } catch (e) {
     // 别把半截的临时文件留在外面，否则下一次重试会撞上脏数据
