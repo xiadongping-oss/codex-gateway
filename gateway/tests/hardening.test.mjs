@@ -491,3 +491,55 @@ import { execFileSync } from 'node:child_process'
 function require_child_process() {
   return { execFileSync }
 }
+
+// ---------- 系统代理检测（只读） ----------
+
+const { detectSystemProxies, normalizeProxyUrl } = await import(toUrl('proxy.mjs'))
+
+test('detectSystemProxies：环境变量代理命中（HTTPS_PROXY 优先级高于 HTTP_PROXY）', async () => {
+  const r1 = await detectSystemProxies({
+    env: { HTTPS_PROXY: 'http://10.0.0.1:7890', HTTP_PROXY: 'http://10.0.0.2:7890' },
+    platform: 'linux'
+  })
+  assert.equal(r1.primary, 'http://10.0.0.1:7890')
+  assert.equal(r1.candidates[0].source, 'env')
+  const r2 = await detectSystemProxies({ env: { all_proxy: 'http://10.0.0.3:7890' }, platform: 'linux' })
+  assert.equal(r2.primary, 'http://10.0.0.3:7890')
+  // 空环境 → 无候选
+  assert.equal((await detectSystemProxies({ env: {}, platform: 'linux' })).primary, null)
+})
+
+test('detectSystemProxies：Windows 注册表系统代理只在 ProxyEnable=1 时采纳，分协议条目取 https', async () => {
+  const regOut = (enable, server) =>
+    [
+      '',
+      'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings',
+      '    ProxyEnable    REG_DWORD    ' + enable,
+      '    ProxyServer    REG_SZ    ' + server,
+      ''
+    ].join('\r\n')
+  const fakeExec = (out) => (cmd, args, opts, cb) => cb(null, out)
+  const r1 = await detectSystemProxies({
+    env: {}, platform: 'win32', execFileImpl: fakeExec(regOut('0x1', 'http=127.0.0.1:7890;https=127.0.0.1:7891'))
+  })
+  assert.equal(r1.primary, 'http://127.0.0.1:7891')
+  // 开关关着 → 不采纳
+  const r2 = await detectSystemProxies({
+    env: {}, platform: 'win32', execFileImpl: fakeExec(regOut('0x0', '127.0.0.1:7890'))
+  })
+  assert.equal(r2.primary, null)
+  // 裸地址形态
+  const r3 = await detectSystemProxies({
+    env: {}, platform: 'win32', execFileImpl: fakeExec(regOut('0x1', '127.0.0.1:7897'))
+  })
+  assert.equal(r3.primary, 'http://127.0.0.1:7897')
+  // reg 命令失败（未开启/权限）→ 静默无候选，不抛
+  const r4 = await detectSystemProxies({ env: {}, platform: 'win32', execFileImpl: (c, a, o, cb) => cb(new Error('fail')) })
+  assert.equal(r4.primary, null)
+  // 去重：env 与系统代理相同地址只留一条
+  const r5 = await detectSystemProxies({
+    env: { HTTPS_PROXY: 'http://127.0.0.1:7897' }, platform: 'win32',
+    execFileImpl: fakeExec(regOut('0x1', '127.0.0.1:7897'))
+  })
+  assert.equal(r5.candidates.length, 1)
+})

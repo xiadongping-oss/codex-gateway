@@ -236,3 +236,54 @@ export async function testProxy(proxyUrl, timeoutMs = 15000) {
     if (proxyAgent) { try { await proxyAgent.close() } catch {} }
   }
 }
+
+// ---------- 系统代理检测（只读，不应用） ----------
+// 装机后最常见的翻车：上游 403 unsupported_country_region_territory，
+// 而机器上明明挂着 Clash。这里把「现成可用的代理地址」找出来给设置页一键填充：
+//   1) 环境变量 HTTPS_PROXY / HTTP_PROXY / ALL_PROXY（大小写都看）
+//   2) Windows 系统代理（注册表 Internet Settings，reg query 即可，不引 PowerShell）
+// 只报告、不写配置 —— 代理是否可用由用户点「测试」确认。
+function parseWinProxyServer(server) {
+  // ProxyServer 取值形如 "127.0.0.1:7890" 或 "ftp=...;http=...;https=..."，
+  // 浏览器语义里分协议条目优先于裸地址；这里优先 https，其次 http，最后裸地址。
+  const pick = (re) => {
+    const m = re.exec(server)
+    return m ? m[1].trim() : ''
+  }
+  return (
+    pick(/(?:^|;)https=([^;]+)/i) ||
+    pick(/(?:^|;)http=([^;]+)/i) ||
+    (server.includes('=') ? '' : server.trim())
+  )
+}
+
+export async function detectSystemProxies({
+  env = process.env,
+  platform = process.platform,
+  execFileImpl,
+  regQueryArgs = ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings']
+} = {}) {
+  const candidates = []
+  const push = (source, raw) => {
+    const trimmed = String(raw || '').trim()
+    if (!trimmed) return
+    const norm = normalizeProxyUrl(trimmed)
+    const url = norm.ok ? norm.url : ''
+    if (url && !candidates.some((c) => c.url === url)) candidates.push({ source, url, raw: trimmed })
+  }
+  const envHit =
+    env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || env.ALL_PROXY || env.all_proxy
+  if (envHit) push('env', envHit)
+
+  if (platform === 'win32' && execFileImpl) {
+    try {
+      const stdout = await new Promise((resolve, reject) => {
+        execFileImpl('reg', regQueryArgs, { timeout: 4000 }, (e, out) => (e ? reject(e) : resolve(String(out || ''))))
+      })
+      const enabled = /ProxyEnable\s+REG_DWORD\s+0x1/i.test(stdout)
+      const server = /ProxyServer\s+REG_SZ\s+(\S+)/i.exec(stdout)
+      if (enabled && server) push('system', parseWinProxyServer(server[1]))
+    } catch { /* 没开系统代理 / reg 不可用，都算「没检测到」 */ }
+  }
+  return { candidates, primary: candidates.length ? candidates[0].url : null }
+}

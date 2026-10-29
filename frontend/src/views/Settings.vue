@@ -124,6 +124,30 @@ async function testProxyConn() {
   }
 }
 
+// 自动检测系统代理（环境变量 + Windows 注册表）：只填充输入框，是否应用由用户决定
+const detecting = ref(false)
+async function detectProxy() {
+  detecting.value = true
+  proxyMsg.value = null
+  try {
+    const r = await gwRequest('/__gw/proxy/detect', 'POST', null, () => null)
+    const primary = r && r.primary
+    if (primary) {
+      proxyInput.value = primary
+      proxyMsg.value = {
+        type: 'ok',
+        text: `检测到系统代理 ${primary}（${r.candidates[0]?.source === 'env' ? '来自环境变量' : '来自 Windows 系统代理'}），已填入。点「保存并应用」生效。`
+      }
+    } else {
+      proxyMsg.value = { type: 'err', text: '未检测到系统代理或环境变量代理。若代理软件开着，可手动填写其混合端口。' }
+    }
+  } catch (e) {
+    proxyMsg.value = { type: 'err', text: '检测失败：' + (e?.message || e) }
+  } finally {
+    detecting.value = false
+  }
+}
+
 onMounted(() => {
   loadProxy()
   loadStrict()
@@ -230,6 +254,9 @@ async function copyConfig() {
           :disabled="!proxyAvailable"
           @click="proxyInput = p.url"
         >{{ p.label }}</button>
+        <button class="preset" :disabled="!proxyAvailable || detecting" @click="detectProxy">
+          {{ detecting ? '检测中…' : '自动检测系统代理' }}
+        </button>
       </div>
 
       <div class="btn-row">

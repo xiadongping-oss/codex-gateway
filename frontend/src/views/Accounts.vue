@@ -17,6 +17,24 @@ const gwUptime = computed(() => {
 const gwHealthOk = computed(() => gw.value.health && gw.value.health.ok)
 const gwCfg = computed(() => gw.value.config || {})
 
+// 健康检查失败原因：/health 透传 bridge 的错误体（/__gw/status 的 health.data.error）
+// 常见失败是上游地区限制（未配代理直连），这时给出可操作的指引而不是干巴巴的「失败」。
+const gwHealthReason = computed(() => {
+  if (gwHealthOk.value) return null
+  const h = gw.value.health || {}
+  if (h.timeout) return { text: '健康检查超时（bridge 无响应）', hint: '' }
+  if (h.status === 0) return { text: 'bridge 端口无响应，实例可能启动失败', hint: '查看「API 日志」里的启动报错' }
+  const detail = String(h.data?.error || h.error || '').trim()
+  if (!detail) return null
+  const regionBlock = /unsupported_country_region_territory|region_territory/i.test(detail)
+  return {
+    text: detail.length > 160 ? detail.slice(0, 160) + '…' : detail,
+    hint: regionBlock
+      ? '上游拒绝了当前网络出口（地区限制）。请在「设置 → 出网代理」配置代理并测通后重启网关。'
+      : ''
+  }
+})
+
 // 来自 /__gw/auth/state（含真实账号 id/name/email/provider/loggedIn）
 const account = ref({ loggedIn: false, accountId: null, name: '—', provider: '—', email: '—', expiresAt: '—', detail: '' })
 const health = ref(null)
@@ -283,6 +301,10 @@ onUnmounted(() => {
         <span>Bridge 端口 <b class="mono">{{ gwCfg.bridgePort || '—' }}</b></span>
         <span>开机自启 <b :class="gwCfg.autoStart ? 'ok' : 'bad'">{{ gwCfg.autoStart ? '是' : '否' }}</b></span>
       </div>
+      <div v-if="gwHealthReason" class="gw-health-reason">
+        <div class="reason-text">{{ gwHealthReason.text }}</div>
+        <div v-if="gwHealthReason.hint" class="reason-hint">{{ gwHealthReason.hint }}</div>
+      </div>
     </div>
     </div>
 
@@ -446,4 +468,13 @@ onUnmounted(() => {
 .gw-state b { color: var(--text); font-weight: 600; }
 .gw-state b.ok { color: var(--emerald-light); }
 .gw-state b.bad { color: var(--rose); }
+/* 健康检查失败原因：把 /health 的上游错误原样带出，地区限制时给代理指引 */
+.gw-health-reason {
+  margin-top: 8px; padding: 10px 14px;
+  background: color-mix(in srgb, var(--rose) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--rose) 30%, transparent);
+  border-radius: 10px; font-size: 12px; line-height: 1.6;
+}
+.gw-health-reason .reason-text { color: var(--text-2); word-break: break-all; }
+.gw-health-reason .reason-hint { color: var(--rose); font-weight: 600; }
 </style>

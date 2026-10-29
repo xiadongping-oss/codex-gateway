@@ -23,6 +23,22 @@ import { spawn } from 'node:child_process'
 const SESSION_ID_RE = /^[0-9a-f]{16}$/
 export const LOGIN_TIMEOUT_MS = 10 * 60 * 1000
 
+// 默认 profile（~/.codex/auth.json）：桌面版客户端若不尊重 CODEX_HOME，
+// 登录凭据会落到这里 —— 会话用「内容指纹变化」识别这次登录（见 resolveAuth）。
+export function defaultCodexAuthPath() {
+  return path.join(os.homedir(), '.codex', 'auth.json')
+}
+function readDefaultAuthText() {
+  try {
+    return fs.readFileSync(defaultCodexAuthPath(), 'utf-8')
+  } catch {
+    return null
+  }
+}
+function digestText(text) {
+  return crypto.createHash('sha256').update(String(text)).digest('hex')
+}
+
 export function tempLoginRootDir(dataRoot) {
   return path.join(dataRoot, 'tmp', 'codex-temp-login')
 }
@@ -72,10 +88,91 @@ export function derivePhase(session, { now = Date.now(), pidRunning } = {}) {
   return { phase: session.spawned ? 'waiting-login' : 'launching', error: null, hasCredentials: false }
 }
 
+// ---------- Store（MSIX）版客户端发现 ----------
+//
+// 背景（本机实测 OpenAI.Codex 26.x）：MSIX 包的 GUI 主程序**不注册**执行别名，
+// %LOCALAPPDATA%\Microsoft\WindowsApps 里只会落包族目录（OpenAI.Codex_<family>）
+// 和个别辅助别名（codex-chrome-native-host.exe / codex-core-command-runner.exe）。
+// 所以「直接找 codex.exe」永远落空。可行路径：
+//   1) 别名/包族目录里的 .exe 是 APPEXECLINK reparse point，readlinkSync 能读出
+//      指向 C:\Program Files\WindowsApps\<包全名>\... 的目标 → 反推包安装根；
+//   2) 安装根下的 AppxManifest.xml 是权威来源：<Application Executable="app\Codex.exe">；
+//   3) 解析失败再按常见布局探测（app\Codex.exe、Codex.exe）。
+// existsSync 在 WindowsApps 内可用（stat 走 traverse 权限），readlink/读清单同理。
+function extractWindowsAppsRoot(target) {
+  const m = /^(.+[\\/]WindowsApps[\\/][^\\/]+)/i.exec(String(target || ''))
+  return m ? m[1] : null
+}
+
+function readManifestExecutable(manifestPath, readFile = fs.readFileSync) {
+  try {
+    const xml = readFile(manifestPath, 'utf-8')
+    const m = /<Application\b[^>]*?\bExecutable\s*=\s*"([^"]+)"/i.exec(xml)
+    return m ? m[1].trim() : null
+  } catch {
+    return null
+  }
+}
+
+export function discoverStoreCodexClient({
+  localAppData,
+  existsSync = fs.existsSync,
+  readdirSync = fs.readdirSync,
+  readlinkSync = fs.readlinkSync,
+  readFile = fs.readFileSync
+} = {}) {
+  const waDir = path.join(localAppData, 'Microsoft', 'WindowsApps')
+  let entries
+  try {
+    entries = readdirSync(waDir)
+  } catch {
+    return null
+  }
+  const roots = new Set()
+  const addAlias = (rel) => {
+    let target = ''
+    try { target = readlinkSync(path.join(waDir, rel)) } catch { return }
+    const root = extractWindowsAppsRoot(target)
+    if (root && /codex/i.test(target)) roots.add(root)
+  }
+  // 包族目录（OpenAI.Codex_<family>）：目录内是本包注册的全部执行别名
+  for (const e of entries) {
+    if (/^OpenAI\./i.test(e) && /codex/i.test(e)) {
+      let inner = []
+      try { inner = readdirSync(path.join(waDir, e)) } catch { continue }
+      for (const f of inner) {
+        if (/\.exe$/i.test(f)) addAlias(path.join(e, f))
+      }
+    }
+  }
+  // 根级 codex* 别名兜底（覆盖包族目录缺失、或未来直接注册主程序别名的情况）
+  for (const e of entries) {
+    if (/^codex/i.test(e) && /\.exe$/i.test(e)) addAlias(e)
+  }
+  for (const root of [...roots].sort()) {
+    const candidates = []
+    const exec = readManifestExecutable(path.join(root, 'AppxManifest.xml'), readFile)
+    if (exec) candidates.push(path.join(root, exec))
+    candidates.push(path.join(root, 'app', 'Codex.exe'), path.join(root, 'Codex.exe'))
+    for (const c of candidates) {
+      if (c && existsSync(c)) return { path: c, kind: 'store' }
+    }
+  }
+  return null
+}
+
 // ---------- 官方客户端发现 ----------
 // 顺序：显式环境变量 > Windows 执行别名 > where/which > 常见安装位 > Store 应用扫描。
 // 全部落空返回 null，由上层给出可操作的报错文案。
-export function discoverCodexClient({ env = process.env, platform = process.platform, existsSync = fs.existsSync, execSync } = {}) {
+export function discoverCodexClient({
+  env = process.env,
+  platform = process.platform,
+  existsSync = fs.existsSync,
+  execSync,
+  readdirSync = fs.readdirSync,
+  readlinkSync = fs.readlinkSync,
+  readFile = fs.readFileSync
+} = {}) {
   const explicit = String(env.CODEX_CLIENT_PATH || '').trim()
   if (explicit && existsSync(explicit)) return { path: explicit, kind: 'explicit' }
 
@@ -96,6 +193,8 @@ export function discoverCodexClient({ env = process.env, platform = process.plat
         if (first && existsSync(first)) return { path: first, kind: 'cli' }
       } catch { /* where 没命中，继续往下 */ }
     }
+    const store = discoverStoreCodexClient({ localAppData: la, existsSync, readdirSync, readlinkSync, readFile })
+    if (store) return store
     return null
   }
   if (execSync) {
@@ -110,7 +209,7 @@ export function discoverCodexClient({ env = process.env, platform = process.plat
 
 // ---------- 会话管理器 ----------
 // spawnImpl / discoverImpl / pidAliveImpl / killTree 可注入：单测不真启进程、不真探 pid。
-export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discoverImpl = discoverCodexClient, pidAliveImpl, killTree } = {}) {
+export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discoverImpl = discoverCodexClient, pidAliveImpl, killTree, defaultAuthText = readDefaultAuthText } = {}) {
   const root = tempLoginRootDir(dataRoot)
   // sessionId -> { sessionId, profileDir, pid, clientPath, startedAt, hasCredentials, clientExited, phase, error }
   const sessions = new Map()
@@ -134,6 +233,18 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     } catch {
       return null
     }
+  }
+
+  // 凭据解析：临时 profile 优先；其次默认 profile —— 但只有内容相对「会话开始时
+  // 的指纹」发生变化才采纳。不然用户早就登录过的旧凭据会被误当成这次的新登录。
+  function resolveAuth(session) {
+    const tempText = readAuthText(session.profileDir)
+    if (tempText && authFileHasCredentials(tempText)) return { text: tempText, source: 'temp-profile' }
+    const defText = defaultAuthText()
+    if (defText && authFileHasCredentials(defText) && digestText(defText) !== session.defaultAuthDigest) {
+      return { text: defText, source: 'default-profile' }
+    }
+    return null
   }
   function pidAlive(pid) {
     if (!pid) return false
@@ -161,14 +272,18 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
   async function start() {
     const client = discoverImpl({ env: process.env, platform: process.platform })
     if (!client) {
-      throw new Error('未找到官方 Codex 客户端。可安装 Codex CLI（npm i -g @openai/codex）后重试，或改用浏览器授权。')
+      throw new Error('未找到官方 Codex 客户端。可安装 Codex 桌面版（Microsoft Store）或 CLI（npm i -g @openai/codex）后重试，或改用浏览器授权。')
     }
     const sessionId = crypto.randomBytes(8).toString('hex')
     const profileDir = profileDirFor(dataRoot, sessionId)
     writeMarker(profileDir, { sessionId, createdAt: new Date().toISOString(), clientPath: client.path })
+    const defaultText = defaultAuthText()
     const session = {
       sessionId, profileDir, clientPath: client.path, clientKind: client.kind,
       pid: null, startedAt: Date.now(),
+      // 会话开始时的默认 profile 指纹（null=当时没有凭据文件）
+      defaultAuthDigest: defaultText ? digestText(defaultText) : null,
+      credSource: null,
       hasCredentials: false, clientExited: false, phase: 'launching', error: null
     }
     sessions.set(sessionId, session)
@@ -212,8 +327,9 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
   async function status(sessionId) {
     const s = sessions.get(sessionId)
     if (!s) return { sessionId, phase: 'unknown', error: '会话不存在或已过期', hasCredentials: false }
-    const authText = readAuthText(s.profileDir)
-    s.hasCredentials = authText ? authFileHasCredentials(authText) : false
+    const info = resolveAuth(s)
+    s.hasCredentials = !!info
+    s.credSource = info ? info.source : null
     const alive = pidAlive(s.pid)
     s.clientExited = s.pid != null && !alive
     const d = derivePhase(s, { now: Date.now(), pidRunning: alive })
@@ -228,6 +344,7 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
       phase: s.phase,
       error: s.error,
       hasCredentials: s.hasCredentials,
+      credSource: s.credSource,
       clientExited: s.clientExited,
       elapsedSec: Math.floor((Date.now() - s.startedAt) / 1000)
     }
@@ -237,8 +354,8 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
   async function finish(sessionId) {
     const s = sessions.get(sessionId)
     if (!s) throw new Error('会话不存在或已过期')
-    const authText = readAuthText(s.profileDir)
-    if (!authText || !authFileHasCredentials(authText)) {
+    const info = resolveAuth(s)
+    if (!info) {
       throw new Error('临时目录里还没有可用凭据，请先在官方客户端完成登录')
     }
     // 关掉仍在运行的客户端（用户可能登录完没关）
@@ -246,7 +363,7 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
       try { await killTree(s.pid) } catch { /* 关不掉也不影响读凭据 */ }
     }
     const marker = readMarker(s.profileDir)
-    const result = { authJson: JSON.parse(authText), clientPath: s.clientPath, marker }
+    const result = { authJson: JSON.parse(info.text), credSource: info.source, clientPath: s.clientPath, marker }
     const cleaned = destroyProfile(s.profileDir)
     sessions.delete(sessionId)
     return { ...result, cleaned }

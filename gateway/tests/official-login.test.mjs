@@ -83,6 +83,126 @@ test('discoverCodexClient：where codex 命中 → kind cli；全部落空 → n
   assert.equal(discoverCodexClient({ env: {}, platform: 'win32', existsSync: () => false, execSync: () => { throw new Error('no') } }), null)
 })
 
+// ---------- Store（MSIX）版发现 ----------
+// 真机形态：OpenAI.Codex 包族目录 + 两个辅助别名，主程序不注册 codex.exe。
+const norm = (p) => String(p).replace(/\\/g, '/')
+
+test('discoverCodexClient：Store 版从别名 reparse 目标反推安装根，AppxManifest 给出主程序', () => {
+  const wa = 'C:/la/Microsoft/WindowsApps'
+  const pkg = wa + '/OpenAI.Codex_2p2nqsd0c76g0'
+  const installRoot = 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1023.6123.0_x64__2p2nqsd0c76g0'
+  const mainExe = installRoot + '\\app\\Codex.exe'
+  const readdir = (p) => {
+    const n = norm(p)
+    if (n === norm(wa)) return ['OpenAI.Codex_2p2nqsd0c76g0', 'Microsoft.Paint_8wekyb3d8bbwe', 'codex-chrome-native-host.exe']
+    if (norm(n) === norm(pkg)) return ['codex-core-command-runner.exe']
+    return []
+  }
+  const readlink = (p) => {
+    const n = norm(p)
+    if (n === norm(pkg) + '/codex-core-command-runner.exe') return installRoot + '\\app\\resources\\codex-command-runner.exe'
+    if (n === norm(wa) + '/codex-chrome-native-host.exe') return installRoot + '\\app\\resources\\plugins\\openai-bundled\\plugins\\chrome\\extension-host.exe'
+    throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' })
+  }
+  const readFile = (p) => {
+    if (/AppxManifest\.xml$/i.test(norm(p))) {
+      return '<?xml version="1.0"?><Applications><Application Id="Codex" Executable="app\\Codex.exe" /></Applications>'
+    }
+    throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+  }
+  const r = discoverCodexClient({
+    env: { LOCALAPPDATA: 'C:/la' }, platform: 'win32',
+    existsSync: (p) => norm(p) === norm(mainExe),
+    readdirSync: readdir, readlinkSync: readlink, readFile
+  })
+  assert.equal(r.kind, 'store')
+  assert.equal(norm(r.path), norm(mainExe))
+})
+
+test('discoverCodexClient：Store 版清单解析失败时按常见布局探测；无 codex 包 → null', () => {
+  const wa = 'C:/la/Microsoft/WindowsApps'
+  const pkg = wa + '/OpenAI.Codex_abc'
+  const installRoot = 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.0.0_x64__abc'
+  const fallbackExe = installRoot + '\\app\\Codex.exe'
+  const readdir = (p) => (norm(p) === norm(wa) ? ['OpenAI.Codex_abc'] : norm(p) === norm(pkg) ? ['runner.exe'] : [])
+  const readlink = (p) => (norm(p) === norm(pkg) + '/runner.exe' ? installRoot + '\\app\\resources\\runner.exe' : (() => { throw new Error('EINVAL') })())
+  const r1 = discoverCodexClient({
+    env: { LOCALAPPDATA: 'C:/la' }, platform: 'win32',
+    existsSync: (p) => norm(p) === norm(fallbackExe),
+    readdirSync: readdir,
+    readlinkSync: readlink,
+    readFile: () => { throw new Error('ENOENT') }
+  })
+  assert.equal(r1.kind, 'store')
+  assert.equal(norm(r1.path), norm(fallbackExe))
+
+  // 别名目标不含 codex（如 iTunes）→ 不采纳（existsSync 全 false，避免命中内置候选）
+  const r2 = discoverCodexClient({
+    env: { LOCALAPPDATA: 'C:/la' }, platform: 'win32',
+    existsSync: () => false,
+    readdirSync: (p) => (norm(p) === norm(wa) ? ['AppleInc.iTunes_nzyj5cx40ttqa'] : norm(p) === norm(wa) + '/AppleInc.iTunes_nzyj5cx40ttqa' ? ['iTunes.exe'] : []),
+    readlinkSync: () => 'C:\\Program Files\\WindowsApps\\AppleInc.iTunes_1.0_x64__nzyj5cx40ttqa\\iTunes.exe',
+    readFile: () => { throw new Error('ENOENT') }
+  })
+  assert.equal(r2, null)
+})
+
+// ---------- 默认 profile 兜底（桌面版不尊重 CODEX_HOME 的场景） ----------
+
+test('默认 profile 兜底：~/.codex/auth.json 相对会话开始发生变化才采纳', async () => {
+  const root = tmpDataRoot()
+  const defRef = { text: '{"tokens":{"access_token":"old"}}' }
+  const mgr = createOfficialLoginManager({
+    dataRoot: root,
+    spawnImpl: () => ({ pid: 1, unref() {} }),
+    killTree: async () => {},
+    discoverImpl: () => ({ path: 'x', kind: 'app' }),
+    pidAliveImpl: () => true,
+    defaultAuthText: () => defRef.text
+  })
+  const r = await mgr.start()
+  // 默认 profile 未变化 → 不当成本次登录
+  let st = await mgr.status(r.sessionId)
+  assert.equal(st.hasCredentials, false)
+  // 桌面版把新登录写进了默认 profile → 采纳，来源 default-profile
+  defRef.text = '{"tokens":{"access_token":"NEW","refresh_token":"r2"}}'
+  st = await mgr.status(r.sessionId)
+  assert.equal(st.hasCredentials, true)
+  assert.equal(st.credSource, 'default-profile')
+  // finish 导入的是新凭据
+  const fin = await mgr.finish(r.sessionId)
+  assert.equal(fin.authJson.tokens.access_token, 'NEW')
+  assert.equal(fin.credSource, 'default-profile')
+})
+
+test('默认 profile 兜底：临时 profile 永远优先；会话开始时无默认凭据则凭空出现也采纳', async () => {
+  const root = tmpDataRoot()
+  const defRef = { text: null }
+  const mgr = createOfficialLoginManager({
+    dataRoot: root,
+    spawnImpl: () => ({ pid: 1, unref() {} }),
+    killTree: async () => {},
+    discoverImpl: () => ({ path: 'x', kind: 'app' }),
+    pidAliveImpl: () => true,
+    defaultAuthText: () => defRef.text
+  })
+  const r = await mgr.start()
+  // 会话开始时默认 profile 不存在，中途出现凭据 → 属于本次登录
+  defRef.text = '{"tokens":{"access_token":"fresh"}}'
+  let st = await mgr.status(r.sessionId)
+  assert.equal(st.credSource, 'default-profile')
+  await mgr.cancel(r.sessionId)
+
+  // 临时 profile 与默认 profile 同时有凭据 → 临时优先
+  const r2 = await mgr.start()
+  defRef.text = '{"tokens":{"access_token":"default-new"}}'
+  fs.writeFileSync(path.join(r2.profileDir, 'auth.json'), '{"tokens":{"access_token":"temp"}}')
+  st = await mgr.status(r2.sessionId)
+  assert.equal(st.credSource, 'temp-profile')
+  const fin = await mgr.finish(r2.sessionId)
+  assert.equal(fin.authJson.tokens.access_token, 'temp')
+})
+
 // ---------- 会话管理器（注入 spawn/kill） ----------
 
 function makeManager(root, { spawnImpl, killImpl, discoverImpl, alive = { flag: true } } = {}) {
@@ -93,7 +213,9 @@ function makeManager(root, { spawnImpl, killImpl, discoverImpl, alive = { flag: 
     // 默认注入假发现/假探活：单测不依赖本机是否装了 Codex、不真探进程。
     // alive.flag 可在测试中翻转，模拟官方客户端退出。
     discoverImpl: discoverImpl || (() => ({ path: 'C:\\fake\\Codex.exe', kind: 'app' })),
-    pidAliveImpl: () => alive.flag
+    pidAliveImpl: () => alive.flag,
+    // 隔离真实 ~/.codex/auth.json：兜底逻辑单独测，不依赖测试机的登录状态
+    defaultAuthText: () => null
   })
 }
 

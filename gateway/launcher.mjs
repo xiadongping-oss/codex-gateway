@@ -81,7 +81,8 @@ import {
   applyProxy,
   getProxyInfo,
   testProxy,
-  getUndici
+  getUndici,
+  detectSystemProxies
 } from './proxy.mjs'
 import { ensureBridgePatched } from './bridge-patches.mjs'
 import { recordCallLog, getCallLogs, flushCallLogs } from './call-logs.mjs'
@@ -2417,6 +2418,11 @@ async function handleHttpRequest(req, res) {
         return sendJson(res, 400, { error: 'proxy_test_failed', detail: e.message })
       }
     }
+    // 只检测不应用：设置页「自动检测」按钮用，找到候选后由用户确认填充
+    if (p === '/__gw/proxy/detect' && req.method === 'POST') {
+      const r = await detectSystemProxies({ execFileImpl: execFile })
+      return sendJson(res, 200, r)
+    }
 
     // ---- 授权管理（多模式） ----
     // OAuth 授权完成后的统一收尾：落到待授权卡片（若指定）或新建账号，并重启 bridge
@@ -2660,7 +2666,9 @@ async function handleHttpRequest(req, res) {
         if (gwConfig.mode === 'bridge') restartBridgeFor(acct.id, '官方登录')
         return sendJson(res, 200, {
           ok: true, accountId: acct.id, activeId: acct.reg.activeId,
-          isExisting: acct.isExisting === true, email, cleaned: r.cleaned
+          isExisting: acct.isExisting === true, email, cleaned: r.cleaned,
+          // 凭据来源：temp-profile=临时目录；default-profile=桌面版写进了 ~/.codex
+          credSource: r.credSource || null
         })
       } catch (e) {
         return sendJson(res, 400, { error: 'official_login_finish_failed', detail: e.message })

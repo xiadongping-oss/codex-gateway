@@ -1,6 +1,6 @@
 {
   "name": "codex-gateway",
-  "version": "1.11.0",
+  "version": "1.11.1",
   "private": true,
   "type": "module",
   "main": "gateway/launcher.mjs",
