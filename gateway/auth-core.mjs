@@ -197,6 +197,61 @@ export function normalizeAuthJson(raw) {
   throw new Error('无法识别的 auth 结构：需包含 tokens / access_token / OPENAI_API_KEY 之一')
 }
 
+// ---------- 本机 Codex CLI 登录的无感导入 ----------
+// 官方 Codex CLI 把当前登录态存在 ~/.codex/auth.json（结构就是上面的
+// tokens 形态：id/access/refresh + account_id）。用户机器上如果已经
+// `codex login` 过，网关可以直接读这份文件注册成账号 —— 不用再走一遍
+// 浏览器 OAuth。这正是 cockpit-tools 一类工具的「本地导入」做法。
+//
+// 路径解析与 cockpit-tools 对齐：
+//   CODEX_HOME 环境变量（容忍 setx/shell 残留的成对引号与空白）> ~/.codex
+export function codexCliAuthPath(env = process.env, homedir = os.homedir) {
+  const raw = String(env?.CODEX_HOME ?? '').trim()
+  const unquoted = raw.replace(/^["']+|["']+$/g, '').trim()
+  if (unquoted) return path.join(unquoted, 'auth.json')
+  return path.join(homedir(), '.codex', 'auth.json')
+}
+
+/**
+ * 探测本机 Codex CLI 登录态。**只读不改**：真正的注册走导入端点。
+ * 返回值里的 error 是稳定的机器可读码：
+ *   not_found      没有这份文件（用户没用过 Codex CLI，正常情况）
+ *   read_error     文件在但读不了（权限/占用）
+ *   parse_error    不是合法 JSON（写了一半 / 被其它工具改坏）
+ *   unsupported    JSON 合法但不包含可用的凭据结构
+ * 探测本身不该抛 —— 前端按钮要拿这份结果决定显示「导入」还是「重新登录」。
+ */
+export function inspectCodexCliAuth(env = process.env, readFile) {
+  const read = typeof readFile === 'function' ? readFile : (p) => fs.readFileSync(p, 'utf-8')
+  const authPath = codexCliAuthPath(env)
+  let raw
+  try {
+    raw = JSON.parse(read(authPath))
+  } catch (e) {
+    const code = e?.code === 'ENOENT' ? 'not_found' : e instanceof SyntaxError ? 'parse_error' : 'read_error'
+    return { path: authPath, exists: false, error: code, detail: String(e?.message || e).slice(0, 200) }
+  }
+  let data
+  try {
+    data = normalizeAuthJson(raw)
+  } catch (e) {
+    return { path: authPath, exists: true, error: 'unsupported', detail: String(e?.message || e).slice(0, 200) }
+  }
+  if (data.auth_mode !== 'api_key' && !data.tokens?.refresh_token) {
+    return { path: authPath, exists: true, error: 'unsupported', detail: 'tokens 缺少 refresh_token，导入后无法续期' }
+  }
+  return {
+    path: authPath,
+    exists: true,
+    error: null,
+    authMode: data.auth_mode,
+    email: emailFromIdToken(data.tokens?.id_token) || '',
+    accountId: data.tokens?.account_id || '',
+    hasRefresh: !!data.tokens?.refresh_token,
+    lastRefresh: typeof raw.last_refresh === 'string' ? raw.last_refresh : ''
+  }
+}
+
 // ---------- OAuth 设备流 ----------
 // Codex 用的并不是标准 RFC 8628 端点。实测（2026-09-02，经代理绕过地区限制后）：
 //   /oauth/device_authorization        → 404 Invalid URL（OpenAI 侧不存在）

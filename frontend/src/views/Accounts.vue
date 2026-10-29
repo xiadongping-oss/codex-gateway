@@ -139,6 +139,40 @@ async function saveEdit(id) {
 
 const providerLabel = (p) => ({ oauth: 'OAuth', token: 'Token', import: '导入', apikey: 'API Key' }[p] || p || '—')
 
+// ---- 从本机 Codex CLI 无感导入登录态 ----
+// 机器上 codex login 过的话 ~/.codex/auth.json 里就是现成 OAuth tokens，
+// 一键读取注册成网关账号，不用再走浏览器授权。
+const importingLocal = ref(false)
+async function importLocalCodex() {
+  if (importingLocal.value) return
+  importingLocal.value = true
+  error.value = ''
+  try {
+    const info = await api.inspectCodexLocal()
+    if (!info || info.exists === false) {
+      window.alert(
+        '没有找到本机 Codex CLI 的登录文件（' + (info?.path || '~/.codex/auth.json') + '）。\n' +
+        '本机没用过 `codex login` 的话，请点「添加账号」走浏览器授权。'
+      )
+      return
+    }
+    if (info.error) {
+      window.alert('本机 Codex 登录文件不可用（' + info.error + '）：\n' + (info.detail || info.path) + '\n请点「添加账号」重新授权。')
+      return
+    }
+    const who = info.email || info.accountId || '当前登录'
+    if (!window.confirm('检测到本机 Codex 登录：' + who + '\n导入为网关账号并切换到它？')) return
+    const r = await api.importCodexLocal()
+    if (!r?.ok) { error.value = '导入失败：网关返回异常'; return }
+    await refresh()
+    window.alert(r.isExisting ? '已更新账号登录态：' + (r.email || who) : '导入成功：' + (r.email || who))
+  } catch (e) {
+    error.value = e?.message || '导入失败'
+  } finally {
+    importingLocal.value = false
+  }
+}
+
 onMounted(() => {
   refresh()
   timers.push(setInterval(refresh, 8000))
@@ -157,6 +191,7 @@ onUnmounted(() => {
         <div class="card-title">账号 <span class="count">{{ accounts.length }}</span></div>
         <div class="acc-head-actions">
           <button class="btn-ghost" @click="diagnose" :disabled="loading">{{ loading ? '检测中…' : '检测连接' }}</button>
+          <button class="btn-ghost" :disabled="importingLocal" :title="'读取本机 ~/.codex/auth.json 的登录态'" @click="importLocalCodex">{{ importingLocal ? '导入中…' : '导入本机登录' }}</button>
           <button class="btn-primary" @click="showSetup = true">添加账号</button>
         </div>
       </div>

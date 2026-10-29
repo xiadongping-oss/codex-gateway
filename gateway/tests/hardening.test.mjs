@@ -413,6 +413,79 @@ test('hardenSecretFile 对不存在的文件返回 false 而不抛出', () => {
   assert.equal(hardenSecretFile(path.join(tmpDir(), 'nope.json')), false)
 })
 
+// ======================= 本机 Codex CLI 登录无感导入 =======================
+// 官方 Codex CLI 的 auth.json（~/.codex/auth.json，CODEX_HOME 可覆盖）结构与
+// bridge 形态同构，inspectCodexCliAuth 只读探测。错误码是机器契约：
+// not_found / read_error / parse_error / unsupported —— 前端按钮靠它分支。
+const { codexCliAuthPath, inspectCodexCliAuth } = await import(toUrl('auth-core.mjs'))
+
+test('codexCliAuthPath：默认 ~/.codex/auth.json；CODEX_HOME 覆盖且剥离残留引号', () => {
+  const home = tmpDir()
+  const p1 = codexCliAuthPath({}, () => home)
+  assert.equal(p1, path.join(home, '.codex', 'auth.json'))
+  // setx / shell 常见残留：成对引号 + 空白。留在这会把 auth.json 写进带引号的目录名
+  const custom = tmpDir()
+  const p2 = codexCliAuthPath({ CODEX_HOME: '  "' + custom + '"  ' }, () => home)
+  assert.equal(p2, path.join(custom, 'auth.json'))
+})
+
+test('inspectCodexCliAuth：不存在 → not_found（不抛出）', () => {
+  const codexHome = path.join(tmpDir(), '.codex')
+  const r = inspectCodexCliAuth({ CODEX_HOME: codexHome })
+  assert.equal(r.exists, false)
+  assert.equal(r.error, 'not_found')
+})
+
+test('inspectCodexCliAuth：完整 tokens → email/accountId/hasRefresh 全部解出', () => {
+  const codexHome = path.join(tmpDir(), '.codex')
+  fs.mkdirSync(codexHome, { recursive: true })
+  // 手搓一个最小 JWT（header.payload.signature，payload 带 email 与 chatgpt_account_id）
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url')
+  const idToken = ['x', b64({ email: 'someone@example.com', 'https://api.openai.com/auth': { chatgpt_account_id: 'acct-123' } }), 'y'].join('.')
+  fs.writeFileSync(path.join(codexHome, 'auth.json'), JSON.stringify({
+    auth_mode: 'chatgpt',
+    OPENAI_API_KEY: null,
+    tokens: { id_token: idToken, access_token: 'at', refresh_token: 'rt', account_id: 'acct-123' },
+    last_refresh: '2026-10-29T00:00:00.000Z'
+  }))
+  const r = inspectCodexCliAuth({ CODEX_HOME: codexHome })
+  assert.equal(r.exists, true)
+  assert.equal(r.error, null)
+  assert.equal(r.authMode, 'chatgpt')
+  assert.equal(r.email, 'someone@example.com')
+  assert.equal(r.accountId, 'acct-123')
+  assert.equal(r.hasRefresh, true)
+  assert.equal(r.lastRefresh, '2026-10-29T00:00:00.000Z')
+})
+
+test('inspectCodexCliAuth：坏 JSON → parse_error；API Key 形态 → authMode api_key', () => {
+  const home1 = path.join(tmpDir(), '.codex')
+  fs.mkdirSync(home1, { recursive: true })
+  fs.writeFileSync(path.join(home1, 'auth.json'), '{"tokens": {"access_tr')
+  const r1 = inspectCodexCliAuth({ CODEX_HOME: home1 })
+  assert.equal(r1.exists, false)
+  assert.equal(r1.error, 'parse_error')
+
+  const home2 = path.join(tmpDir(), '.codex')
+  fs.mkdirSync(home2, { recursive: true })
+  fs.writeFileSync(path.join(home2, 'auth.json'), JSON.stringify({ OPENAI_API_KEY: 'sk-xx' }))
+  const r2 = inspectCodexCliAuth({ CODEX_HOME: home2 })
+  assert.equal(r2.exists, true)
+  assert.equal(r2.error, null)
+  assert.equal(r2.authMode, 'api_key')
+})
+
+test('inspectCodexCliAuth：tokens 缺 refresh_token → unsupported（导入后无法续期）', () => {
+  const codexHome = path.join(tmpDir(), '.codex')
+  fs.mkdirSync(codexHome, { recursive: true })
+  fs.writeFileSync(path.join(codexHome, 'auth.json'), JSON.stringify({
+    tokens: { access_token: 'at', id_token: null }
+  }))
+  const r = inspectCodexCliAuth({ CODEX_HOME: codexHome })
+  assert.equal(r.exists, true)
+  assert.equal(r.error, 'unsupported')
+})
+
 // 小工具：hardenSecretFile 的断言要在 win32 上看真实 ACL
 import { execFileSync } from 'node:child_process'
 function require_child_process() {

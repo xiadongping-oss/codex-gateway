@@ -61,7 +61,8 @@ import {
   submitBrowserCallback,
   cancelBrowserLogin,
   getBrowserLoginInfo,
-  jwtClaims
+  jwtClaims,
+  inspectCodexCliAuth
 } from './auth-core.mjs'
 import {
   listApiKeys,
@@ -2509,6 +2510,42 @@ async function handleHttpRequest(req, res) {
         return sendJson(res, 200, { ok: true, accountId: acct.id, activeId: acct.reg.activeId })
       } catch (e) {
         return sendJson(res, 400, { error: 'add_account_failed', detail: e.message })
+      }
+    }
+    // ---- 本机 Codex CLI 登录无感导入 ----
+    // 用户机器上已经 `codex login` 过的话，~/.codex/auth.json 里就是现成的
+    // OAuth tokens。GET 探测（前端按钮据此显示），POST 一键注册为网关账号，
+    // 免掉再走一遍浏览器授权。见 auth-core.mjs 的 inspectCodexCliAuth。
+    if (p === '/__gw/codex-local' && req.method === 'GET') {
+      return sendJson(res, 200, inspectCodexCliAuth())
+    }
+    if (p === '/__gw/codex-local/import' && req.method === 'POST') {
+      try {
+        const info = inspectCodexCliAuth()
+        if (!info.exists || info.error) {
+          return sendJson(res, 409, { error: 'no_local_auth', detail: info.detail || info.error || '本机没有可导入的 Codex 登录' })
+        }
+        const body = await readBody(req).catch(() => ({}))
+        const data = normalizeAuthJson(JSON.parse(fs.readFileSync(info.path, 'utf-8')))
+        const acct = await addAccount({
+          name: body.name || (info.email ? info.email : '本机 Codex 导入'),
+          provider: 'oauth',
+          mode: 'bridge',
+          data
+        })
+        gwConfig.authFilePath = acct.path
+        saveConfig(gwConfig)
+        pushLog('● 从本机 Codex CLI 导入账号：' + (info.email || acct.id) + ' → ' + acct.path)
+        if (gwConfig.mode === 'bridge') restartBridgeFor(acct.id, '本机导入')
+        return sendJson(res, 200, {
+          ok: true,
+          accountId: acct.id,
+          activeId: acct.reg.activeId,
+          isExisting: acct.isExisting === true,
+          email: info.email
+        })
+      } catch (e) {
+        return sendJson(res, 400, { error: 'import_local_failed', detail: e.message })
       }
     }
     if (p === '/__gw/accounts/pending' && req.method === 'POST') {

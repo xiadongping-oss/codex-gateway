@@ -24,6 +24,12 @@ port = ResolvePort()
 base = "http://127.0.0.1:" & port
 q    = """"
 
+' /quiet：一键安装器在收尾时以本模式调用 —— 全程不弹窗，
+' 结果用退出码表达（0 = 已就绪，1 = 未就绪），由安装器统一弹一次总结。
+' 退出码是契约：install-app.vbs 的总结弹窗靠它区分「已就绪 / 仍在启动」。
+Dim quiet : quiet = False
+If WScript.Arguments.Named.Exists("quiet") Then quiet = True
+
 Function ReadPortFile()
   Dim ts, s, n
   ReadPortFile = 0
@@ -39,10 +45,11 @@ Function ReadPortFile()
 End Function
 
 Function ResolvePort()
-  Dim v, n
+  Dim v, n, i
   ResolvePort = 0
-  If WScript.Arguments.Count > 0 Then
-    v = Trim(WScript.Arguments(0))
+  ' 只认位置参数（Unnamed）：/quiet 这类命名参数不能被当成端口号
+  For i = 0 To WScript.Arguments.Unnamed.Count - 1
+    v = Trim(WScript.Arguments.Unnamed(i))
     If v <> "" And IsNumeric(v) Then
       n = CLng(v)
       If n >= 1 And n <= 65535 Then
@@ -50,7 +57,7 @@ Function ResolvePort()
         Exit Function
       End If
     End If
-  End If
+  Next
   n = ReadPortFile()
   If n > 0 Then
     ResolvePort = n
@@ -108,8 +115,8 @@ Function TailLog()
 End Function
 
 If HealthOk() Then
-  sh.Popup "网关已经在运行，不必重复启动。" & vbCrLf & "控制台地址：" & base, 3, "Codex 网关", 64
-  WScript.Quit
+  If Not quiet Then sh.Popup "网关已经在运行，不必重复启动。" & vbCrLf & "控制台地址：" & base, 3, "Codex 网关", 64
+  WScript.Quit 0
 End If
 
 ' 清掉上一次的退出码，否则会把旧结果当成这次失败的原因
@@ -138,7 +145,8 @@ End If
 
 Dim rc, msg
 If ok Then
-  sh.Popup "网关已启动，控制台地址：" & base, 3, "Codex 网关", 64
+  If Not quiet Then sh.Popup "网关已启动，控制台地址：" & base, 3, "Codex 网关", 64
+  WScript.Quit 0
 Else
   rc = ReadExitCode()
   If rc = 2 Then
@@ -157,5 +165,7 @@ Else
           "仍打不开再看日志尾部：" & vbCrLf & TailLog() & vbCrLf & vbCrLf & _
           "完整日志：gateway\logs\service.log（日志暂时为空 = 进程还在启动中）"
   End If
-  sh.Popup msg, 20, "Codex 网关", 48
+  If Not quiet Then sh.Popup msg, 20, "Codex 网关", 48
+  ' 静默模式下安装器靠这个退出码区分「已就绪 / 未就绪」，别改语义
+  WScript.Quit 1
 End If

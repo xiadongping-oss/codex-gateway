@@ -144,18 +144,40 @@ sh.RegWrite rk & "UninstallString", "wscript.exe " & q & dstDir & "\gateway\serv
 sh.RegWrite rk & "NoModify", 1, "REG_DWORD"
 sh.RegWrite rk & "NoRepair", 1, "REG_DWORD"
 
-' ---------- 6) 收尾：是否立即启动 / 开机自启 ----------
-Dim go
-go = MsgBox("Codex Gateway 安装完成。" & vbCrLf & vbCrLf & _
+' ---------- 6) 收尾：静默启动 + 单次总结 ----------
+' 不再连环问「现在启动吗」「注册自启吗」（用户实测嫌烦）：启动是安装的
+' 自然收尾，静默执行；自启不默认注册（尊重用户选择），总结里给一行指引。
+' start-gateway.vbs /quiet 全程无弹窗，退出码 0 = 已就绪 / 1 = 未就绪。
+Dim portGw, rcStart, sPort, tsPort
+portGw = 4173
+If fso.FileExists(dstDir & "\gateway\logs\port.txt") Then
+  On Error Resume Next
+  Set tsPort = fso.OpenTextFile(dstDir & "\gateway\logs\port.txt", 1)
+  If Err.Number = 0 Then
+    sPort = Trim(tsPort.ReadLine)
+    tsPort.Close
+    If IsNumeric(sPort) Then
+      If CLng(sPort) >= 1 And CLng(sPort) <= 65535 Then portGw = CLng(sPort)
+    End If
+  End If
+  Err.Clear
+  On Error GoTo 0
+End If
+rcStart = sh.Run("wscript.exe " & q & dstDir & "\gateway\service\start-gateway.vbs" & q & " /quiet", 0, True)
+
+Dim summary
+If rcStart = 0 Then
+  summary = "Codex Gateway 安装完成，网关已就绪。" & vbCrLf & vbCrLf & _
+            "控制台：" & "http://127.0.0.1:" & portGw & vbCrLf & _
             "程序：" & dstDir & vbCrLf & _
             "数据：" & dataDir & vbCrLf & vbCrLf & _
-            "现在启动并打开控制台吗？", vbYesNo + vbQuestion, "Codex Gateway")
-If go = vbYes Then
-  sh.Run "wscript.exe " & q & dstDir & "\gateway\service\start-gateway.vbs" & q, 0, False
-End If
-go = MsgBox("同时注册开机自启吗？（登录 Windows 后自动在后台启动网关）", vbYesNo + vbQuestion, "Codex Gateway")
-If go = vbYes Then
-  sh.Run "wscript.exe " & q & dstDir & "\gateway\service\install-autostart.vbs" & q, 0, True
+            "开机自启未注册 —— 需要的话双击安装目录里的 gateway\service\install-autostart.vbs"
+  sh.Popup summary, 10, "Codex Gateway", 64
+Else
+  summary = "安装完成，但网关在 36 秒内未就绪。" & vbCrLf & vbCrLf & _
+            "先打开控制台试试（慢启动多半已经就绪）：" & "http://127.0.0.1:" & portGw & vbCrLf & _
+            "仍打不开就看日志：" & dstDir & "\gateway\logs\service.log"
+  sh.Popup summary, 0, "Codex Gateway", 48
 End If
 
 ' ---------- helpers ----------

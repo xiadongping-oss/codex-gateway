@@ -27,7 +27,9 @@ const C = { g: '\x1b[32m', r: '\x1b[31m', y: '\x1b[33m', d: '\x1b[2m', b: '\x1b[
 // 只复制其中一个的话，另一个仍指向真源码，变异就白变了 ——
 // 这正是本 runner 最初写错、导致 7 个变异体全部「存活」的原因。
 // data-root.mjs import './ref-roots.mjs'（isInsideRoot），同样必须整组带。
-const FILES = ['atomic-write.mjs', 'assets.mjs', 'ref-roots.mjs', 'secret-perms.mjs', 'data-root.mjs']
+// auth-core.mjs import './data-root.mjs'（resolveDataRoot / normalizeAuthFilePath）——
+// 它测的是 inspectCodexCliAuth / codexCliAuthPath，但模块加载时有副作用，整组复制。
+const FILES = ['atomic-write.mjs', 'assets.mjs', 'ref-roots.mjs', 'secret-perms.mjs', 'data-root.mjs', 'auth-core.mjs']
 const TEST_FILE = 'hardening.test.mjs'
 
 const MUTANTS = [
@@ -166,6 +168,27 @@ const MUTANTS = [
     desc: 'authFilePath 不再归一化 —— 绿色版升级安装版后旧 config 指着空目录，登录态凭空消失',
     from: 'if (isInsideRoot(s, programDir)) return fallback\n  return s',
     to: 'return s'
+  },
+  {
+    id: 'MH21',
+    file: 'auth-core.mjs',
+    desc: 'CODEX_HOME 引号剥离删除 —— setx 残留的引号进路径，auth.json 永远「不存在」',
+    from: 'const unquoted = raw.replace(/^["\']+|["\']+$/g, \'\').trim()\n  if (unquoted) return path.join(unquoted, \'auth.json\')',
+    to: 'if (raw) return path.join(raw, \'auth.json\')'
+  },
+  {
+    id: 'MH22',
+    file: 'auth-core.mjs',
+    desc: 'ENOENT 判定丢失 —— 没装过 Codex CLI 的用户看到 read_error 而非 not_found，前端分支错乱',
+    from: "const code = e?.code === 'ENOENT' ? 'not_found' : e instanceof SyntaxError ? 'parse_error' : 'read_error'",
+    to: "const code = e instanceof SyntaxError ? 'parse_error' : 'read_error'"
+  },
+  {
+    id: 'MH23',
+    file: 'auth-core.mjs',
+    desc: 'refresh_token 校验删除 —— 导入无续期能力的残缺凭据，access_token 一过期账号就静默失效',
+    from: "if (data.auth_mode !== 'api_key' && !data.tokens?.refresh_token) {",
+    to: 'if (false) {'
   }
 ]
 

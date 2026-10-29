@@ -19,7 +19,7 @@
 - **OpenAI 兼容 API**：`/v1/chat/completions`、`/v1/responses`、`/v1/models`、`/v1/images/generations`——任意 OpenAI 兼容客户端（WorkBuddy、ChatBox、Open WebUI、curl 等）填地址 + Key 即用
 - **图片生成**：API 直接生图，或以 **MCP 工具**供任意支持 Function Calling 的模型 / Agent 调用；生成结果自动进入**分用户网页素材站**（预览 / 复制链接 / 下载 / 删除）
 - **局域网共享**：一条命令开放给同网段设备；每个成员使用独立 API Key，调用与图片素材按 Key 隔离
-- **多账号登录**：控制台内完成 OAuth 授权，支持多账号保存与切换；可配置出网代理适配受限网络
+- **多账号登录**：控制台内完成 OAuth 授权，支持多账号保存与切换；可配置出网代理适配受限网络；本机装过 Codex CLI 时可**一键导入 `~/.codex/auth.json` 的现有登录态**（无需再走浏览器授权）
 
 ## 架构一览
 

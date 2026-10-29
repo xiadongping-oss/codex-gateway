@@ -335,6 +335,16 @@ export async function renameAccount(id, { name, note } = {}) {
   return await gwRequest('/__gw/accounts/rename', 'POST', { id, name, note }).catch(() => null)
 }
 
+// ---------- 本机 Codex CLI 登录无感导入 ----------
+// 探测 ~/.codex/auth.json（CODEX_HOME 可覆盖）；返回 { exists, error, email, ... }
+export async function inspectCodexLocal() {
+  return await gwRequest('/__gw/codex-local', 'GET').catch(() => null)
+}
+// 一键注册为本机网关账号并切激活；返回 { ok, accountId, email, isExisting }
+export async function importCodexLocal() {
+  return await gwRequest('/__gw/codex-local/import', 'POST', {}).catch(() => null)
+}
+
 // ---------- API Key 管理 ----------
 export async function listApiKeys() {
   const r = await gwRequest('/__gw/apikeys', 'GET').catch(() => null)
