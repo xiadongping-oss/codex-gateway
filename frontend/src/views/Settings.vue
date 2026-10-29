@@ -165,11 +165,13 @@ onMounted(() => {
 // 不带 Authorization 才放行。此处展示首个可用 key 的明文（仅本机 UI 可见）。
 const accessBase = ref('')
 const accessKey = ref(null)
+const accessModel = ref(null)
 const accessCfgText = ref('载入中…')
 function refreshAccessCfg() {
   accessCfgText.value = formatAccessConfig(
     accessBase.value || (BASE ? BASE + '/v1' : window.location.origin + '/v1'),
-    accessKey.value
+    accessKey.value,
+    accessModel.value
   )
 }
 // 复制时才去取明文：列表轮询不再携带密钥
@@ -179,6 +181,7 @@ async function copyConfig() {
     const cfg = await loadAccessConfigWithKey()
     accessBase.value = cfg.baseUrl
     accessKey.value = cfg.apiKey
+    accessModel.value = cfg.model
     refreshAccessCfg()
     await copyText(accessCfgText.value)
     copied.value = true

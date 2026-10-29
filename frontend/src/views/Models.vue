@@ -305,6 +305,18 @@ watch(() => models.value.length, () => {
 
         <pre class="code-block">{{ configText }}</pre>
 
+        <!-- WorkBuddy 添加模型对照：用户实测每次都要想怎么勾，直接给出结论 -->
+        <div class="wb-guide">
+          <div class="wb-guide-title">填到 WorkBuddy「添加模型」：</div>
+          <div class="wb-guide-body">
+            <b>基础三项：</b>接口地址 <code>{{ baseUrl }}/v1</code> · API Key 上面选的 cgw- 密钥 · 模型名称 <code>{{ configObj.model }}</code>
+            <br /><b>高级配置勾选：</b>工具调用 ✓ · 图片输入 ✓ · 思考模式 ✓ · 仅思考模式 ✗ · 允许关闭思考 ✓
+            <br /><b>思考强度：</b>默认「自动」；支持强度勾「低 / 中 / 高 / 超高」（「极致」上游 Codex 通道不支持，会报错）
+            <br /><b>输入 / 输出：</b>留空用提供商默认值
+            <br /><b>自定义协议：不要勾</b>——勾了 WorkBuddy 不再自动补全 <code>/chat/completions</code> 路径，请求会打到网关没有的路由上直接 404
+          </div>
+        </div>
+
         <p class="hint" v-if="!useManual && !selectedKeyId">
           <span class="warn-dot">!</span>
           还没选 API Key：去 <a href="#/apikeys" @click.prevent="$emit('navigate', 'apikeys')">「API Key 管理」</a>
@@ -549,6 +561,19 @@ code.hl {
 .hint { font-size: 12.5px; color: var(--text-3); margin: 0; display: flex; gap: 6px; align-items: flex-start; }
 .hint a { color: var(--emerald-light); text-decoration: none; }
 .hint a:hover { text-decoration: underline; }
+
+/* WorkBuddy 添加模型对照说明 */
+.wb-guide {
+  margin-top: 12px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid var(--border); background: rgba(59,130,246,0.06);
+  font-size: 12.5px; line-height: 1.75; color: var(--text-2);
+}
+.wb-guide-title { font-weight: 600; color: var(--text); margin-bottom: 4px; }
+.wb-guide code {
+  font-family: var(--mono); font-size: 11.5px; padding: 1px 5px; border-radius: 5px;
+  background: rgba(148,163,184,0.14); color: var(--text);
+}
+.wb-guide b { color: var(--text); font-weight: 600; }
 .warn-dot { display: inline-block; width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 50%; background: rgba(251,191,36,0.18); color: var(--amber); font-weight: 700; flex: none; }
 
 .card-title-row { display: flex; align-items: center; gap: 12px; }

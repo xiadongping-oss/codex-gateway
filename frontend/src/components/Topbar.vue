@@ -30,7 +30,7 @@ async function copyConfig() {
   try {
     const cfg = await loadAccessConfigWithKey()
     access.value = { ...access.value, ...cfg }
-    const text = formatAccessConfig(cfg.baseUrl, cfg.apiKey)
+    const text = formatAccessConfig(cfg.baseUrl, cfg.apiKey, cfg.model)
     await copyText(text)
     copied.value = true
     setTimeout(() => (copied.value = false), 1500)

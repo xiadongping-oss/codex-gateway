@@ -65,6 +65,11 @@ function fmtTime(iso) {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+// 检测连接的显式反馈：此前只更新页面底部的「连接诊断」卡片，正常时肉眼无感知。
+// 现在检测完成在按钮行下直接给一条结果横条（成功/失败 + 关键摘要），10 秒后淡出。
+const diagResult = ref(null)
+let diagTimer = null
+
 async function diagnose() {
   loading.value = true
   error.value = ''
@@ -73,9 +78,25 @@ async function diagnose() {
     account.value = await api.getAccount()
     const s = await api.getAuthState().catch(() => null)
     if (s?.mode) mode.value = s.mode
+    const bridgeOk = health.value?.ok === true
+    const parts = []
+    if (health.value?.version) parts.push('bridge v' + health.value.version)
+    parts.push(account.value?.loggedIn ? '账号登录有效' : '账号未登录')
+    if (bridgeOk && account.value?.loggedIn && gwHealthOk.value) parts.push('上游健康检查通过')
+    diagResult.value = {
+      ok: bridgeOk && !!account.value?.loggedIn,
+      text: bridgeOk
+        ? '连接正常 · ' + parts.join(' · ')
+        : '桥接进程异常' + (health.value?.error ? '：' + String(health.value.error).slice(0, 120) : '')
+    }
+    clearTimeout(diagTimer)
+    diagTimer = setTimeout(() => (diagResult.value = null), 10000)
   } catch (e) {
     error.value = e?.message || '诊断失败'
     fetchErr.value = error.value
+    diagResult.value = { ok: false, text: '检测失败：' + (e?.message || '网关控制接口无响应') }
+    clearTimeout(diagTimer)
+    diagTimer = setTimeout(() => (diagResult.value = null), 10000)
   } finally {
     loading.value = false
   }
@@ -157,39 +178,8 @@ async function saveEdit(id) {
 
 const providerLabel = (p) => ({ oauth: 'OAuth', token: 'Token', import: '导入', apikey: 'API Key' }[p] || p || '—')
 
-// ---- 从本机 Codex CLI 无感导入登录态 ----
-// 机器上 codex login 过的话 ~/.codex/auth.json 里就是现成 OAuth tokens，
-// 一键读取注册成网关账号，不用再走浏览器授权。
-const importingLocal = ref(false)
-async function importLocalCodex() {
-  if (importingLocal.value) return
-  importingLocal.value = true
-  error.value = ''
-  try {
-    const info = await api.inspectCodexLocal()
-    if (!info || info.exists === false) {
-      window.alert(
-        '没有找到本机 Codex CLI 的登录文件（' + (info?.path || '~/.codex/auth.json') + '）。\n' +
-        '本机没用过 `codex login` 的话，请点「添加账号」走浏览器授权。'
-      )
-      return
-    }
-    if (info.error) {
-      window.alert('本机 Codex 登录文件不可用（' + info.error + '）：\n' + (info.detail || info.path) + '\n请点「添加账号」重新授权。')
-      return
-    }
-    const who = info.email || info.accountId || '当前登录'
-    if (!window.confirm('检测到本机 Codex 登录：' + who + '\n导入为网关账号并切换到它？')) return
-    const r = await api.importCodexLocal()
-    if (!r?.ok) { error.value = '导入失败：网关返回异常'; return }
-    await refresh()
-    window.alert(r.isExisting ? '已更新账号登录态：' + (r.email || who) : '导入成功：' + (r.email || who))
-  } catch (e) {
-    error.value = e?.message || '导入失败'
-  } finally {
-    importingLocal.value = false
-  }
-}
+// 「导入本机登录」快捷按钮已移除：功能与「添加账号 → 导入」标签页完全重复，
+// 且该标签页还支持文件导入 / 官方登录 / Token 粘贴等更多入口，保留一处即可。
 
 onMounted(() => {
   refresh()
@@ -209,9 +199,14 @@ onUnmounted(() => {
         <div class="card-title">账号 <span class="count">{{ accounts.length }}</span></div>
         <div class="acc-head-actions">
           <button class="btn-ghost" @click="diagnose" :disabled="loading">{{ loading ? '检测中…' : '检测连接' }}</button>
-          <button class="btn-ghost" :disabled="importingLocal" :title="'读取本机 ~/.codex/auth.json 的登录态'" @click="importLocalCodex">{{ importingLocal ? '导入中…' : '导入本机登录' }}</button>
           <button class="btn-primary" @click="showSetup = true">添加账号</button>
         </div>
+      </div>
+
+      <!-- 检测连接结果横条：显式反馈，10 秒后自动淡出 -->
+      <div v-if="diagResult" class="diag-result" :class="diagResult.ok ? 'ok' : 'bad'">
+        <span class="status-dot" :class="{ off: !diagResult.ok }"></span>
+        <span class="diag-text">{{ diagResult.text }}</span>
       </div>
 
       <!-- 仅异常 / 特殊模式显示状态条；正常登录态由当前账号行直接呈现，避免重复 -->
@@ -364,6 +359,15 @@ onUnmounted(() => {
 /* ---- 账号卡标题行：标题 + 操作按钮同行 ---- */
 .acc-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
 .acc-head-actions { display: flex; gap: 10px; flex-shrink: 0; }
+/* 检测连接结果横条 */
+.diag-result {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+  padding: 9px 14px; border-radius: 10px; font-size: 13px;
+  border: 1px solid var(--border); background: var(--card-2, rgba(16,185,129,0.06));
+}
+.diag-result.ok { border-color: rgba(16,185,129,0.35); }
+.diag-result.bad { border-color: rgba(244,63,94,0.4); background: rgba(244,63,94,0.07); }
+.diag-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2, var(--text)); }
 .conn-state {
   display: flex; align-items: center; gap: 12px; padding: 12px 16px; min-width: 0; flex: 1;
   border: 1px solid var(--border); border-radius: 12px;
