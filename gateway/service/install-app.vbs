@@ -47,7 +47,7 @@ If srcDir <> dstDir Then
     sh.Run stopCmd, 0, True
   End If
 End If
-WScript.Sleep 800
+WScript.Sleep 1500 ' 杀完进程后句柄释放有几秒延迟，多等一拍减少 delete-pending 撞击面
 
 ' ---------- 1) 数据迁移（绿色版 -> 安装版；升级时旧数据已在数据目录则跳过） ----------
 ' 迁移明细与 resolveDataRoot / auth-core 的布局一一对应，漏一项就是「登录态凭空消失」。
@@ -207,25 +207,47 @@ End Sub
 
 ' 覆盖式复制：目标里的同名目录/文件先删再拷，保证升级是干净的整树替换。
 ' 路径都是本安装器自己拼的固定位置，DeleteFolder 不会碰到程序目录之外。
-' 删除失败最常见原因是网关还在跑（文件被占用）——如实报错退出，绝不半装。
+'
+' 为什么每一步都要重试（v1.10.1 实测踩坑）：升级时先杀网关再立刻删拷，
+' Windows 杀进程后文件句柄释放有几秒延迟 —— 处于 delete-pending 的目录
+' FolderExists 返回 False，但 CopyFolder 会报 800A004C「路径未找到」。
+' 首次安装（没在跑的网关）永远撞不上，升级安装高频复现。绝不半装：重试
+' 耗尽仍失败就如实报错退出，此时旧文件也已删掉，重跑安装器即可补齐。
 Sub ReplaceTree(name)
-  Dim s, d
+  Dim s, d, tries, errDesc
   s = srcDir & "\" & name
   d = dstDir & "\" & name
   If Not fso.FolderExists(s) And Not fso.FileExists(s) Then Exit Sub
+
+  ' ---- 1) 删旧目标（被占用 / delete-pending 时重试） ----
   On Error Resume Next
-  Err.Clear
-  If fso.FolderExists(d) Then fso.DeleteFolder d, True
-  If fso.FileExists(d) Then fso.DeleteFile d, True
+  For tries = 1 To 4
+    Err.Clear
+    If fso.FolderExists(d) Then fso.DeleteFolder d, True
+    If fso.FileExists(d) Then fso.DeleteFile d, True
+    If Err.Number = 0 Then Exit For
+    WScript.Sleep 1000 * tries
+  Next
+
+  ' ---- 2) 拷新内容（delete-pending / 句柄滞后时重试） ----
+  For tries = 1 To 5
+    Err.Clear
+    If fso.FolderExists(s) Then
+      fso.CopyFolder s, d, True
+    Else
+      fso.CopyFile s, d, True
+    End If
+    If Err.Number = 0 Then Exit For
+    errDesc = Err.Description
+    WScript.Sleep 1200 * tries
+  Next
+
   If Err.Number <> 0 Then
-    MsgBox "无法替换旧文件：" & d & vbCrLf & vbCrLf & _
-           "网关可能还在运行，请等几秒后重新运行本安装器。", 48, "Codex Gateway 安装"
+    MsgBox "无法替换程序文件（已自动重试仍失败）：" & d & vbCrLf & vbCrLf & _
+           "原因：" & errDesc & vbCrLf & vbCrLf & _
+           "常见原因是网关刚停下、文件句柄还没释放。请等十几秒后" & vbCrLf & _
+           "重新运行本安装器（已复制的部分会自动补齐）。", 48, "Codex Gateway 安装"
     WScript.Quit 1
   End If
   On Error GoTo 0
-  If fso.FolderExists(s) Then
-    fso.CopyFolder s, d, True
-  Else
-    fso.CopyFile s, d, True
-  End If
 End Sub

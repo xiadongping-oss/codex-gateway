@@ -3,6 +3,10 @@ import { ref, computed, onMounted } from 'vue'
 import { loadAccessConfig, loadAccessConfigWithKey, formatAccessConfig } from '../api/access-config'
 import { copyText } from '../api/client'
 
+// 构建时由 vite define 注入（根 package.json 的 version）。
+// 双保险判空：测试环境 / 直接引源码跑 dev 时未 define 也不炸。
+const gwVersion = typeof __GW_VERSION__ !== 'undefined' ? __GW_VERSION__ : ''
+
 const props = defineProps({
   title: { type: String, default: '网关概览' },
   subtitle: { type: String, default: '本地 Codex 网关' },
@@ -39,7 +43,7 @@ async function copyConfig() {
 <template>
   <header class="topbar">
     <div>
-      <h1>{{ title }}</h1>
+      <h1>{{ title }}<span v-if="gwVersion" class="ver-chip" :title="'网关版本 ' + gwVersion">v{{ gwVersion }}</span></h1>
       <div class="subtitle">{{ subtitle }}</div>
     </div>
     <div class="topbar-right">
@@ -61,6 +65,12 @@ async function copyConfig() {
   display: flex; align-items: center; justify-content: space-between; padding: 0 24px;
 }
 .topbar h1 { font-size: 17px; font-weight: 600; letter-spacing: 0.2px; }
+.ver-chip {
+  margin-left: 10px; vertical-align: 2px;
+  font-size: 11px; font-weight: 500; font-family: var(--mono);
+  color: var(--text-3); border: 1px solid var(--border);
+  padding: 1px 7px; border-radius: 999px; letter-spacing: 0.3px;
+}
 .subtitle { font-size: 12px; color: var(--text-3); font-family: var(--mono); margin-top: 2px; }
 .topbar-right { display: flex; align-items: center; gap: 12px; }
 .pill.off { color: var(--rose); background: rgba(244,63,94,0.12); }

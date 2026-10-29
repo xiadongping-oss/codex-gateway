@@ -2131,6 +2131,8 @@ async function handleHttpRequest(req, res) {
       const pInst = primaryInstance()
       const health = await fetchBridgeHealth()
       return sendJson(res, 200, {
+        // 网关自身版本（根 package.json）——控制台概览页展示，排障时对得上包
+        version: APP_VERSION,
         running: bridgeRunning(),
         pid: pInst ? pInst.pid : null,
         startedAt: pInst ? pInst.startedAt : null,

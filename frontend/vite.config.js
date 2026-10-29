@@ -1,11 +1,20 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { viteSingleFile } from 'vite-plugin-singlefile'
+
+// 构建时注入网关版本号（取仓库根 package.json）：控制台顶栏展示。
+// 版本随包构建定格，与 BUILD-INFO 一致，不依赖运行时接口。
+const rootPkg = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'))
 
 // 接真实后端时：复制 .env.example 为 .env，设置 VITE_USE_MOCK=false 和 VITE_API_BASE
 // base: './' 让产物可在任意路径（含本地 file://）下运行
 export default defineConfig({
   base: './',
+  define: {
+    __GW_VERSION__: JSON.stringify(rootPkg.version)
+  },
   build: {
     // 本环境 Node 的 trash 包装会让 Vite 清空 dist 失败，改为手动清理
     emptyOutDir: false
