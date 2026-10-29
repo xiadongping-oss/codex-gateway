@@ -66,6 +66,11 @@ export function authFileHasCredentials(text) {
 // 会话阶段推导：前端 6 步骤条只认这里的 phase 名。
 //   preparing → launching → waiting-login → logged-in → ready → (finish) completed
 //   failed / cancelled 终态。
+//
+// defaultWatch（桌面客户端专属）：ChatGPT/Codex 桌面版是常驻单实例应用——
+// 新拉起的进程只做激活交接就退出，登录发生在**已经在跑的那个实例**里，
+// CODEX_HOME 传不进去。所以桌面客户端退出≠失败：改看默认 profile 的凭据变化
+// （resolveAuth 已实现），一直等到超时。CLI 场景保留快速失败。
 export function derivePhase(session, { now = Date.now(), pidRunning } = {}) {
   if (!session) return { phase: 'unknown', error: null, hasCredentials: false }
   if (session.phase === 'failed' || session.phase === 'cancelled') {
@@ -75,14 +80,15 @@ export function derivePhase(session, { now = Date.now(), pidRunning } = {}) {
     if (session.clientExited) return { phase: 'ready', error: null, hasCredentials: true }
     return { phase: 'logged-in', error: null, hasCredentials: true }
   }
-  if (session.clientExited) {
-    return { phase: 'failed', error: '官方客户端已关闭，但没有读到登录信息', hasCredentials: false }
-  }
-  if (pidRunning === false) {
-    return { phase: 'failed', error: '官方客户端已退出，但没有读到登录信息', hasCredentials: false }
-  }
   if (now - session.startedAt > LOGIN_TIMEOUT_MS) {
-    return { phase: 'failed', error: '等待官方客户端登录超时（10 分钟）', hasCredentials: false }
+    const timeoutHint = session.defaultWatch
+      ? '：登录信息没有写进临时目录，默认 Codex 凭据也没有变化。请确认已在官方客户端完成登录后重试'
+      : ''
+    return { phase: 'failed', error: '等待官方客户端登录超时（10 分钟）' + timeoutHint, hasCredentials: false }
+  }
+  const exited = session.clientExited || pidRunning === false
+  if (exited && !session.defaultWatch) {
+    return { phase: 'failed', error: '官方客户端已关闭，但没有读到登录信息', hasCredentials: false }
   }
   // 启动命令已发出即进入 launching，凭据轮询归入 waiting-login（前端按 elapsed 细分展示）
   return { phase: session.spawned ? 'waiting-login' : 'launching', error: null, hasCredentials: false }
@@ -283,6 +289,8 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
       pid: null, startedAt: Date.now(),
       // 会话开始时的默认 profile 指纹（null=当时没有凭据文件）
       defaultAuthDigest: defaultText ? digestText(defaultText) : null,
+      // 桌面客户端（store/app）是常驻单实例：退出≠失败，转看默认 profile 变化
+      defaultWatch: client.kind === 'store' || client.kind === 'app',
       credSource: null,
       hasCredentials: false, clientExited: false, phase: 'launching', error: null
     }
@@ -292,8 +300,10 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
       if (process.platform === 'win32') {
         // start "" /WAIT：新控制台/GUI 窗口跑官方客户端；cmd 壳挂着等它退出，
         // pid 即壳进程 —— 检测壳存活 + 凭据文件，两路信号互为兜底。
-        // spawnImpl 统一 shell 字符串签名（cmd /c、sh -c），便于测试注入。
-        const child = spawnImpl(`start "" /WAIT "${client.path}"`, {
+        // CLI 形态补 login 子命令（浏览器授权 + 本地回调，完成后进程退出）；
+        // 桌面 GUI 不带参数，直接开窗口。
+        const cliArgs = client.kind === 'cli' ? ' login' : ''
+        const child = spawnImpl(`start "" /WAIT "${client.path}"${cliArgs}`, {
           shell: true, stdio: 'ignore',
           env: { ...process.env, CODEX_HOME: profileDir }
         })
@@ -346,6 +356,8 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
       hasCredentials: s.hasCredentials,
       credSource: s.credSource,
       clientExited: s.clientExited,
+      // 桌面客户端交接退出后的观察模式：UI 据此提示「去已打开的客户端里登录」
+      watchDefaultProfile: !!(s.defaultWatch && !s.hasCredentials),
       elapsedSec: Math.floor((Date.now() - s.startedAt) / 1000)
     }
   }
@@ -356,7 +368,7 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     if (!s) throw new Error('会话不存在或已过期')
     const info = resolveAuth(s)
     if (!info) {
-      throw new Error('临时目录里还没有可用凭据，请先在官方客户端完成登录')
+      throw new Error('还没读到本次登录的凭据：临时目录为空，默认 Codex 凭据也没有变化。请先在官方客户端完成登录')
     }
     // 关掉仍在运行的客户端（用户可能登录完没关）
     if (!s.clientExited && s.pid && pidAlive(s.pid) && killTree) {

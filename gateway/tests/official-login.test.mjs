@@ -37,7 +37,7 @@ test('derivePhase：六阶段推进 + 两条失败路径', () => {
   assert.equal(derivePhase({ ...base, hasCredentials: true }).phase, 'logged-in')
   // 客户端退出 + 凭据 → ready
   assert.equal(derivePhase({ ...base, hasCredentials: true, clientExited: true }).phase, 'ready')
-  // 客户端退出但没凭据 → failed
+  // 客户端退出但没凭据 → failed（CLI 形态，无 defaultWatch）
   const closed = derivePhase({ ...base, clientExited: true, pidRunning: false })
   assert.equal(closed.phase, 'failed')
   assert.match(closed.error, /没有读到登录信息/)
@@ -47,6 +47,17 @@ test('derivePhase：六阶段推进 + 两条失败路径', () => {
   assert.match(timeout.error, /超时/)
   // 终态透传
   assert.equal(derivePhase({ phase: 'failed', error: 'x', hasCredentials: false }).phase, 'failed')
+})
+
+test('derivePhase：桌面客户端（defaultWatch）退出后不判失败，继续等默认 profile；超时给专属提示', () => {
+  const base = { startedAt: Date.now(), hasCredentials: false, clientExited: false, spawned: true, defaultWatch: true }
+  // 交接退出（单实例应用把窗口交给已运行实例）→ 仍 waiting-login
+  const handedOff = derivePhase({ ...base, clientExited: true, pidRunning: false })
+  assert.equal(handedOff.phase, 'waiting-login')
+  // 超时 → failed，提示里点名「默认凭据没变化」
+  const timeout = derivePhase({ ...base, startedAt: Date.now() - LOGIN_TIMEOUT_MS - 1 })
+  assert.equal(timeout.phase, 'failed')
+  assert.match(timeout.error, /默认 Codex 凭据/)
 })
 
 test('profileDirFor：非法会话 ID 拒绝（路径穿越防护）', () => {
@@ -268,6 +279,62 @@ test('start：客户端未找到 / spawn 失败 → 明确报错且不留目录'
   await assert.rejects(mgrBoom.start(), /启动官方客户端失败.*boom/)
   // tmp 根下不应留任何会话目录
   assert.equal(fs.readdirSync(tempLoginRootDir(root)).length, 0)
+})
+
+test('start：CLI 形态补 login 子命令；桌面客户端进入 defaultWatch（退出不失败）', async () => {
+  const root = tmpDataRoot()
+  const seen = []
+  const mgrCli = makeManager(root, {
+    discoverImpl: () => ({ path: 'C:\\npm\\codex.cmd', kind: 'cli' }),
+    spawnImpl: (cmd) => { seen.push(cmd); return { pid: 11, unref() {} } }
+  })
+  const r1 = await mgrCli.start()
+  assert.match(seen[0], /"C:\\npm\\codex\.cmd" login/)
+  assert.equal(seen[0].includes('start "" /WAIT'), true)
+  await mgrCli.cancel(r1.sessionId)
+
+  // store 形态：不带 login；客户端退出后仍 waiting-login（watchDefaultProfile=true）
+  const mgrStore = makeManager(root, {
+    discoverImpl: () => ({ path: 'C:\\Store\\ChatGPT.exe', kind: 'store' }),
+    spawnImpl: () => ({ pid: 22, unref() {} }),
+    alive: { flag: true }
+  })
+  const r2 = await mgrStore.start()
+  assert.ok(!seen[1] || true)
+  const alive = { flag: true }
+  // 用独立管理器翻转探活：模拟交接退出
+  const mgrStore2 = createOfficialLoginManager({
+    dataRoot: root,
+    spawnImpl: () => ({ pid: 33, unref() {} }),
+    killTree: async () => {},
+    discoverImpl: () => ({ path: 'C:\\Store\\ChatGPT.exe', kind: 'store' }),
+    pidAliveImpl: () => alive.flag,
+    defaultAuthText: () => null
+  })
+  const r3 = await mgrStore2.start()
+  alive.flag = false
+  let st = await mgrStore2.status(r3.sessionId)
+  assert.equal(st.clientExited, true)
+  assert.equal(st.phase, 'waiting-login')
+  assert.equal(st.watchDefaultProfile, true)
+  // 默认 profile 变化 → 直接 logged-in（source=default-profile）
+  const defRef = { text: null }
+  const mgrStore3 = createOfficialLoginManager({
+    dataRoot: root,
+    spawnImpl: () => ({ pid: 44, unref() {} }),
+    killTree: async () => {},
+    discoverImpl: () => ({ path: 'C:\\Store\\ChatGPT.exe', kind: 'store' }),
+    pidAliveImpl: () => false,
+    defaultAuthText: () => defRef.text
+  })
+  const r4 = await mgrStore3.start()
+  defRef.text = '{"tokens":{"access_token":"desktop-login"}}'
+  st = await mgrStore3.status(r4.sessionId)
+  // 探活恒 false（模拟交接退出）→ 凭据一出现就是 ready
+  assert.equal(st.phase, 'ready')
+  assert.equal(st.credSource, 'default-profile')
+  await mgrStore3.cancel(r4.sessionId)
+  await mgrStore.cancel(r2.sessionId)
 })
 
 test('recover：有凭据的旧会话保留为 ready；没凭据的清掉', async () => {

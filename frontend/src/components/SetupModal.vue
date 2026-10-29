@@ -86,7 +86,7 @@ async function startTempLogin() {
     tempSession.value = r
     tempPhase.value = 'running'
     tempDoneSteps.value = 2 // preparing + launching 已由后端完成
-    tempHint.value = '官方客户端已打开，请在其中完成 OpenAI 登录；登录完成后关闭客户端窗口。'
+    tempHint.value = '已发出启动命令：请在打开的官方客户端里完成 OpenAI 登录（若客户端已在后台运行，直接切换到那个窗口登录即可）。'
     pollTempLogin()
   } finally {
     loading.value = false
@@ -101,10 +101,16 @@ function pollTempLogin() {
     if (!st) return // 网络抖动，下轮再看
     if (st.phase === 'waiting-login') {
       tempDoneSteps.value = 2
-      tempHint.value = `等待登录中…（${st.elapsedSec || 0}s）在打开的官方客户端里完成 OpenAI 登录。`
+      // 桌面版是常驻单实例：新进程交接退出后，登录发生在已打开的客户端里，
+      // 凭据写进默认 profile —— 提示用户去那个窗口操作，而不是干等
+      tempHint.value = st.watchDefaultProfile
+        ? `官方客户端已在后台运行（${st.elapsedSec || 0}s）。请切换到已打开的 Codex/ChatGPT 客户端完成登录；凭据变化后这里会自动读取。`
+        : `等待登录中…（${st.elapsedSec || 0}s）在打开的官方客户端里完成 OpenAI 登录。`
     } else if (st.phase === 'logged-in') {
       tempDoneSteps.value = 3
-      tempHint.value = '已检测到登录信息，请关闭官方客户端窗口。'
+      tempHint.value = st.credSource === 'default-profile'
+        ? '已检测到官方客户端的新登录凭据（默认 Codex 目录）。'
+        : '已检测到登录信息，请关闭官方客户端窗口。'
     } else if (st.phase === 'ready') {
       stopTempPoll()
       await finishTempLogin()
