@@ -310,8 +310,8 @@ watch(() => models.value.length, () => {
           <div class="wb-guide-title">填到 WorkBuddy「添加模型」：</div>
           <div class="wb-guide-body">
             <b>基础三项：</b>接口地址 <code>{{ baseUrl }}/v1</code> · API Key 上面选的 cgw- 密钥 · 模型名称 <code>{{ configObj.model }}</code>
-            <br /><b>高级配置勾选：</b>工具调用 ✓ · 图片输入 ✓ · 思考模式 ✓ · 仅思考模式 ✗ · 允许关闭思考 ✓
-            <br /><b>思考强度：</b>默认「自动」；支持强度勾「低 / 中 / 高 / 超高」（「极致」上游 Codex 通道不支持，会报错）
+            <br /><b>高级配置勾选：</b>工具调用 ✓（已验证：Read / Write / Bash 等本地工具可正常调用）· 图片输入 ✓ · 思考模式 ✓ · 仅思考模式 ✗ · 允许关闭思考 ✓
+            <br /><b>思考强度：</b>默认「自动」；支持「低 / 中 / 高 / 超高 / 极致」（上游不支持的强度会被网关忽略并回落默认值，不会报错）
             <br /><b>输入 / 输出：</b>留空用提供商默认值
             <br /><b>自定义协议：不要勾</b>——勾了 WorkBuddy 不再自动补全 <code>/chat/completions</code> 路径，请求会打到网关没有的路由上直接 404
           </div>

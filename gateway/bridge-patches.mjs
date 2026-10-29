@@ -5,6 +5,8 @@
 //   2) translateChatMessages：assistant 消息 text/input_text → output_text（Codex 严格校验）
 //   3) normalizeResponsesBody：sanitizeResponsesInput 对 /v1/responses 的 input 做同规则净化
 //   4) /v1/responses 非流式：上游强制 stream:true → 本地强制流式并聚合为 Responses JSON
+//   5) /v1/chat/completions 工具调用：调用方 tools/tool_choice/tool 历史转 Responses，
+//      Responses function_call 事件回转 Chat Completions tool_calls（逻辑在 gateway/chat-tools.mjs）
 // npm install / 升级该包会静默清掉全部补丁。本模块在网关启动时校验标记，缺失即从快照恢复。
 //
 // 快照位置：gateway/patches/{cli,index}.patched.js（由补丁改完后的 dist 文件复制而来）。
@@ -15,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // 标记取最晚加入的补丁符号；存在即认为整套补丁在位
-const MARKER = 'sanitizeResponsesInput'
+const MARKER = 'chatTools.convertChatToolsToResponses'
 const FILES = ['cli.js', 'index.js']
 
 export function ensureBridgePatched(log = () => {}) {

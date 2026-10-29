@@ -1,6 +1,6 @@
 {
   "name": "codex-gateway",
-  "version": "1.11.2",
+  "version": "1.12.0",
   "private": true,
   "type": "module",
   "main": "gateway/launcher.mjs",
@@ -14,7 +14,7 @@
     "setup": "npm --prefix gateway install",
     "login": "npx @openai/codex login",
     "test": "bash gateway/tests/run.sh",
-    "test:unit": "node --test --test-timeout=15000 gateway/tests/bridge-pool.test.mjs gateway/tests/quota.test.mjs gateway/tests/failover.test.mjs gateway/tests/lan-addr.test.mjs gateway/tests/port.test.mjs gateway/tests/hardening.test.mjs gateway/tests/vbs-static.test.mjs gateway/tests/token-text.test.mjs gateway/tests/official-login.test.mjs gateway/tests/api-providers.test.mjs",
+    "test:unit": "node --test --test-timeout=15000 gateway/tests/bridge-pool.test.mjs gateway/tests/quota.test.mjs gateway/tests/failover.test.mjs gateway/tests/lan-addr.test.mjs gateway/tests/port.test.mjs gateway/tests/tool-call.test.mjs gateway/tests/hardening.test.mjs gateway/tests/vbs-static.test.mjs gateway/tests/token-text.test.mjs gateway/tests/official-login.test.mjs gateway/tests/api-providers.test.mjs",
     "test:client": "node --test --test-timeout=60000 gateway/tests/setup-client.test.mjs",
     "test:build": "node --test --test-timeout=60000 gateway/tests/build-release.test.mjs",
     "test:mutate": "node gateway/tests/mutate.mjs",
@@ -27,6 +27,7 @@
     "test:mutate:lanaddr": "node gateway/tests/mutate-lanaddr.mjs",
     "test:attack": "node gateway/tests/pentest.mjs",
     "test:bench": "node gateway/tests/bench-concurrency.mjs",
-    "test:mutate:port": "node gateway/tests/mutate-port.mjs"
+    "test:mutate:port": "node gateway/tests/mutate-port.mjs",
+    "test:mutate:toolcall": "node gateway/tests/mutate-toolcall.mjs"
   }
 }

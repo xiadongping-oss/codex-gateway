@@ -715,6 +715,7 @@ var init_images = __esm(() => {
 // src/server.ts
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
+import * as chatTools from "../../../chat-tools.mjs";
 function rateUsed() {
   const cutoff = Date.now() - 60 * 60 * 1000;
   rateState.hits = rateState.hits.filter((t) => t > cutoff);
@@ -733,14 +734,34 @@ function asResponse(c, body) {
 async function translateChatMessages(messages, cfg) {
   const out = [];
   for (const m of messages) {
+    // Chat Completions 工具历史：assistant.tool_calls -> function_call，role:tool -> function_call_output
+    const toolItems = Array.isArray(m?.tool_calls) && m.tool_calls.length > 0
+      ? chatTools.convertChatToolCallsToResponsesItems(m.tool_calls)
+      : [];
+    const emit = (msg) => {
+      const emptyContent = !msg || msg.content == null ||
+        (typeof msg.content === "string" && msg.content.trim() === "") ||
+        (Array.isArray(msg.content) && msg.content.length === 0);
+      if (!(toolItems.length > 0 && emptyContent))
+        out.push(msg);
+      for (const it of toolItems)
+        out.push(it);
+    };
+    if (m && m.role === "tool") {
+      const toolOut = chatTools.convertChatToolMessageToResponsesItem(m);
+      if (toolOut) {
+        out.push(toolOut);
+        continue;
+      }
+    }
     const role = m.role === "system" ? "developer" : m.role === "tool" ? "user" : m.role;
     if (typeof m.content === "string") {
       // Codex Responses API: assistant 历史消息必须用 output_text，不能是裸字符串/input_text
-      out.push({ role, content: role === "assistant" ? [{ type: "output_text", text: m.content }] : m.content });
+      emit({ role, content: role === "assistant" ? [{ type: "output_text", text: m.content }] : m.content });
       continue;
     }
     if (!Array.isArray(m.content)) {
-      out.push({ role, content: m.content });
+      emit({ role, content: m.content });
       continue;
     }
     const parts = [];
@@ -784,7 +805,7 @@ async function translateChatMessages(messages, cfg) {
       }
       parts.push(raw);
     }
-    out.push({ role, content: parts });
+    emit({ role, content: parts });
   }
   return out;
 }
@@ -940,18 +961,26 @@ function createApp(cfg) {
       }
       throw e;
     }
+    const upstreamTools = chatTools.convertChatToolsToResponses(body.tools, body.functions);
+    const upstreamToolChoice = chatTools.convertChatToolChoiceToResponses(body.tool_choice, body.function_call, upstreamTools);
     const upstreamBody = {
       model: body.model ?? DEFAULT_CHAT_MODEL,
       input: translatedInput,
       stream: true,
       store: false,
       instructions: "",
-      tools: [{ type: "image_generation" }]
+      tools: upstreamTools
     };
-    if (typeof body.temperature === "number")
-      upstreamBody.temperature = body.temperature;
-    if (typeof body.top_p === "number")
-      upstreamBody.top_p = body.top_p;
+    if (upstreamToolChoice !== void 0)
+      upstreamBody.tool_choice = upstreamToolChoice;
+    if (typeof body.parallel_tool_calls === "boolean")
+      upstreamBody.parallel_tool_calls = body.parallel_tool_calls;
+    // Codex 上游不接受采样参数（实测 400 Unsupported parameter: temperature / top_p），
+    // 直接转发会让每个带 temperature 的客户端全量失败，所以走白名单。
+    Object.assign(upstreamBody, chatTools.buildResponsesSampling(body));
+    const upstreamReasoning = chatTools.buildResponsesReasoning(body);
+    if (upstreamReasoning)
+      upstreamBody.reasoning = upstreamReasoning;
     try {
       const res = await upstream.call({
         path: "/responses",
@@ -961,92 +990,85 @@ function createApp(cfg) {
       });
       await upstream.raiseForStatus(res);
       if (!wantStream) {
-        let text = "";
-        let usage;
-        for await (const ev of parseSSE(res)) {
-          if (ev.type === "response.output_text.delta") {
-            const delta = ev.data.delta ?? "";
-            if (typeof delta === "string")
-              text += delta;
-          }
-          if (ev.type === "response.completed") {
-            usage = ev.data.response?.usage;
-          }
-          if (ev.type === "response.output_item.done") {
-            const it0 = ev.data.item;
-            if (it0?.type === "image_generation_call" && typeof it0.result === "string" && it0.result.length > 0) {
-              try {
-                const imgName = await saveGeneratedImage(cfg.dataHome, it0.result);
-                text += `\n\n![generated image](http://127.0.0.1:${cfg.port}/gen-images/${imgName})\n`;
-              } catch {}
-            }
-          }
-        }
-        return c.json({
+        const acc = chatTools.createChatAccumulator();
+        const tr = chatTools.createResponsesToChatTranslator({
           id: `chatcmpl_${crypto.randomUUID()}`,
-          object: "chat.completion",
+          model: body.model ?? DEFAULT_CHAT_MODEL,
           created: Math.floor(Date.now() / 1000),
+          includeUsage: body.stream_options?.include_usage === true
+        });
+        const consume = async (outItem) => {
+          if (outItem.imageResult) {
+            try {
+              const imgName = await saveGeneratedImage(cfg.dataHome, outItem.imageResult);
+              acc.text += `\n\n![generated image](http://127.0.0.1:${cfg.port}/gen-images/${imgName})\n`;
+            } catch {}
+            return;
+          }
+          if (outItem.chunk)
+            chatTools.applyChatChunk(acc, outItem.chunk);
+        };
+        for await (const ev of parseSSE(res)) {
+          for (const outItem of tr.toChatChunks(ev))
+            await consume(outItem);
+        }
+        for (const outItem of tr.finalize())
+          await consume(outItem);
+        const final = chatTools.finalizeChatAccumulator(acc, tr.state.usage);
+        return c.json({
+          id: tr.state.id,
+          object: "chat.completion",
+          created: tr.state.created,
           model: body.model ?? DEFAULT_CHAT_MODEL,
           choices: [
             {
               index: 0,
-              message: { role: "assistant", content: text || null },
-              finish_reason: "stop"
+              message: final.message,
+              finish_reason: final.finishReason
             }
           ],
-          usage: usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+          usage: final.usage
         });
       }
-      const id = `chatcmpl_${crypto.randomUUID()}`;
       const enc = new TextEncoder;
+      const tr = chatTools.createResponsesToChatTranslator({
+        id: `chatcmpl_${crypto.randomUUID()}`,
+        model: body.model ?? DEFAULT_CHAT_MODEL,
+        created: Math.floor(Date.now() / 1000),
+        includeUsage: body.stream_options?.include_usage === true
+      });
       const stream = new ReadableStream({
         async start(controller) {
           try {
-            for await (const ev of parseSSE(res)) {
-              if (ev.type === "response.output_item.done") {
-                const it0 = ev.data.item;
-                if (it0?.type === "image_generation_call" && typeof it0.result === "string" && it0.result.length > 0) {
-                  try {
-                    const imgName = await saveGeneratedImage(cfg.dataHome, it0.result);
-                    const md = `\n\n![generated image](http://127.0.0.1:${cfg.port}/gen-images/${imgName})\n`;
-                    controller.enqueue(enc.encode(`data: ${JSON.stringify({
-                      id,
-                      object: "chat.completion.chunk",
-                      created: Math.floor(Date.now() / 1000),
-                      model: body.model ?? DEFAULT_CHAT_MODEL,
-                      choices: [{ index: 0, delta: { content: md }, finish_reason: null }]
-                    })}
-
-`));
-                  } catch {}
-                }
-              }
-              if (ev.type === "response.output_text.delta") {
-                const delta = ev.data.delta ?? "";
-                if (delta) {
+            const emit = async (outItem) => {
+              if (outItem.imageResult) {
+                try {
+                  const imgName = await saveGeneratedImage(cfg.dataHome, outItem.imageResult);
+                  const md = `\n\n![generated image](http://127.0.0.1:${cfg.port}/gen-images/${imgName})\n`;
                   controller.enqueue(enc.encode(`data: ${JSON.stringify({
-                    id,
+                    id: tr.state.id,
                     object: "chat.completion.chunk",
-                    created: Math.floor(Date.now() / 1000),
+                    created: tr.state.created,
                     model: body.model ?? DEFAULT_CHAT_MODEL,
-                    choices: [{ index: 0, delta: { content: delta }, finish_reason: null }]
+                    choices: [{ index: 0, delta: { content: md }, finish_reason: null }]
                   })}
 
 `));
-                }
+                } catch {}
+                return;
               }
-              if (ev.type === "response.completed") {
-                controller.enqueue(enc.encode(`data: ${JSON.stringify({
-                  id,
-                  object: "chat.completion.chunk",
-                  created: Math.floor(Date.now() / 1000),
-                  model: body.model ?? DEFAULT_CHAT_MODEL,
-                  choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
-                })}
+              if (outItem.chunk) {
+                controller.enqueue(enc.encode(`data: ${JSON.stringify(outItem.chunk)}
 
 `));
               }
+            };
+            for await (const ev of parseSSE(res)) {
+              for (const outItem of tr.toChatChunks(ev))
+                await emit(outItem);
             }
+            for (const outItem of tr.finalize())
+              await emit(outItem);
             controller.enqueue(enc.encode(`data: [DONE]
 
 `));
