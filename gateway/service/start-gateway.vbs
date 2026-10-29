@@ -121,10 +121,20 @@ cmd = q & dir & "\run-gateway.cmd" & q & " " & port
 sh.Run cmd, 0, False
 
 Dim i, ok : ok = False
+' 快速路径：热启动 2-4 秒就绪，500ms 步进保证秒级反馈。
 For i = 1 To 16
   WScript.Sleep 500
   If HealthOk() Then ok = True : Exit For
 Next
+' 慢路径：首次运行时 Windows Defender 要先扫完内置 node.exe（83MB）才放行，
+' 冷启动 30 秒以上并不罕见。只等 8 秒就弹「失败」、而网关几秒后自己起来，
+' 是 v1.9.1 实测踩过的误报（日志还是 0 字节：stdout 块缓冲，进程退出才落盘）。
+If Not ok Then
+  For i = 1 To 28
+    WScript.Sleep 1000
+    If HealthOk() Then ok = True : Exit For
+  Next
+End If
 
 Dim rc, msg
 If ok Then
@@ -141,9 +151,11 @@ Else
           "1024 以下属于特权端口，普通用户绑不上。请改用 4173 这类高位端口：" & vbCrLf & _
           "  run-gateway.cmd 4173"
   Else
-    msg = "网关启动失败（8 秒内未就绪）。" & vbCrLf & vbCrLf & _
-          "日志尾部：" & vbCrLf & TailLog() & vbCrLf & vbCrLf & _
-          "完整日志：gateway\logs\service.log"
+    msg = "网关在 36 秒内没有就绪。" & vbCrLf & vbCrLf & _
+          "先直接打开控制台试试——启动慢的场景现在多半已经就绪：" & vbCrLf & _
+          base & vbCrLf & vbCrLf & _
+          "仍打不开再看日志尾部：" & vbCrLf & TailLog() & vbCrLf & vbCrLf & _
+          "完整日志：gateway\logs\service.log（日志暂时为空 = 进程还在启动中）"
   End If
   sh.Popup msg, 20, "Codex 网关", 48
 End If
