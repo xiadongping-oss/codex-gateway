@@ -10,6 +10,16 @@ rem                                   （2=端口被占 3=无权限 1=其它）
 setlocal
 set "DIR=%~dp0"
 cd /d "%DIR%.."
+
+rem ---- 安装布局（install-app.vbs 写入 installed.env）----
+rem 有这个文件时把数据目录指到 %LOCALAPPDATA%\CodexGateway：
+rem 账号/Key/日志与程序分离，卸载升级不再连数据一起删。
+rem 绿色版没有此文件，一切照旧（数据长在程序目录里）。
+rem for /f 的 eol=; 跳过注释行；delims== 按第一个 = 切 key/value，值可含空格。
+if exist "%DIR%installed.env" (
+  for /f "usebackq eol=; tokens=1,* delims==" %%a in ("%DIR%installed.env") do set "%%a=%%b"
+)
+
 if not exist "logs" mkdir "logs"
 if exist "logs\service.log" move /y "logs\service.log" "logs\service.log.1" >nul
 set "NODE_EXE=%DIR%node\node.exe"

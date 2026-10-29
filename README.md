@@ -172,10 +172,18 @@ http://100.122.232.106:4173/v1   (Tailscale)                    ← 仅 Tailscal
 
 | 部分 | 支持 |
 |---|---|
-| Windows 发布包（绿色版 zip） | 仅 Windows x64（内含 node 运行时，双击即用） |
+| Windows 发布包 | 仅 Windows x64（内含 node 运行时）。推荐双击 `gateway\service\install-app.vbs` 一键安装（程序进 `%LOCALAPPDATA%\Programs`、数据进 `%LOCALAPPDATA%\CodexGateway`、开始菜单 + 可卸载）；也可直接双击 `start-gateway.vbs` 以绿色版运行（数据长在解压目录内） |
 | 网关源码运行 | 跨平台：macOS / Linux 装 Node.js 20+ 后 `gateway/start-unix.sh` 直接跑 |
 | 开机自启 | Windows：`gateway/service/install-autostart.vbs`（计划任务）；macOS：launchd；Linux：systemd `--user`。unix 侧见下 |
 | 局域网客户端接入 | 跨平台：接入页任意浏览器可用；脚本任意 Node.js 16+ 系统可用 |
+
+#### 数据目录（CGW_DATA_DIR）
+
+账号凭据、API Key、配置、调用日志、参考图默认长在程序目录里（绿色版行为）。
+设置环境变量 `CGW_DATA_DIR`（install-app.vbs 会写进 `gateway\service\installed.env`，
+由 run-gateway.cmd 注入）后全部改住该目录 —— 卸载升级不再连数据一起删。
+目录内布局与程序目录一致（`accounts.json`、`accounts/`、`data/`…），两种形态
+数据原样互拷即可迁移。相对路径会被忽略（数据目录不允许随启动姿势漂移）。
 
 #### macOS / Linux 的启动与自启
 

@@ -154,6 +154,74 @@ test('sweepStaleTmpFiles 只清理我们自己写出的陈旧临时文件', () =
   assert.ok(fs.existsSync(fresh), '新鲜临时文件不能被删')
 })
 
+test('sweepStaleTmpFiles 递归进入子目录：data/ 里的残留也在清理范围', () => {
+  // 安装布局下数据根里还有 data/、accounts/ 子目录，tmp 与目标同目录，
+  // 只扫顶层会漏掉子目录里的残留 —— 递归化就是为这个。
+  const dir = tmpDir()
+  const sub = path.join(dir, 'data')
+  fs.mkdirSync(sub)
+  const old = new Date(Date.now() - 48 * 60 * 60 * 1000)
+  const staleSub = path.join(sub, '.call-logs.json.77.abcdef123456.tmp')
+  fs.writeFileSync(staleSub, '{"half":true')
+  fs.utimesSync(staleSub, old, old)
+  const keepSub = path.join(sub, 'call-logs.json')
+  fs.writeFileSync(keepSub, '{}')
+  fs.utimesSync(keepSub, old, old)
+
+  const n = sweepStaleTmpFiles(dir)
+  assert.equal(n, 1, `子目录里的陈旧 tmp 应被清掉，实际 ${n}`)
+  assert.ok(!fs.existsSync(staleSub))
+  assert.ok(fs.existsSync(keepSub), '子目录里的正式数据文件不能被误删')
+})
+
+// ---------- 数据目录解析（data-root.mjs） ----------
+// 安装布局（CGW_DATA_DIR）与绿色版（数据长在程序目录）的分岔点。
+// 这里出错的直接后果是「升级后账号凭空消失」，所以四个分支都要有独立用例。
+
+const { resolveDataRoot, isInstalledLayout, normalizeAuthFilePath, DATA_DIR_ENV } = await import(toUrl('data-root.mjs'))
+
+test('未设置 CGW_DATA_DIR 时回退程序目录（绿色版布局不变）', () => {
+  const mod = path.join(os.tmpdir(), 'cgw-program-' + process.pid)
+  assert.equal(resolveDataRoot({}, mod), mod)
+  assert.equal(resolveDataRoot({ CGW_DATA_DIR: '' }, mod), mod, '空字符串视为未设置')
+  assert.equal(resolveDataRoot({ CGW_DATA_DIR: '   ' }, mod), mod, '纯空白视为未设置')
+  assert.equal(isInstalledLayout({}), false)
+  assert.equal(isInstalledLayout({ CGW_DATA_DIR: '' }), false)
+})
+
+test('CGW_DATA_DIR 为绝对路径时生效（安装布局）', () => {
+  const mod = path.join(os.tmpdir(), 'cgw-program-' + process.pid)
+  const abs = path.join(os.tmpdir(), 'cgw-data-' + process.pid)
+  assert.equal(resolveDataRoot({ CGW_DATA_DIR: abs }, mod), path.resolve(abs))
+  assert.equal(isInstalledLayout({ CGW_DATA_DIR: abs }), true)
+})
+
+test('CGW_DATA_DIR 为相对路径时按未设置处理（不允许随启动姿势漂移）', () => {
+  const mod = path.join(os.tmpdir(), 'cgw-program-' + process.pid)
+  assert.equal(resolveDataRoot({ CGW_DATA_DIR: 'relative/data' }, mod), mod)
+  assert.equal(resolveDataRoot({ CGW_DATA_DIR: '.\\data' }, mod), mod)
+  assert.equal(isInstalledLayout({ CGW_DATA_DIR: 'relative/data' }), false)
+})
+
+test('normalizeAuthFilePath：程序目录内的旧路径重定向到数据根，外部路径保留', () => {
+  const program = path.join(os.tmpdir(), 'cgw-program-' + process.pid)
+  const fallback = path.join(os.tmpdir(), 'cgw-data-' + process.pid, 'auth.json')
+  const legacy = path.join(program, 'auth.json')
+  // 打破一层：路径为空 → 直接用 fallback，不该被丢进 isInsideRoot
+  assert.equal(normalizeAuthFilePath('', program, fallback), fallback)
+  assert.equal(normalizeAuthFilePath(undefined, program, fallback), fallback)
+  // 打破一层：落在程序目录内 → 视为默认值重定向（绿色版升级的核心场景）
+  assert.equal(normalizeAuthFilePath(legacy, program, fallback), fallback)
+  // 打破一层：程序目录之外 → 用户显式配置，保留
+  const outside = path.join(os.tmpdir(), 'cgw-elsewhere-auth.json')
+  assert.equal(normalizeAuthFilePath(outside, program, fallback), outside)
+})
+
+test('DATA_DIR_ENV 常量名就是文档承诺的 CGW_DATA_DIR', () => {
+  // 安装器写入 installed.env 的键名与 launcher/脚本读取的键名必须一字不差
+  assert.equal(DATA_DIR_ENV, 'CGW_DATA_DIR')
+})
+
 // ---------- 云存储地址 SSRF 防护 ----------
 // 这一段守的是一个已经实测确认过的绕过：
 // 黑名单原本只做字符串前缀匹配，IPv4-mapped IPv6 写法整体漏网。

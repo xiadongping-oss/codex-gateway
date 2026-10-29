@@ -8,9 +8,10 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { writeJsonAtomic } from './atomic-write.mjs'
+import { resolveDataRoot } from './data-root.mjs'
 
 const MOD_DIR = path.dirname(fileURLToPath(import.meta.url))
-const STORE_PATH = process.env.ASSETS_STORE_PATH || path.join(MOD_DIR, 'data', 'asset-sources.json')
+const STORE_PATH = process.env.ASSETS_STORE_PATH || path.join(resolveDataRoot(process.env, MOD_DIR), 'data', 'asset-sources.json')
 
 const genImagesDir = () => path.join(os.homedir(), '.chatgpt-bridge', 'gen-images')
 const GEN_IMAGE_RE = /^[A-Za-z0-9_-]+\.png$/

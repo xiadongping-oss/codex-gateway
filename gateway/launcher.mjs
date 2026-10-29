@@ -83,6 +83,7 @@ import {
 import { ensureBridgePatched } from './bridge-patches.mjs'
 import { recordCallLog, getCallLogs, flushCallLogs } from './call-logs.mjs'
 import { writeJsonAtomic, sweepStaleTmpFiles } from './atomic-write.mjs'
+import { resolveDataRoot, isInstalledLayout } from './data-root.mjs'
 import { defaultReferenceRoot, checkReferencePaths } from './ref-roots.mjs'
 import { handleAssets } from './assets.mjs'
 import { createBridgePool } from './bridge-pool.mjs'
@@ -99,6 +100,11 @@ import {
 } from './port-util.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+// 数据根：安装布局（install-app.vbs 写入 installed.env → run-gateway.cmd 注入
+// CGW_DATA_DIR）下，账号/配置/Key/参考图全部住数据目录；未设置时就是程序目录，
+// 绿色版行为一字不变。唯一决策点见 data-root.mjs。
+const DATA_ROOT = resolveDataRoot(process.env, __dirname)
 
 // 应用版本：以仓库根 package.json 为准，**不要在这里硬编码**。
 // 此前 MCP 的 serverInfo 写死 '1.2.0-http'，发版时没人记得同步，客户端日志里
@@ -118,12 +124,12 @@ function resolveAppVersion() {
 const APP_VERSION = resolveAppVersion()
 
 // ---- 控制面管理鉴权（原 F-01） ----
-// 令牌落在 __dirname（与 api-keys.json 同级，不进 git）。想指定自己的令牌用
+// 令牌落在数据根（与 api-keys.json 同级，不进 git）。想指定自己的令牌用
 // 环境变量 CGW_ADMIN_TOKEN；想彻底关掉这项保护用 CGW_ADMIN_AUTH=0（不建议）。
 const ADMIN_AUTH_DISABLED = process.env.CGW_ADMIN_AUTH === '0'
 const adminToken = ADMIN_AUTH_DISABLED
   ? { token: '', source: 'disabled' }
-  : loadOrCreateAdminToken(__dirname)
+  : loadOrCreateAdminToken(DATA_ROOT)
 const adminAuth = ADMIN_AUTH_DISABLED ? null : createAdminAuth({ token: adminToken.token })
 
 // 多模式配置：bridge（复用 codex login OAuth）/ openai（自带 API Key 直连）
@@ -132,9 +138,14 @@ let gwConfig = loadConfig()
 const _reg = migrateLegacyAuth()
 if (_reg.activeId) gwConfig.authFilePath = accountAuthPath(_reg.activeId)
 
+// 数据根必须先存在：admin-token / .codex-client-identity 等首次写盘
+// 都落在它的顶层，目录不存在时那些 writeFileSync 会直接失败。
+try { fs.mkdirSync(DATA_ROOT, { recursive: true }) } catch {}
+
 // 清掉上次被强杀留下的 .xxx.tmp。它们不会被任何逻辑读到，但会越积越多，
-// 在用户自己打开数据目录排障时混进 ls 结果里干扰判断。开一次即可。
-try { sweepStaleTmpFiles(__dirname) } catch {}
+// 在用户自己打开数据目录排障时混进 ls 结果里干扰判断。开一次即可
+// （递归：data/、accounts/ 子目录里的残留一起清）。
+try { sweepStaleTmpFiles(DATA_ROOT) } catch {}
 
 // 参考图目录必须先存在：它同时是 bridge 子进程的 cwd，
 // 目录不存在时 spawn 会直接失败，而这个失败在用户看来只是「bridge 起不来」。
@@ -1555,7 +1566,8 @@ function genImagesDir() {
 function referenceRootDir() {
   const configured = String(gwConfig?.referenceRoot || '').trim()
   if (configured) return path.resolve(configured)
-  return defaultReferenceRoot(__dirname)
+  // 默认根随数据走：参考图是用户素材，安装布局下不能长在程序目录里
+  return defaultReferenceRoot(DATA_ROOT)
 }
 
 function ensureReferenceRoot() {
@@ -2898,6 +2910,10 @@ server.on('error', (err) => {
 
 server.listen(LAUNCHER_PORT, LISTEN_HOST, () => {
   pushLog(`◆ 启动器已就绪：http://127.0.0.1:${LAUNCHER_PORT}`)
+  // 数据目录与程序分离时明说一声：用户排障时不会找错地方
+  pushLog(isInstalledLayout()
+    ? `◆ 数据目录（安装布局）：${DATA_ROOT}`
+    : `◆ 数据目录：${DATA_ROOT}（程序目录内，绿色版布局）`)
   if (adminAuth) {
     pushLog('◆ 控制台已启用管理令牌保护')
     pushLog(`  · 浏览器进入：在本机运行 node launcher.mjs admin（一次性链接，60 秒内有效）`)

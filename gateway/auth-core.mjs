@@ -15,8 +15,13 @@ import crypto from 'node:crypto'
 import http from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { writeJsonAtomic, writeTextAtomic, createCachedTextReader } from './atomic-write.mjs'
+import { resolveDataRoot, normalizeAuthFilePath } from './data-root.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+// 数据根：安装布局（CGW_DATA_DIR）下账号/配置/凭据住数据目录，
+// 未设置时就是程序目录 —— 绿色版行为不变。
+const DATA_ROOT = resolveDataRoot(process.env, __dirname)
 
 const OAUTH_ISSUER = 'https://auth.openai.com'
 const OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
@@ -24,12 +29,12 @@ const SCOPE = 'openid profile email offline_access api.connectors.read api.conne
 
 // ---------- 默认 auth 文件路径（由 bridge 读取） ----------
 export function defaultAuthFilePath() {
-  // 优先用项目内的 gateway/auth.json，避免污染用户主目录；可被配置覆盖
-  return path.join(__dirname, 'auth.json')
+  // 优先用数据根下的 auth.json，避免污染用户主目录；可被配置覆盖
+  return path.join(DATA_ROOT, 'auth.json')
 }
 
-// ---------- 配置持久化（gateway/.gw-config.json） ----------
-const CONFIG_PATH = path.join(__dirname, '.gw-config.json')
+// ---------- 配置持久化（<数据根>/.gw-config.json） ----------
+const CONFIG_PATH = path.join(DATA_ROOT, '.gw-config.json')
 
 export function loadConfig() {
   // proxy: 出网代理地址，如 http://127.0.0.1:7897；留空表示直连
@@ -39,7 +44,10 @@ export function loadConfig() {
   try {
     const txt = fs.readFileSync(CONFIG_PATH, 'utf-8')
     const j = JSON.parse(txt)
-    return { ...base, ...j }
+    const merged = { ...base, ...j }
+    // 绿色版 → 安装版升级后，config 里存的旧程序目录路径要归一化到数据根
+    merged.authFilePath = normalizeAuthFilePath(merged.authFilePath, __dirname, defaultAuthFilePath())
+    return merged
   } catch {
     return base
   }
@@ -306,7 +314,7 @@ const ORIGINATOR = 'Codex Desktop'
 const OAUTH_CALLBACK_PORT = 1455
 const OAUTH_TIMEOUT_MS = 10 * 60 * 1000
 const OFFICIAL_CLIENT_VERSION = '26.820.60940'
-const CLIENT_IDENTITY_FILE = path.join(__dirname, '.codex-client-identity')
+const CLIENT_IDENTITY_FILE = path.join(DATA_ROOT, '.codex-client-identity')
 
 let pendingBrowser = null
 
@@ -605,12 +613,12 @@ export function cancelBrowserLogin() {
 
 // ===================================================================
 //  多账号仓库（本地，单用户自用）
-//    - 每个账号独立存于 gateway/accounts/<id>.json（bridge 规范化形态）
-//    - gateway/accounts.json 为注册表：{ activeId, accounts: [...] }
+//    - 每个账号独立存于 <数据根>/accounts/<id>.json（bridge 规范化形态）
+//    - <数据根>/accounts.json 为注册表：{ activeId, accounts: [...] }
 //    - bridge 始终只读“当前激活账号”的 auth 文件，切换即改指向并重启
 // ===================================================================
-const ACCOUNTS_DIR = path.join(__dirname, 'accounts')
-const ACCOUNTS_REGISTRY = path.join(__dirname, 'accounts.json')
+const ACCOUNTS_DIR = path.join(DATA_ROOT, 'accounts')
+const ACCOUNTS_REGISTRY = path.join(DATA_ROOT, 'accounts.json')
 
 function genAccountId() {
   return 'acc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)

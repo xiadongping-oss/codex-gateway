@@ -301,6 +301,9 @@ const REQUIRED = [
   'gateway/service/start-gateway.vbs',
   'gateway/service/stop-gateway.vbs',
   'gateway/service/run-gateway.cmd',
+  // 一键安装 / 卸载（普通用户的推荐入口；缺了它们发布包就退化成纯绿色版）
+  'gateway/service/install-app.vbs',
+  'gateway/service/uninstall-app.vbs',
   // macOS / Linux 的启动与自启（launchd / systemd --user）
   'gateway/service-unix/_common.sh',
   'gateway/service-unix/start-gateway.sh',

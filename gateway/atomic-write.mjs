@@ -116,27 +116,44 @@ export function createCachedTextReader(file) {
  * 在排障时混进 `ls` 结果里干扰判断。启动时扫一次，清掉超过一天的。
  *
  * 注意只删我们自己写出来的：文件名必须是 `.<目标名>.<pid>.<hex>.tmp` 这个形状。
+ *
+ * 递归扫描：安装布局下数据根里还有 data/、accounts/ 子目录，tmp 与目标文件
+ * 同目录（tmpPathFor 的设计），只扫顶层会漏掉子目录里的残留。
+ * 深度上限是防御手段：数据根里不该出现很深的嵌套，真出现了（比如用户把
+ * 别的目录挂进来）也不至于整棵遍历拖慢启动。
  */
-export function sweepStaleTmpFiles(dir, maxAgeMs = 24 * 60 * 60 * 1000) {
+export function sweepStaleTmpFiles(dir, maxAgeMs = 24 * 60 * 60 * 1000, maxDepth = 3) {
   let removed = 0
-  try {
-    if (!fs.existsSync(dir)) return 0
-    const now = Date.now()
-    for (const name of fs.readdirSync(dir)) {
+  walk(dir, maxDepth)
+  return removed
+
+  function walk(current, depth) {
+    let entries
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const ent of entries) {
+      const full = path.join(current, ent.name)
+      if (ent.isDirectory()) {
+        if (depth > 1) walk(full, depth - 1)
+        continue
+      }
       // 形状：.xxx.json.1234.abcdef123456.tmp —— 只认我们自己写出来的那一种。
       // 判据是倒数第三段必须为纯数字 pid、倒数第二段必须为 12 位十六进制，
       // 用户的任何其它 .tmp 文件都通不过，不会仅因为后缀是 .tmp 就被牵连。
+      if (!ent.isFile()) continue
+      const name = ent.name
       if (!name.startsWith('.') || !name.endsWith('.tmp')) continue
       const parts = name.split('.')
       const pidSeg = parts[parts.length - 3]
       const hexSeg = parts[parts.length - 2]
       if (!/^\d+$/.test(pidSeg) || !/^[0-9a-f]{12}$/.test(hexSeg)) continue
-      const full = path.join(dir, name)
       let st
       try { st = fs.statSync(full) } catch { continue }
-      if (!st.isFile() || now - st.mtimeMs < maxAgeMs) continue
+      if (!st.isFile() || Date.now() - st.mtimeMs < maxAgeMs) continue
       try { fs.unlinkSync(full); removed += 1 } catch {}
     }
-  } catch {}
-  return removed
+  }
 }

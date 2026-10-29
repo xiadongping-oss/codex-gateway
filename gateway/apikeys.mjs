@@ -25,11 +25,13 @@ import { writeJsonAtomic } from './atomic-write.mjs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveDataRoot } from './data-root.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const KEY_PREFIX = 'cgw'
-const KEYS_FILE = path.join(__dirname, 'api-keys.json')
+// 安装布局下数据住数据根（CGW_DATA_DIR），绿色版就是程序目录 —— 行为不变
+const KEYS_FILE = path.join(resolveDataRoot(process.env, __dirname), 'api-keys.json')
 
 // ---------- 本机密钥派生 ----------
 // 机器指纹：用户名 + 主机名 + 家目录路径（同机稳定，异机不同）

@@ -26,7 +26,8 @@ const C = { g: '\x1b[32m', r: '\x1b[31m', y: '\x1b[33m', d: '\x1b[2m', b: '\x1b[
 // 被测文件必须整组复制：assets.mjs 内部会 import './atomic-write.mjs'，
 // 只复制其中一个的话，另一个仍指向真源码，变异就白变了 ——
 // 这正是本 runner 最初写错、导致 7 个变异体全部「存活」的原因。
-const FILES = ['atomic-write.mjs', 'assets.mjs', 'ref-roots.mjs', 'secret-perms.mjs']
+// data-root.mjs import './ref-roots.mjs'（isInsideRoot），同样必须整组带。
+const FILES = ['atomic-write.mjs', 'assets.mjs', 'ref-roots.mjs', 'secret-perms.mjs', 'data-root.mjs']
 const TEST_FILE = 'hardening.test.mjs'
 
 const MUTANTS = [
@@ -69,7 +70,7 @@ const MUTANTS = [
     id: 'MH6',
     file: 'atomic-write.mjs',
     desc: 'sweep 不再看文件年龄 —— 刚写出去的临时文件会被自己扫掉',
-    from: 'if (!st.isFile() || now - st.mtimeMs < maxAgeMs) continue',
+    from: 'if (!st.isFile() || Date.now() - st.mtimeMs < maxAgeMs) continue',
     to: 'if (!st.isFile()) continue'
   },
   {
@@ -141,6 +142,30 @@ const MUTANTS = [
     desc: '写入后不再收紧 ACL —— 0600 在 Windows 上本来就不生效，等于完全没防护',
     from: 'hardenSecretFile(target)\n    return true',
     to: 'return true'
+  },
+  {
+    id: 'MH17',
+    file: 'data-root.mjs',
+    desc: '相对路径的 CGW_DATA_DIR 被照单全收 —— 数据目录随启动姿势漂移，升级后找不到旧数据',
+    from: "if (!path.isAbsolute(raw)) return modDir\n  return path.resolve(raw)",
+    to: "return path.resolve(raw)"
+  },
+  // 「空白的 CGW_DATA_DIR 不回退」（if (!raw) → if (false)）是等价变异，刻意不做：
+  // 空串在下一行 `!path.isAbsolute('')` 同样被拦回 modDir，快路径只是可读性冗余，
+  // 注入它只会得到「存活」的假信号 —— 与 MH11（等值快路径）、前导零规则同例。
+  {
+    id: 'MH19',
+    file: 'data-root.mjs',
+    desc: 'isInstalledLayout 不再校验绝对路径 —— 相对路径也算安装布局，脚本分支走错',
+    from: 'return Boolean(raw) && path.isAbsolute(raw)',
+    to: 'return Boolean(raw)'
+  },
+  {
+    id: 'MH20',
+    file: 'data-root.mjs',
+    desc: 'authFilePath 不再归一化 —— 绿色版升级安装版后旧 config 指着空目录，登录态凭空消失',
+    from: 'if (isInsideRoot(s, programDir)) return fallback\n  return s',
+    to: 'return s'
   }
 ]
 

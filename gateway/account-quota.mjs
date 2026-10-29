@@ -24,9 +24,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { jwtClaims, loadAccounts, accountAuthPath } from './auth-core.mjs'
 import { writeJsonAtomic } from './atomic-write.mjs'
+import { resolveDataRoot } from './data-root.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DATA_DIR = path.join(__dirname, 'data')
+const DATA_DIR = path.join(resolveDataRoot(process.env, __dirname), 'data')
 // CGW_QUOTA_FILE 让测试与沙盒指到临时文件，避免写坏真实数据目录
 const QUOTA_FILE = process.env.CGW_QUOTA_FILE || path.join(DATA_DIR, 'account-quota.json')
 

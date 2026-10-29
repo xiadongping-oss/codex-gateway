@@ -2,13 +2,14 @@
 //
 // 数据源：launcher.mjs / engine.js 的 /v1/* 反代层逐笔调用 recordCallLog；
 // 读取：GET /__gw/call-logs → getCallLogs(100)。
-// 存储：gateway/data/call-logs.json（内存 200 条，磁盘留 500 条，4s 节流刷盘）。
+// 存储：<数据根>/data/call-logs.json（内存 200 条，磁盘留 500 条，4s 节流刷盘）。
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveDataRoot } from './data-root.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const STORE_PATH = path.join(__dirname, 'data', 'call-logs.json')
+const STORE_PATH = path.join(resolveDataRoot(process.env, __dirname), 'data', 'call-logs.json')
 const MAX_MEM = 200
 const MAX_DISK = 500
 const FLUSH_MS = 4000

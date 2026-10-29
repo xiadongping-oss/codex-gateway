@@ -135,6 +135,8 @@ function fakeRepo({ lockSha, extra = {}, eol = 'lf' } = {}) {
   w('gateway/service/start-gateway.vbs', '@echo off\r\n')      // CRLF：合规
   w('gateway/service/stop-gateway.vbs', '@echo off\r\n')
   w('gateway/service/run-gateway.cmd', '@echo off\r\n')
+  w('gateway/service/install-app.vbs', "\x27 installer\r\n")   // REQUIRED 清单里的一键安装/卸载
+  w('gateway/service/uninstall-app.vbs', "\x27 uninstaller\r\n")
   w('gateway/service-unix/_common.sh', '#!/bin/sh\necho ok\n')   // LF：合规
   w('gateway/service-unix/start-gateway.sh', '#!/bin/sh\necho ok\n')
   w('gateway/service-unix/run-gateway.sh', '#!/bin/sh\necho ok\n')

@@ -1,0 +1,197 @@
+' Codex Gateway —— 一键安装
+'
+' 双击本文件即可（也可以在终端里 cscript install-app.vbs）：
+'   1. 程序装到  %LOCALAPPDATA%\Programs\CodexGateway
+'   2. 数据住到  %LOCALAPPDATA%\CodexGateway —— 账号 / API Key / 日志与程序分离，
+'      卸载、升级、重装都不会再动用户数据
+'   3. 创建开始菜单快捷方式，并在 Windows「设置 - 应用」里出现正常卸载入口
+'
+' 已装过时再次运行 = 升级：先停网关，覆盖程序文件，数据原样保留。
+' 之前以绿色版（解压直跑）用过的，脚本会把旧数据原样搬进数据目录。
+'
+' 为什么数据目录里还留着一层 gateway\：与绿色版布局完全一致，
+' 迁移就是「原样拷贝」，不需要任何格式转换，两套布局可以随时互换。
+Option Explicit
+
+Dim sh, fso, srcDir, dstDir, dataDir, q
+Set sh  = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+q = """"
+srcDir  = fso.GetParentFolderName(WScript.ScriptFullName)
+dstDir  = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs\CodexGateway"
+dataDir = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\CodexGateway"
+
+If Not fso.FolderExists(srcDir & "\gateway") Then
+  MsgBox "请在解压后的安装包文件夹里运行 install-app.vbs。" & vbCrLf & _
+         "当前文件夹里没有 gateway 子目录：" & vbCrLf & srcDir, 48, "Codex Gateway 安装"
+  WScript.Quit 1
+End If
+
+' ---------- 0) 先停掉可能在跑的实例（升级 / 绿色版并存都要停，避免文件占用与端口冲突） ----------
+Dim stopCmd
+If fso.FileExists(dstDir & "\gateway\service\stop-gateway.vbs") Then
+  stopCmd = "wscript.exe " & q & dstDir & "\gateway\service\stop-gateway.vbs" & q
+  sh.Run stopCmd, 0, True
+End If
+If srcDir <> dstDir Then
+  If fso.FileExists(srcDir & "\gateway\service\stop-gateway.vbs") Then
+    stopCmd = "wscript.exe " & q & srcDir & "\gateway\service\stop-gateway.vbs" & q
+    sh.Run stopCmd, 0, True
+  End If
+End If
+WScript.Sleep 800
+
+' ---------- 1) 数据迁移（绿色版 -> 安装版；升级时旧数据已在数据目录则跳过） ----------
+' 迁移明细与 resolveDataRoot / auth-core 的布局一一对应，漏一项就是「登录态凭空消失」。
+CopyDataFile "accounts.json"
+CopyDataFolder "accounts"
+CopyDataFile "auth.json"
+CopyDataFile ".gw-config.json"
+CopyDataFile ".codex-client-identity"
+CopyDataFile "api-keys.json"
+CopyDataFile "admin-token.json"
+CopyDataFolder "data"
+CopyDataFolder "references"
+
+' ---------- 2) 覆盖程序文件 ----------
+On Error Resume Next
+Err.Clear
+If Not fso.FolderExists(sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs") Then
+  fso.CreateFolder sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\Programs"
+End If
+If Err.Number <> 0 Then Err.Clear
+If Not fso.FolderExists(dstDir) Then
+  fso.CreateFolder dstDir
+  If Err.Number <> 0 Then
+    MsgBox "无法创建安装目录：" & dstDir & vbCrLf & "请检查杀毒软件或磁盘权限后重试。", 48, "Codex Gateway 安装"
+    WScript.Quit 1
+  End If
+End If
+On Error GoTo 0
+
+ReplaceTree "gateway"
+ReplaceTree "frontend"
+ReplaceTree "lan-kit"
+ReplaceTree "README.md"
+ReplaceTree "QUICK-START.md"
+ReplaceTree "package.json"
+ReplaceTree "BUILD-INFO.json"
+
+' ---------- 3) 写 installed.env：run-gateway.cmd 读它注入 CGW_DATA_DIR ----------
+' 用系统 ANSI 编码（CreateTextFile 默认），cmd 的 for /f 读的也是 ANSI，
+' 含中文的用户名路径不会乱码；下次安装会整个重写，手工改动不保留。
+On Error Resume Next
+Dim envPath, ts
+envPath = dstDir & "\gateway\service\installed.env"
+Set ts = fso.CreateTextFile(envPath, True)
+If Err.Number <> 0 Then
+  MsgBox "无法写入 installed.env（" & envPath & "）：" & vbCrLf & Err.Description, 48, "Codex Gateway 安装"
+  WScript.Quit 1
+End If
+ts.WriteLine "; Codex Gateway installation data dir (written by install-app.vbs)"
+ts.WriteLine "CGW_DATA_DIR=" & dataDir
+ts.Close
+On Error GoTo 0
+
+' ---------- 4) 开始菜单快捷方式 ----------
+Dim smDir, lnk
+smDir = sh.ExpandEnvironmentStrings("%APPDATA%") & "\Microsoft\Windows\Start Menu\Programs"
+Set lnk = sh.CreateShortcut(smDir & "\Codex Gateway.lnk")
+lnk.TargetPath = dstDir & "\gateway\service\start-gateway.vbs"
+lnk.WorkingDirectory = dstDir & "\gateway\service"
+lnk.Description = "Codex Gateway - 启动网关并打开控制台"
+lnk.Save
+Set lnk = sh.CreateShortcut(smDir & "\Codex Gateway 卸载.lnk")
+lnk.TargetPath = dstDir & "\gateway\service\uninstall-app.vbs"
+lnk.WorkingDirectory = dstDir & "\gateway\service"
+lnk.Description = "卸载 Codex Gateway"
+lnk.Save
+
+' ---------- 5) 注册卸载信息：设置 - 应用 里能正常卸载 ----------
+Dim rk, ver, txt
+rk = "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexGateway\"
+ver = "unknown"
+If fso.FileExists(dstDir & "\BUILD-INFO.json") Then
+  Set ts = fso.OpenTextFile(dstDir & "\BUILD-INFO.json", 1)
+  txt = ts.ReadAll
+  ts.Close
+  Dim re, matches
+  Set re = New RegExp
+  re.Pattern = """version""\s*:\s*""([^""]+)"""
+  If re.Test(txt) Then
+    Set matches = re.Execute(txt)
+    ver = matches(0).SubMatches(0)
+  End If
+End If
+sh.RegWrite rk & "DisplayName", "Codex Gateway", "REG_SZ"
+sh.RegWrite rk & "DisplayVersion", ver, "REG_SZ"
+sh.RegWrite rk & "Publisher", "codex-gateway (MIT)", "REG_SZ"
+sh.RegWrite rk & "InstallLocation", dstDir, "REG_SZ"
+sh.RegWrite rk & "DisplayIcon", dstDir & "\gateway\service\node\node.exe,0", "REG_SZ"
+sh.RegWrite rk & "UninstallString", "wscript.exe " & q & dstDir & "\gateway\service\uninstall-app.vbs" & q, "REG_SZ"
+sh.RegWrite rk & "NoModify", 1, "REG_DWORD"
+sh.RegWrite rk & "NoRepair", 1, "REG_DWORD"
+
+' ---------- 6) 收尾：是否立即启动 / 开机自启 ----------
+Dim go
+go = MsgBox("Codex Gateway 安装完成。" & vbCrLf & vbCrLf & _
+            "程序：" & dstDir & vbCrLf & _
+            "数据：" & dataDir & vbCrLf & vbCrLf & _
+            "现在启动并打开控制台吗？", vbYesNo + vbQuestion, "Codex Gateway")
+If go = vbYes Then
+  sh.Run "wscript.exe " & q & dstDir & "\gateway\service\start-gateway.vbs" & q, 0, False
+End If
+go = MsgBox("同时注册开机自启吗？（登录 Windows 后自动在后台启动网关）", vbYesNo + vbQuestion, "Codex Gateway")
+If go = vbYes Then
+  sh.Run "wscript.exe " & q & dstDir & "\gateway\service\install-autostart.vbs" & q, 0, True
+End If
+
+' ---------- helpers ----------
+Sub CopyDataFile(name)
+  Dim s, d
+  s = srcDir & "\gateway\" & name
+  d = dataDir & "\" & name
+  If fso.FileExists(s) And Not fso.FileExists(d) Then
+    EnsureDataDir
+    fso.CopyFile s, d, True
+  End If
+End Sub
+
+Sub CopyDataFolder(name)
+  Dim s, d
+  s = srcDir & "\gateway\" & name
+  d = dataDir & "\" & name
+  If fso.FolderExists(s) And Not fso.FolderExists(d) Then
+    EnsureDataDir
+    fso.CopyFolder s, d, True
+  End If
+End Sub
+
+Sub EnsureDataDir
+  If Not fso.FolderExists(dataDir) Then fso.CreateFolder dataDir
+End Sub
+
+' 覆盖式复制：目标里的同名目录/文件先删再拷，保证升级是干净的整树替换。
+' 路径都是本安装器自己拼的固定位置，DeleteFolder 不会碰到程序目录之外。
+' 删除失败最常见原因是网关还在跑（文件被占用）——如实报错退出，绝不半装。
+Sub ReplaceTree(name)
+  Dim s, d
+  s = srcDir & "\" & name
+  d = dstDir & "\" & name
+  If Not fso.FolderExists(s) And Not fso.FileExists(s) Then Exit Sub
+  On Error Resume Next
+  Err.Clear
+  If fso.FolderExists(d) Then fso.DeleteFolder d, True
+  If fso.FileExists(d) Then fso.DeleteFile d, True
+  If Err.Number <> 0 Then
+    MsgBox "无法替换旧文件：" & d & vbCrLf & vbCrLf & _
+           "网关可能还在运行，请等几秒后重新运行本安装器。", 48, "Codex Gateway 安装"
+    WScript.Quit 1
+  End If
+  On Error GoTo 0
+  If fso.FolderExists(s) Then
+    fso.CopyFolder s, d, True
+  Else
+    fso.CopyFile s, d, True
+  End If
+End Sub
