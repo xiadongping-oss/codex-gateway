@@ -19,7 +19,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cgw-d01-window-'))
 const data = path.join(root, '数据 & # % !')
 const interactive = process.argv.includes('--interactive'), conflict = process.argv.includes('--port-conflict')
 const scenario = process.argv.find(a => a.startsWith('--case='))?.slice(7) || 'normal'
-assert.ok(['normal', 'session-loss', 'channel-loss', 'desktop', 'tray-menu', 'node-crash', 'crash-loop', 'shell-crash'].includes(scenario), 'unknown smoke case')
+assert.ok(['normal', 'session-loss', 'unresponsive', 'channel-loss', 'desktop', 'tray-menu', 'node-crash', 'crash-loop', 'shell-crash'].includes(scenario), 'unknown smoke case')
 assert.ok(scenario !== 'tray-menu' || interactive, 'tray-menu requires --interactive')
 let foreignConnections = 0
 const server = net.createServer(socket => { foreignConnections++; socket.destroy() })
@@ -82,6 +82,7 @@ try {
     for (const key of ['authenticated','mounted','cleanUrl','nativeDenied','coreDenied','cookieHidden','historyClean','navigationSafe']) assert.equal(report[key], true, `native console check: ${key}`)
     assert.ok(report.externalDispatches >= 2)
     if (scenario === 'session-loss') assert.match(stderr, /D02_SESSION_RETURN true/)
+    if (scenario === 'unresponsive') assert.match(stderr, /D05_RESPONSE_RETURN true/)
     if (scenario === 'channel-loss') assert.match(stderr, /D02_CHANNEL_RETURN true/)
     if (scenario === 'node-crash') assert.equal((stderr.match(/D04_RECOVERY_SCHEDULED/g) || []).length, 1)
     if (scenario === 'crash-loop') { assert.match(stderr, /D04_RECOVERY_LIMIT true/); assert.equal((stderr.match(/D04_RECOVERY_SCHEDULED/g) || []).length, 3) }

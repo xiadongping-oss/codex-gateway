@@ -86,6 +86,7 @@ fn main() {
                     s.starts_with("--data-dir=")
                         || s.starts_with("--resources=")
                         || s.starts_with("--port=")
+                        || s.starts_with("--bridge-port=")
                         || s.as_str() == "--isolated"
                 })
                 .cloned(),

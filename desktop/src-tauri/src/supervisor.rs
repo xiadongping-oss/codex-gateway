@@ -27,6 +27,7 @@ pub struct Settings {
     pub data: PathBuf,
     pub webview_data: PathBuf,
     pub port: u16,
+    pub bridge_port: Option<u16>,
     pub smoke: bool,
     pub isolated: bool,
     pub smoke_case: String,
@@ -41,6 +42,7 @@ impl Settings {
         .join("CodexGateway");
         let mut resources = app.path().resource_dir()?.join("gateway-resources");
         let mut port = 4173;
+        let mut bridge_port = None;
         let mut smoke = false;
         let mut isolated = false;
         let mut smoke_case = String::from("normal");
@@ -52,6 +54,8 @@ impl Settings {
                     resources = PathBuf::from(v);
                 } else if let Some(v) = arg.strip_prefix("--port=") {
                     port = v.parse::<u16>()?;
+                } else if let Some(v) = arg.strip_prefix("--bridge-port=") {
+                    bridge_port = Some(v.parse::<u16>()?);
                 } else if let Some(v) = arg.strip_prefix("--smoke-case=") {
                     smoke_case = v.into();
                 } else if arg == "--smoke" {
@@ -75,9 +79,11 @@ impl Settings {
         if (smoke || isolated) && !std::env::args().any(|a| a.starts_with("--data-dir=")) {
             return Err("Isolated checks require an explicit test data directory".into());
         }
+        validate_bridge_port(bridge_port, smoke || isolated)?;
         if ![
             "normal",
             "session-loss",
+            "unresponsive",
             "channel-loss",
             "desktop",
             "tray-menu",
@@ -95,11 +101,20 @@ impl Settings {
             data,
             webview_data,
             port,
+            bridge_port,
             smoke,
             isolated,
             smoke_case,
         })
     }
+}
+fn validate_bridge_port(port: Option<u16>, isolated: bool) -> Result<(), &'static str> {
+    // The pool reserves up to six adjacent ports; only explicit debug isolation
+    // may override its base. Never accept inherited BRIDGE_* environment values.
+    if port.is_some_and(|p| !isolated || p == 0 || p > u16::MAX - 5) {
+        return Err("Bridge port override requires isolation and a valid six-port range");
+    }
+    Ok(())
 }
 #[derive(Clone, Serialize)]
 pub struct ViewState {
@@ -266,6 +281,9 @@ fn launch(settings: &Settings, cancel: &AtomicBool) -> Result<Session, String> {
             command.env(key, &home);
         }
         command.env("DISABLE_AUTOSTART", "1");
+        if let Some(port) = settings.bridge_port {
+            command.env("BRIDGE_PORT", port.to_string());
+        }
     }
     #[cfg(windows)]
     {
@@ -533,6 +551,25 @@ fn run(
             smoke_stage = 2;
             action = Some("reopen".into());
         }
+        if settings.smoke
+            && settings.smoke_case == "unresponsive"
+            && smoke_stage == 1
+            && !unresponsive
+            && console.is_none()
+        {
+            let observed = verify_startup_page(&app, "网关已恢复响应");
+            eprintln!("D05_RESPONSE_RETURN {observed}");
+            if !observed {
+                if let Some(mut s) = session.take() {
+                    s.cleanup();
+                }
+                quitting.store(true, Ordering::Relaxed);
+                app.exit(1);
+                return;
+            }
+            smoke_stage = 2;
+            action = Some("reopen".into());
+        }
         if action.as_deref() == Some("retry")
             && session.is_none()
             && !exit_requested
@@ -610,6 +647,12 @@ fn run(
                         .expect("isolated cookie test");
                     smoke_stage = 1;
                 }
+                "unresponsive" => {
+                    // Exercise the real watchdog and fresh WebView path without
+                    // hanging a user's process or depending on scheduler timing.
+                    last_reply = Instant::now() - Duration::from_secs(6);
+                    smoke_stage = 1;
+                }
                 "channel-loss" => {
                     eprintln!("D02_CHECK {}", console.as_ref().unwrap().smoke_report());
                     session.as_mut().unwrap().input.take();
@@ -656,6 +699,7 @@ fn run(
             && (settings.smoke_case == "normal"
                 || (settings.smoke_case == "node-crash" && crash_count == 1 && smoke_stage == 2)
                 || desktop_passed
+                || (settings.smoke_case == "unresponsive" && smoke_stage == 2)
                 || (settings.smoke_case == "session-loss" && smoke_stage == 2));
         if (action.as_deref() == Some("quit") || auto_quit) && !exit_requested {
             retry_at = None;
@@ -719,8 +763,10 @@ fn run(
         if !exit_requested && !unresponsive && last_reply.elapsed() > Duration::from_secs(5) {
             unresponsive = true;
             let _ = log.record(Event::Unresponsive);
-            if let Some(c) = console.as_ref() {
-                c.suspend(&app);
+            // A suspended console has a permanently revoked navigation policy.
+            // Drop it so reopening obtains a fresh bootstrap and WebView.
+            if let Some(c) = console.take() {
+                c.close(&app);
             }
             *view.lock().unwrap() = ViewState::new(
                 "unresponsive",
@@ -927,6 +973,15 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bridge_port_override_requires_isolation_and_pool_capacity() {
+        assert!(validate_bridge_port(None, false).is_ok());
+        assert!(validate_bridge_port(Some(50000), true).is_ok());
+        assert!(validate_bridge_port(Some(50000), false).is_err());
+        assert!(validate_bridge_port(Some(0), true).is_err());
+        assert!(validate_bridge_port(Some(65531), true).is_err());
+        assert!(validate_bridge_port(Some(65530), true).is_ok());
+    }
     #[cfg(target_os = "macos")]
     fn cold_settings(data: std::path::PathBuf) -> Settings {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -936,6 +991,7 @@ mod tests {
             webview_data: data.parent().unwrap().join("webview"),
             data,
             port,
+            bridge_port: None,
             smoke: true,
             isolated: true,
             smoke_case: "normal".into(),
@@ -1051,6 +1107,7 @@ mod tests {
             data: root.join("data"),
             webview_data: root.join("webview"),
             port,
+            bridge_port: None,
             smoke: true,
             isolated: true,
             smoke_case: "normal".into(),
@@ -1112,6 +1169,7 @@ mod tests {
             data: root.join("数据 & #"),
             webview_data: root.join("webview"),
             port,
+            bridge_port: None,
             smoke: true,
             isolated: true,
             smoke_case: "normal".into(),
@@ -1182,6 +1240,7 @@ mod tests {
             data: std::env::temp_dir(),
             webview_data: PathBuf::new(),
             port: 4173,
+            bridge_port: None,
             smoke: true,
             isolated: true,
             smoke_case: "normal".into(),
