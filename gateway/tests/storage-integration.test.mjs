@@ -58,7 +58,9 @@ test('managed 真实网关：模块写入在初始化后，图库/素材/下载/
   env.BRIDGE_PORT = String(foreign.address().port)
   const protectedFiles = ['launcher.mjs', 'node_modules/chatgpt-bridge/dist/cli.js', 'node_modules/chatgpt-bridge/dist/index.js']
   const beforeProgram = protectedFiles.map((f) => digest(path.join(GW, f)))
-  const childCode = `await import(${JSON.stringify(pathToFileURL(path.join(GW, 'launcher.mjs')).href)}); console.log('FIXTURE_IMPORTED'); process.stdin.resume();process.stdin.once('data',()=>process.emit('SIGTERM'))`
+  // Module evaluation can finish before listen's callback. Synchronize with the
+  // actual listener instead of racing the first HTTP request against startup.
+  const childCode = `const { gatewayReady } = await import(${JSON.stringify(pathToFileURL(path.join(GW, 'launcher.mjs')).href)}); await gatewayReady; console.log('FIXTURE_READY'); process.stdin.resume();process.stdin.once('data',()=>process.emit('SIGTERM'))`
   const port = await freePort()
   const child = spawn(process.execPath, ['--input-type=module', '-e', childCode, '--', 'storage-fixture', '--port', String(port)], { cwd: temp, env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
   const exited = once(child, 'exit')
@@ -68,8 +70,8 @@ test('managed 真实网关：模块写入在初始化后，图库/素材/下载/
   // hook LIFO 不依赖 t.after 顺序：本函数 finally 先停自建子进程，再让 fixture 删除目录。
   try {
     const until = Date.now() + 15000
-    while (!output.includes('FIXTURE_IMPORTED') && child.exitCode === null && Date.now() < until) await new Promise((r) => setTimeout(r, 40))
-    assert.ok(output.includes('FIXTURE_IMPORTED'), output)
+    while (!output.includes('FIXTURE_READY') && child.exitCode === null && child.signalCode === null && Date.now() < until) await new Promise((r) => setTimeout(r, 40))
+    assert.ok(output.includes('FIXTURE_READY'), output)
     assert.ok(fs.existsSync(paths.layout))
     assert.ok(fs.existsSync(path.join(paths.root, '.codex-client-identity')), '顶层身份文件须能在已准备的 D 落盘')
     const token = JSON.parse(fs.readFileSync(path.join(paths.root, 'admin-token.json'))).token
