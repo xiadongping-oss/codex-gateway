@@ -139,9 +139,9 @@ export function initializeStorage(paths, { protect = protectStorageTree } = {}) 
         if (['EAGAIN', 'EWOULDBLOCK'].includes(error.code)) throw storageError('DATA_IN_USE', '数据目录正在使用或恢复中')
         throw error
       }
-      const held = fs.fstatSync(guardFd), current = fs.lstatSync(guard)
-      if (!held.isFile() || held.nlink !== 1 || held.size !== 0 || held.uid !== process.getuid() ||
-          (held.mode & 0o022) || current.isSymbolicLink() || held.dev !== current.dev || held.ino !== current.ino) {
+      const held = fs.fstatSync(guardFd, { bigint: true }), current = fs.lstatSync(guard, { bigint: true })
+      if (!held.isFile() || held.nlink !== 1n || held.size !== 0n || held.uid !== BigInt(process.getuid()) ||
+          (held.mode & 0o022n) || current.isSymbolicLink() || held.dev !== current.dev || held.ino !== current.ino) {
         throw storageError('DATA_DIR_INVALID', '数据目录互斥文件无效')
       }
     }

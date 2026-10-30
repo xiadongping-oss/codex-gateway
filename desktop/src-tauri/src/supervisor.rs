@@ -947,7 +947,13 @@ mod tests {
     fn cold_owner_fixture() {
         use std::io::Write;
         let settings = cold_settings(std::env::var("CGW_COLD_DATA").unwrap().into());
-        let _session = launch(&settings, &AtomicBool::new(false)).unwrap();
+        let mut session = launch(&settings, &AtomicBool::new(false)).unwrap();
+        if std::env::var("CGW_COLD_STALE").as_deref() == Ok("1") {
+            // Make stale ownership deterministic before killing the owner shell.
+            // A shell-only crash may instead let Node release normally on pipe EOF.
+            session.child.kill().unwrap();
+            session.child.wait().unwrap();
+        }
         println!("MAC_COLD_READY");
         std::io::stdout().flush().unwrap();
         loop {
@@ -957,6 +963,12 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn mac_shell_crash_recovers_only_owned_lock_and_restarts_gateway() {
+        for stale in [false, true] {
+            cold_crash_case(stale);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    fn cold_crash_case(stale: bool) {
         use std::io::{BufRead, BufReader};
         let root = std::env::temp_dir().join(format!("cgw-cold-shell-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&root).unwrap();
@@ -969,6 +981,7 @@ mod tests {
                 "--nocapture",
             ])
             .env("CGW_COLD_DATA", &data)
+            .env("CGW_COLD_STALE", if stale { "1" } else { "0" })
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -997,10 +1010,15 @@ mod tests {
                 recovered = true;
                 break;
             }
+            if !data.join("runtime/owner.lock").exists()
+                && !data.join("runtime/desktop-recovery.json").exists()
+            {
+                break;
+            }
             thread::sleep(Duration::from_millis(50));
         }
         assert!(
-            recovered,
+            !stale || recovered,
             "dead shell and empty group must allow exact owned lock recovery"
         );
         assert!(!data.join("runtime/owner.lock").exists());
