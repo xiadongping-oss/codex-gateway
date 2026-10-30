@@ -3,7 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { inspectHost, cargoEnvironment, ValidationRun } from './validation.mjs'
+import { inspectHost, cargoEnvironment, ValidationRun, NATIVE_SCENARIOS } from './validation.mjs'
 import { verifyDesktop } from '../prepare-desktop.mjs'
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -12,6 +12,7 @@ for (const arg of args) if (!['--offline', '--preflight-only', '--native'].inclu
 const option = name => args.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3)
 const reportDir = option('report-dir') || path.join(root, 'output/desktop-validation', `${Date.now()}-${crypto.randomUUID()}`)
 const run = new ValidationRun(reportDir)
+run.report.scope = args.includes('--native') ? 'build_core_and_native_checks' : 'build_and_core_tests'
 const offline = args.includes('--offline') ? ['--offline'] : []
 try {
   try {
@@ -41,14 +42,19 @@ try {
   await run.step('rust-build', 'cargo', ['build', ...common], { cwd: root, env })
   await run.step('bundled-gateway', process.execPath, ['gateway/tests/prepared-resources-smoke.mjs', `--resources=${env.CGW_BUILD_RESOURCES}`], { cwd: root, env })
   if (args.includes('--native')) {
-    run.report.acceptance.nativeScenarios = {}
-    for (const scenario of ['normal', 'session-loss', 'channel-loss', 'desktop', 'node-crash', 'crash-loop', 'shell-crash']) {
+    run.report.acceptance.nativeUi = 'running'
+    run.report.acceptance.nativeScenarios = Object.fromEntries(Object.keys(NATIVE_SCENARIOS).map(scenario => [scenario, 'not_run']))
+    for (const [scenario, deadline] of Object.entries(NATIVE_SCENARIOS)) {
       run.report.acceptance.nativeScenarios[scenario] = 'running'; run.save()
-      await run.step(`window-${scenario}`, process.execPath, ['desktop/smoke.mjs', `--case=${scenario}`], { cwd: root, timeout: 90_000 })
+      try {
+        await run.step(`window-${scenario}`, process.execPath, ['desktop/smoke.mjs', scenario === 'port-conflict' ? '--port-conflict' : `--case=${scenario}`], { cwd: root, timeout: deadline + 30_000 })
+      } catch (error) {
+        run.report.acceptance.nativeScenarios[scenario] = 'failed'
+        run.report.acceptance.nativeUi = 'failed'
+        throw error
+      }
       run.report.acceptance.nativeScenarios[scenario] = 'passed'; run.save()
     }
-    await run.step('window-port-conflict', process.execPath, ['desktop/smoke.mjs', '--port-conflict'], { cwd: root, timeout: 90_000 })
-    run.report.acceptance.nativeScenarios['port-conflict'] = 'passed'
     run.report.acceptance.nativeUi = 'automated_scenarios_passed'
   }
   run.finish()

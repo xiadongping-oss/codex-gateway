@@ -8,6 +8,7 @@ import { once } from 'node:events'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
 import { verifyDesktop } from '../prepare-desktop.mjs'
+import { NATIVE_SCENARIOS } from './validation.mjs'
 
 const desktop = path.dirname(fileURLToPath(import.meta.url))
 const target = `${process.platform}-${process.arch}`
@@ -39,7 +40,9 @@ if (scenario === 'shell-crash') child.stderr.on('data', () => {
 })
 console.log(JSON.stringify({ phase: 'window-started', pid: child.pid, port, testRoot: root }))
 let expired = false, passed = false
-const timer = setTimeout(() => { expired = true; child.kill('SIGKILL') }, interactive ? 180_000 : 60_000)
+const deadline = interactive ? 180_000 : NATIVE_SCENARIOS[conflict ? 'port-conflict' : scenario]
+const started = Date.now()
+const timer = setTimeout(() => { expired = true; child.kill('SIGKILL') }, deadline)
 try {
   let [code] = await once(child, 'exit')
   if (scenario === 'shell-crash') {
@@ -63,7 +66,9 @@ try {
     console.log('D04_SHELL_RECOVERY true')
   }
   clearTimeout(timer)
-  assert.equal(expired, false, 'window failed to finish within its test deadline')
+  const recoveryEvidence = { scheduled: (stderr.match(/D04_RECOVERY_SCHEDULED/g) || []).length, limitVerified: stderr.includes('D04_RECOVERY_LIMIT true') }
+  console.log(JSON.stringify({ scenario, elapsedMs: Date.now() - started, deadlineMs: deadline, expired, recovery: recoveryEvidence }))
+  assert.equal(expired, false, 'window failed to finish within its test deadline; see recovery counters above')
   assert.equal(code, conflict && !interactive ? 1 : 0, stderr || 'unexpected desktop exit')
   assert.equal(foreignConnections, 0, 'a foreign service must never receive a login request')
   if (conflict && !interactive) {

@@ -3,6 +3,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 
+// Harness deadlines, not production recovery limits. Multi-launch checks include
+// repeated resource hashing, WebView startup and the fixed recovery backoff.
+export const NATIVE_SCENARIOS = Object.freeze({
+  normal: 60_000, 'session-loss': 60_000, 'channel-loss': 60_000, desktop: 60_000,
+  'node-crash': 120_000, 'crash-loop': 180_000, 'shell-crash': 120_000, 'port-conflict': 60_000
+})
+
 export const HOSTS = Object.freeze({
   'win32-x64': 'x86_64-pc-windows-msvc',
   'darwin-arm64': 'aarch64-apple-darwin',
