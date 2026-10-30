@@ -30,7 +30,7 @@ const C = { g: '\x1b[32m', r: '\x1b[31m', y: '\x1b[33m', d: '\x1b[2m', b: '\x1b[
 // auth-core.mjs import './data-root.mjs'（resolveDataRoot / normalizeAuthFilePath）——
 // 它测的是 inspectCodexCliAuth / codexCliAuthPath，但模块加载时有副作用，整组复制。
 // official-login / api-providers：官方登录与供应商的变异同样整组带。
-const FILES = ['atomic-write.mjs', 'assets.mjs', 'ref-roots.mjs', 'secret-perms.mjs', 'data-root.mjs', 'auth-core.mjs', 'codex-official-login.mjs', 'api-providers.mjs']
+const FILES = ['atomic-write.mjs', 'assets.mjs', 'ref-roots.mjs', 'secret-perms.mjs', 'data-root.mjs', 'storage-paths.mjs', 'storage-init.mjs', 'auth-core.mjs', 'work-tracker.mjs', 'codex-official-login.mjs', 'api-providers.mjs', 'proxy.mjs']
 // 测试网：hardening 之外，token 解析 / 官方登录 / 供应商的用例也参与杀死判定
 const TEST_FILES = ['hardening.test.mjs', 'token-text.test.mjs', 'official-login.test.mjs', 'api-providers.test.mjs']
 
@@ -288,7 +288,7 @@ for (const m of MUTANTS) {
   const dir = makeCopy()
   try {
     const target = path.join(dir, m.file)
-    const src = fs.readFileSync(target, 'utf8')
+    const src = fs.readFileSync(target, 'utf8').replace(/\r\n/g, '\n')
     const hit = src.indexOf(m.from)
     if (hit < 0) {
       rows.push({ ...m, result: 'anchor-missing' })

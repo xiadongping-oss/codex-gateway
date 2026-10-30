@@ -100,7 +100,7 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
           <div v-if="!gwLogs.length" class="empty-sub" style="padding: 30px; text-align: center">暂无日志</div>
         </div>
         <div class="card-sub" style="margin-top: 10px">
-          这里是进程级运行日志（启动 / 健康检查 / 上游错误 / 补丁自愈）；业务调用的模型、状态与 Token 请看「业务调用」标签。
+          这里是进程级运行日志（启动 / 健康检查 / 上游错误 / 补丁校验）；业务调用的模型、状态与 Token 请看「业务调用」标签。
         </div>
       </div>
     </template>

@@ -21,12 +21,8 @@ let dirty = false
 let flushTimer = null
 
 function flush() {
-  dirty = false
-  try {
-    // 原子写：写一半被杀（装机被 taskkill / 断电）不会留下截断的 JSON。
-    // 上一次用的是裸 writeFileSync，损坏后 load() 的空 catch 会把整份历史静默丢掉。
-    writeJsonAtomic(STORE_PATH, { seq, logs: logs.slice(0, MAX_DISK) })
-  } catch {}
+  writeJsonAtomic(STORE_PATH, { seq, logs: logs.slice(0, MAX_DISK) })
+  dirty = false // Failed writes must remain retryable.
 }
 
 function load() {
@@ -47,7 +43,7 @@ export function recordCallLog(entry) {
   dirty = true
   if (!flushTimer) {
     flushTimer = setInterval(() => {
-      if (dirty) flush()
+      try { if (dirty) flush() } catch { /* keep dirty for shutdown/retry */ }
     }, FLUSH_MS)
     if (flushTimer.unref) flushTimer.unref()
   }
@@ -58,5 +54,7 @@ export function getCallLogs(limit = 100) {
 }
 
 export function flushCallLogs() {
+  clearInterval(flushTimer)
+  flushTimer = null
   if (dirty) flush()
 }

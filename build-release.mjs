@@ -24,6 +24,8 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { prepareBridge } from './prepare-bridge.mjs'
+import { readRuntimeLock, selectRuntime, executableTarget } from './runtime-lock.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)))
 const VER = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8')).version
@@ -195,6 +197,11 @@ function gitDirty() {
 fs.rmSync(STAGING, { recursive: true, force: true })
 
 copyTree(path.join(ROOT, 'gateway'), path.join(STAGING, 'gateway'))
+// 只在 staging 应用受校验的快照，不修改工作区依赖；写完后按最终字节复核。
+const bridgePrepared = prepareBridge(path.join(STAGING, 'gateway'))
+files += bridgePrepared.addedFiles
+bytes += bridgePrepared.bytesDelta
+console.log(`· bridge ${bridgePrepared.manifest.version} 补丁已固化并校验`)
 copyTree(path.join(ROOT, 'frontend', 'dist'), path.join(STAGING, 'frontend', 'dist'))
 copyTree(path.join(ROOT, 'docs', 'lan-kit'), path.join(STAGING, 'lan-kit'))
 copyFile(path.join(ROOT, 'package.json'), path.join(STAGING, 'package.json'))
@@ -214,6 +221,9 @@ if (!NO_RUNTIME) {
     console.error('✗ 找不到 node 可执行文件，无法内置运行时。可用 --node=<path> 指定，或加 --no-runtime 跳过（用户需自装 Node）。')
     process.exit(1)
   }
+  if (executableTarget(fs.readFileSync(picked.exe)) !== 'win32-x64') {
+    throw new Error('旧 ZIP 入口要求 Windows x64 Node；桌面跨平台资源请使用 prepare-desktop.mjs')
+  }
   const ver = nodeVersionOf(picked.exe)
   const major = Number(String(ver || '').replace(/^v/, '').split('.')[0])
   if (!Number.isFinite(major) || major < 22) {
@@ -223,33 +233,20 @@ if (!NO_RUNTIME) {
   }
   const digest = sha256File(picked.exe)
   const size = fs.statSync(picked.exe).size
-  nodeInfo = { version: ver, sha256: digest, bytes: size, source: picked.source }
+  nodeInfo = { version: ver, sha256: digest, bytes: size, platform: 'win32', arch: 'x64', source: picked.source }
 
   // ---- 锁文件校验：同版本号不得产出不同二进制 ----
-  const lock = fs.existsSync(LOCK_PATH) ? JSON.parse(fs.readFileSync(LOCK_PATH, 'utf-8')) : null
-  // 锁文件按平台区分：在 Linux/macOS 上打 win64 包时 node.exe 必然不同，
-  // 那不是「漂移」而是正常的跨平台差异，跳过哈希比对但要提示。
-  const lockApplies = lock && (!lock.platform || lock.platform === process.platform)
+  const lockDocument = fs.existsSync(LOCK_PATH) ? readRuntimeLock(LOCK_PATH) : null
+  const lock = lockDocument && (!WRITE_LOCK || lockDocument.schemaVersion !== 2 || lockDocument.targets?.['win32-x64'])
+    ? selectRuntime(lockDocument, 'win32-x64', { legacy: true }) : null
   if (WRITE_LOCK) {
-    fs.writeFileSync(
-      LOCK_PATH,
-      JSON.stringify(
-        {
-          version: ver,
-          sha256: digest,
-          bytes: size,
-          platform: process.platform,
-          arch: process.arch,
-          note: '内置 node.exe 的锁定指纹；换运行时请显式 --write-lock'
-        },
-        null,
-        2
-      ) + '\n',
-      'utf-8'
-    )
-    console.log(`✓ 已写入运行时锁：node-runtime.lock.json（${ver} / ${digest.slice(0, 12)}…）`)
-  } else if (lock && !lockApplies) {
-    console.log(`· 锁文件记录的是 ${lock.platform} 平台，当前为 ${process.platform}，跳过哈希比对`)
+    const next = lockDocument?.schemaVersion === 2 ? lockDocument : { schemaVersion: 2, targets: {} }
+    const sameArtifact = lock?.sha256 === digest && lock.version === ver && lock.bytes === size
+    next.targets['win32-x64'] = {
+      ...(sameArtifact ? lock : {}), version: ver, sha256: digest, bytes: size, platform: 'win32', arch: 'x64'
+    }
+    fs.writeFileSync(LOCK_PATH, JSON.stringify(next, null, 2) + '\n', 'utf-8')
+    console.log(`✓ 已写入 Windows x64 运行时锁（${ver}）；其他目标保留`)
   } else if (lock && lock.sha256 !== digest) {
     console.error('✗ 内置运行时与锁文件不一致，构建中止：\n')
     console.error(`  锁文件：${lock.version} / sha256=${lock.sha256} / ${lock.bytes} bytes`)
@@ -259,9 +256,11 @@ if (!NO_RUNTIME) {
     console.error('    · 确认要换运行时，用 --write-lock 更新锁文件（会让新旧包不可比）')
     process.exit(1)
   } else if (!lock) {
-    console.log('· 尚无运行时锁文件；本次构建的指纹会写进 BUILD-INFO.json。')
-    console.log('  要固化可复现构建，先确认这枚 node 是你要长期用的，再跑一次 --write-lock。')
+    throw new Error('运行时锁缺失；请明确使用 --write-lock 初始化，不能无锁构建')
+  } else if (lockDocument.schemaVersion === 2 && (lock.version !== ver || lock.bytes !== size)) {
+    throw new Error('运行时版本或大小与锁文件不一致')
   }
+
 
   copyFile(picked.exe, path.join(STAGING, 'gateway', 'service', 'node', 'node.exe'))
 }
@@ -290,6 +289,7 @@ const buildInfo = {
   builtAt: buildTimestamp(),
   git: { commit: gitCommit(), dirty: gitDirty() },
   node: nodeInfo,
+  bridge: bridgePrepared.manifest,
   // 统计口径：不含 BUILD-INFO.json 自身（它的大小随 totals 变，写进去会自相矛盾）
   totalsExcludingSelf: { files, bytes }
 }
@@ -320,7 +320,10 @@ const REQUIRED = [
   'gateway/service-unix/install-autostart.sh',
   'gateway/service-unix/uninstall-autostart.sh',
   'gateway/node_modules/chatgpt-bridge/dist/cli.js',
-  'gateway/patches',
+  'gateway/node_modules/chatgpt-bridge/dist/index.js',
+  'gateway/node_modules/chatgpt-bridge/package.json',
+  'gateway/bridge-patches.mjs',
+  'gateway/patches/manifest.json',
   'frontend/dist/index.html',
   'lan-kit/INSTALL.md',
   'lan-kit/setup-client.mjs',
@@ -548,26 +551,32 @@ function verifyBuild() {
   if (!info.node) {
     bad.push('BUILD-INFO 里没有运行时信息（--no-runtime 构建？）')
   } else {
-    // 1) 与锁文件比对（跨平台产物不具可比性，锁文件只约束它记录的那个平台）
-    if (fs.existsSync(LOCK_PATH)) {
-      const lock = JSON.parse(fs.readFileSync(LOCK_PATH, 'utf-8'))
-      if (lock.platform && lock.platform !== process.platform) {
-        console.log(`· 锁文件记录的是 ${lock.platform} 平台，当前 ${process.platform}，跳过锁比对`)
-      } else if (lock.sha256 !== info.node.sha256) {
+    // Always select the artifact target, never skip the lock based on this machine's OS.
+    try {
+      const doc = readRuntimeLock(LOCK_PATH)
+      const lock = selectRuntime(doc, 'win32-x64', { legacy: true })
+      if (lock.sha256 !== info.node.sha256) {
         bad.push(`运行时哈希与锁文件不一致：锁 ${lock.sha256.slice(0, 16)}… / 包 ${String(info.node.sha256).slice(0, 16)}…`)
       }
-    }
+      if (doc.schemaVersion === 2 && (lock.version !== info.node.version || lock.bytes !== info.node.bytes)) bad.push('运行时版本或大小与锁文件不一致')
+    } catch (error) { bad.push(error.message) }
     // 2) 实际内嵌的 node.exe 是否真是声明的那个
     const entryName = `${topDir}/gateway/service/node/node.exe`
     let actual
     if (useZip) {
       const buf = readZipEntry(zipPath, entryName, 512 * 1024 * 1024)
       if (!buf.length) bad.push(`包内缺少 ${entryName}`)
-      else actual = createHash('sha256').update(buf).digest('hex')
+      else {
+        actual = createHash('sha256').update(buf).digest('hex')
+        try { if (executableTarget(buf) !== 'win32-x64') bad.push('运行时架构必须为 Windows x64') } catch { bad.push('运行时二进制格式无效') }
+      }
     } else {
       const p = path.join(STAGING, 'gateway', 'service', 'node', 'node.exe')
       if (!fs.existsSync(p)) bad.push(`staging 缺少 ${entryName}`)
-      else actual = sha256File(p)
+      else {
+        actual = sha256File(p)
+        try { if (executableTarget(fs.readFileSync(p)) !== 'win32-x64') bad.push('运行时架构必须为 Windows x64') } catch { bad.push('运行时二进制格式无效') }
+      }
     }
     if (actual && actual !== info.node.sha256) {
       bad.push(`内嵌 node.exe 哈希与声明不符：声明 ${String(info.node.sha256).slice(0, 16)}… / 实际 ${actual.slice(0, 16)}…`)

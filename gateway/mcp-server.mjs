@@ -15,7 +15,8 @@
 import readline from 'node:readline'
 import fs from 'node:fs'
 import path from 'node:path'
-import os from 'node:os'
+import { resolveStoragePaths } from './storage-paths.mjs'
+import { validateStorageReader } from './storage-init.mjs'
 import { fileURLToPath } from 'node:url'
 
 // 版本号以仓库根 package.json 为准，不在这里硬编码——历史上这里写死 1.1.0，
@@ -38,6 +39,9 @@ const CGW_API_KEY = process.env.CGW_API_KEY || ''
 // 局域网模式：CGW_BASE 指向网关主机时，返回的 local_path 在主机磁盘上（本机不可读），
 // 图库也在主机本机。以下按模式调整提示文案与工具可用性。
 const IS_LOCAL = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(CGW_BASE)
+
+const STORAGE = IS_LOCAL ? resolveStoragePaths() : null
+validateStorageReader(STORAGE)
 
 const TOOLS = [
   {
@@ -62,7 +66,7 @@ const TOOLS = [
   },
   {
     name: 'list_generated_images',
-    description: '列出网关生成图库（~/.chatgpt-bridge/gen-images）中已有的图片（新→旧）。仅网关主机本机可用；局域网客户端请直接使用 generate_image 返回的链接。',
+    description: '列出网关生成图库（与网关配置的数据目录一致）中已有的图片（新→旧）。仅网关主机本机可用；局域网客户端请直接使用 generate_image 返回的链接。',
     inputSchema: { type: 'object', properties: { limit: { type: 'number', description: '返回条数，默认 20' } } }
   }
 ]
@@ -113,9 +117,9 @@ async function generateImage(args) {
 
 function listImages(args) {
   if (!IS_LOCAL) {
-    return { ok: false, error: 'list_generated_images 仅在网关主机本机可用（图库在网关主机的 ~/.chatgpt-bridge/gen-images）。局域网客户端请直接使用 generate_image 返回的链接查看图片。' }
+    return { ok: false, error: 'list_generated_images 仅在网关主机本机可用。局域网客户端请直接使用 generate_image 返回的链接查看图片。' }
   }
-  const dir = path.join(os.homedir(), '.chatgpt-bridge', 'gen-images')
+  const dir = STORAGE.generated
   let out = []
   try {
     out = fs.readdirSync(dir)

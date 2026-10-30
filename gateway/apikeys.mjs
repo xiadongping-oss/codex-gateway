@@ -97,8 +97,7 @@ function migratePlaintextTokens(r) {
 // 现在：内存持有注册表，写入走防抖合并（debounce），落盘用 tmp+rename 原子替换。
 let regCache = null
 let writeTimer = null
-let writing = false
-let writeAgain = false
+let dirty = false
 
 function reg() {
   if (!regCache) {
@@ -110,19 +109,13 @@ function reg() {
 }
 
 function scheduleWrite() {
+  dirty = true
   if (writeTimer) return
-  writeTimer = setTimeout(async () => {
+  writeTimer = setTimeout(() => {
     writeTimer = null
-    if (writing) { writeAgain = true; return }
-    writing = true
-    try {
-      // 走统一原子写入：顺带拿到「tmp 名带 pid+随机串」与 Windows 上的 ACL 收紧
-      writeJsonAtomic(KEYS_FILE, regCache)
-    } catch {}
-    writing = false
-    if (writeAgain) { writeAgain = false; scheduleWrite() }
+    try { flushApiKeys() } catch { /* dirty remains set for explicit retry */ }
   }, 250)
-  if (writeTimer.unref) writeTimer.unref()
+  writeTimer.unref?.()
 }
 
 function saveReg(regObj) {
@@ -379,21 +372,10 @@ export function flushApiKeys() {
   }
   // 从未 reg() 过就不要落盘：regCache 此时还是 null，写下去会把 api-keys.json
   // 变成字面量 `null`，下次 loadReg() 读不到 .keys，用户全部 Key 静默消失。
-  if (!regCache) return
-  try {
-    writeJsonAtomic(KEYS_FILE, regCache)
-  } catch {}
+  if (!regCache || !dirty) return
+  writeJsonAtomic(KEYS_FILE, regCache)
+  dirty = false
 }
 
-// 退出收尾由 launcher.mjs 的 shutdown() 统一编排（flush keys → flush call logs
-// → 停 bridge 实例池 → exit）。
-//
-// 这里此前除了 flush 还会 process.exit(0)，而本文件的 process.on 在**模块求值期**
-// 注册，必然早于 launcher.mjs 里那两行 process.on('SIGINT')/('SIGTERM')。Node 按注册
-// 顺序回调，于是这里抢先退出，launcher 的 shutdown() 整段成为永不执行的死代码——
-// bridge 子进程只剩 'exit' 里那次 dispose 兜底。所以这里只 flush，不接管退出时机。
-for (const sig of ['exit', 'SIGINT', 'SIGTERM']) {
-  process.on(sig, () => {
-    try { flushApiKeys() } catch {}
-  })
-}
+// Shutdown coordinator owns the final flush. An exit listener must not write after
+// stopped has been emitted and the data ownership lock has been released.

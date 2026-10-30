@@ -76,6 +76,8 @@ export function createBridgePool(options = {}) {
   const labelOf = options.label || ((key) => key)
   const isPinned = options.isPinned || (() => false)
 
+  const liveChildren = new Set()
+  let draining = false
   const instances = new Map() // key -> inst
   let seq = 0
   const stats = {
@@ -149,6 +151,7 @@ export function createBridgePool(options = {}) {
   }
 
   function startInstance(key) {
+    if (draining) return Promise.reject(new Error('gateway_shutting_down'))
     const existing = instances.get(key)
     // 并发 acquire 必须共用同一次启动，否则会同时拉起两个进程抢同一端口
     if (existing && existing.state === 'starting') return existing.startPromise
@@ -199,6 +202,9 @@ export function createBridgePool(options = {}) {
       }
       inst.child = child
       if (child && typeof child.on === 'function') {
+        liveChildren.add(child)
+        child.on('exit', () => liveChildren.delete(child))
+        child.on('error', () => { if (!child.pid) liveChildren.delete(child) })
         child.on('exit', (code, sig) => {
           // 只有「还是当前这个实例」时才清理，避免旧实例的退出事件
           // 把刚重启起来的新实例从池里误删
@@ -367,9 +373,31 @@ export function createBridgePool(options = {}) {
       return { ...stats, instances: instances.size, maxInstances, basePort, idleTimeoutMs }
     },
 
+    drain() {
+      draining = true
+      clearInterval(reapTimer)
+    },
+
+    childCount() { return liveChildren.size },
+
+    async stopAndWait(timeoutMs = 5000) {
+      this.drain()
+      this.stopAll()
+      // Includes previously evicted/stopped children, even after their map entry was removed.
+      for (const child of liveChildren) { try { child.kill('SIGTERM') } catch {} }
+      const start = performance.now()
+      while (liveChildren.size && performance.now() - start < timeoutMs) {
+        if (performance.now() - start >= Math.min(1200, timeoutMs / 2)) {
+          for (const child of liveChildren) { try { child.kill('SIGKILL') } catch {} }
+        }
+        await sleep(20)
+      }
+      return liveChildren.size === 0
+    },
+
     // 进程退出前调用：清定时器 + 停所有子进程，避免留下孤儿占着端口
     dispose() {
-      clearInterval(reapTimer)
+      this.drain()
       return this.stopAll()
     }
   }

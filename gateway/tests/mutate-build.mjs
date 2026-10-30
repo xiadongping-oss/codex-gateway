@@ -29,6 +29,11 @@ const C = { g: '\x1b[32m', r: '\x1b[31m', y: '\x1b[33m', d: '\x1b[2m', b: '\x1b[
 // 每一条都对应「闸门失效」的一种具体方式，不是随便改个符号。
 const MUTANTS = [
   {
+    id: 'MB13', desc: '构建不再写入或校验 bridge 补丁（原始依赖流入发行包）',
+    from: "const bridgePrepared = prepareBridge(path.join(STAGING, 'gateway'))",
+    to: "const bridgePrepared = { manifest: { version: '0.3.0', files: {} }, addedFiles: 0, bytesDelta: 0 }"
+  },
+  {
     id: 'MB1', desc: 'zip 层不再要求「顶层恰好一个目录」（v1.1.0 双目录坏包即可发出）',
     from: "  const tops = [...new Set(names.map((n) => n.split('/')[0]))]\n  if (tops.length !== 1) {",
     to: "  const tops = [NAME]\n  if (false) {"
@@ -93,14 +98,16 @@ const MUTANTS = [
   }
 ]
 
-// ---------- 夹具：只拷三个文件就能跑测试 ----------
-// 测试用 REPO = 测试文件的「上上层」，因此最小仓库 = package.json + build-release.mjs
-// + gateway/tests/build-release.test.mjs。不必复制 292MB 的整个仓库。
+// ---------- 夹具：复制构建入口、补丁准备器和只读校验器 ----------
+// 测试用 REPO = 测试文件的「上上层」，复制最小构建依赖即可，不必复制整个仓库。
 function makeRepo(mutatedSource) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cgw-mut-'))
   fs.mkdirSync(path.join(dir, 'gateway', 'tests'), { recursive: true })
   fs.copyFileSync(PKG, path.join(dir, 'package.json'))
   fs.copyFileSync(TEST_FILE, path.join(dir, 'gateway', 'tests', 'build-release.test.mjs'))
+  fs.copyFileSync(path.join(REPO, 'runtime-lock.mjs'), path.join(dir, 'runtime-lock.mjs'))
+  fs.copyFileSync(path.join(REPO, 'prepare-bridge.mjs'), path.join(dir, 'prepare-bridge.mjs'))
+  fs.copyFileSync(path.join(REPO, 'gateway', 'bridge-patches.mjs'), path.join(dir, 'gateway', 'bridge-patches.mjs'))
   fs.writeFileSync(path.join(dir, 'build-release.mjs'), mutatedSource)
   return dir
 }

@@ -53,3 +53,10 @@ Thumbs.db
 
 # 发布产物（zip 与 staging 中间目录不入库；构建方式见 docs/RELEASE.md）
 release/
+
+# Tauri build caches and generated resources (no user data or machine paths in Git)
+desktop/.generated/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+output/desktop-validation/
+output/desktop-ci/

@@ -28,6 +28,11 @@
 //   BRIDGE_ARGS      bridge 子命令与参数（默认 "serve"）
 //   DISABLE_AUTOSTART=1  不自动启动 bridge
 
+import { gatewayWork } from './work-tracker.mjs'
+import { createShutdownManager } from './shutdown-manager.mjs'
+import { storagePaths, storageLease } from './storage-bootstrap.mjs'
+import { bridgeStorageEnv } from './storage-paths.mjs'
+import { validateExternalPath } from './storage-init.mjs'
 import http from 'node:http'
 import https from 'node:https'
 import { Transform, Readable } from 'node:stream'
@@ -84,7 +89,7 @@ import {
   getUndici,
   detectSystemProxies
 } from './proxy.mjs'
-import { ensureBridgePatched } from './bridge-patches.mjs'
+import { verifyBridgePatched } from './bridge-patches.mjs'
 import { recordCallLog, getCallLogs, flushCallLogs } from './call-logs.mjs'
 import { writeJsonAtomic, sweepStaleTmpFiles } from './atomic-write.mjs'
 import { resolveDataRoot, isInstalledLayout } from './data-root.mjs'
@@ -104,6 +109,9 @@ import {
 } from './port-util.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const DESKTOP = process.env.CGW_DESKTOP === '1'
+let desktopTickets = null
+let desktopExit = null
 
 // 数据根：安装布局（install-app.vbs 写入 installed.env → run-gateway.cmd 注入
 // CGW_DATA_DIR）下，账号/配置/Key/参考图全部住数据目录；未设置时就是程序目录，
@@ -158,24 +166,13 @@ try { sweepStaleTmpFiles(DATA_ROOT) } catch {}
 // ---- 官方客户端临时登录（6 步骤流程，交互对齐 cockpit-tools）----
 import { createOfficialLoginManager } from './codex-official-login.mjs'
 import { listSavedProviders, saveProvider, deleteProvider } from './api-providers.mjs'
-function killTree(pid) {
-  return new Promise((resolve) => {
-    if (process.platform === 'win32') {
-      // /T 连子进程树一起杀；壳进程（cmd /c start /WAIT）和官方客户端一起退
-      execFile('taskkill', ['/PID', String(pid), '/T', '/F'], () => resolve())
-    } else {
-      try { process.kill(pid, 'SIGKILL') } catch {}
-      resolve()
-    }
-  })
-}
 const officialLogin = createOfficialLoginManager({
   dataRoot: DATA_ROOT,
   // shell 模式下 args 恒为空数组：完整命令串已在 cmd 里（start/open + 引号转义由模块负责）
   spawnImpl: (cmd, opts) => spawn(cmd, [], opts),
-  killTree
+  trackChild: child => storageLease?.trackChild(child)
 })
-// 上次中断的会话：有凭据的保留待导入（用户不必重新登录），没凭据的连同进程清掉
+// 上次中断的会话：有凭据的保留待导入（用户不必重新登录），未确认退出的客户端保留临时目录，不使用旧 PID 杀进程
 try { officialLogin.recover() } catch {}
 
 // 参考图目录必须先存在：它同时是 bridge 子进程的 cwd，
@@ -190,7 +187,7 @@ try { applyProxy(gwConfig.proxy || '') } catch {}
 //   --open                      启动后自动打开控制台
 //   --port <n>                  启动器端口（覆盖 LAUNCHER_PORT 环境变量）
 //   --bridge-port <n>           bridge 实例池的基准端口（覆盖 BRIDGE_PORT）
-const CLI_ARGS = process.argv.slice(2)
+const CLI_ARGS = DESKTOP ? [] : process.argv.slice(2)
 const hasFlag = (name) => CLI_ARGS.some((a) => a === name || a.startsWith(name + '='))
 // 取值支持两种写法：--port 4174 与 --port=4174（脚本里用空格分隔更直观）
 function flagValue(name) {
@@ -205,12 +202,14 @@ const _lp = parsePort(flagValue('--port') || process.env.LAUNCHER_PORT, DEFAULT_
 if (_lp.error) {
   console.error(`✗ 启动器端口配置有误：${_lp.error}`)
   console.error(`  用法：node launcher.mjs --port ${DEFAULT_LAUNCHER_PORT}`)
+  if (DESKTOP) throw Object.assign(new Error('端口配置无效'), { code: 'INVALID_ARGUMENT' })
   process.exit(1)
 }
 const _bp = parsePort(flagValue('--bridge-port') || process.env.BRIDGE_PORT, DEFAULT_BRIDGE_PORT)
 if (_bp.error) {
   console.error(`✗ bridge 基准端口配置有误：${_bp.error}`)
   console.error(`  用法：node launcher.mjs --bridge-port ${DEFAULT_BRIDGE_PORT}`)
+  if (DESKTOP) throw Object.assign(new Error('bridge 端口配置无效'), { code: 'INVALID_ARGUMENT' })
   process.exit(1)
 }
 
@@ -228,7 +227,7 @@ const AUTOSTART = process.env.DISABLE_AUTOSTART !== '1'
 // ---- CLI：控制台登录入口（对齐 model-gateway 的 `admin` 子命令）----
 //   node launcher.mjs admin        签发一次性登录链接
 //   node launcher.mjs admin-token  打印管理令牌，供 curl / 脚本使用
-if (process.argv[2] === 'admin' || process.argv[2] === 'admin-token') {
+if (!DESKTOP && (process.argv[2] === 'admin' || process.argv[2] === 'admin-token')) {
   const cmd = process.argv[2]
   if (ADMIN_AUTH_DISABLED) {
     console.log('控制面管理鉴权已用 CGW_ADMIN_AUTH=0 关闭，访问控制台无需登录。')
@@ -466,6 +465,7 @@ function ts() {
   return new Date().toISOString().slice(11, 19)
 }
 function pushLog(line) {
+  if (DESKTOP) console.error(line)
   logBuf.push(`${ts()}  ${line}`)
   if (logBuf.length > MAX_LOG) logBuf.shift()
 }
@@ -497,10 +497,11 @@ function bridgeAuthFile(accountId) {
 function spawnBridgeProcess(accountId, port) {
   const label = bridgeLabel(accountId)
   const authFile = bridgeAuthFile(accountId)
-  // vendored bridge 上叠了手写补丁，npm install 会清掉；启动前自动校验并从快照恢复
-  ensureBridgePatched(pushLog)
+  // 已签名程序资源不可改写；失败时拒绝启动，由用户重装或开发者重新准备资源。
+  verifyBridgePatched({ bridgeCli: BRIDGE_CLI, log: pushLog })
+  validateExternalPath(authFile, storagePaths, 'bridge 凭据路径')
   const env = {
-    ...process.env,
+    ...bridgeStorageEnv(process.env, storagePaths, authFile),
     CHATGPT_BRIDGE_HOST: '127.0.0.1',
     CHATGPT_BRIDGE_PORT: String(port),
     CHATGPT_BRIDGE_AUTH_FILE: authFile,
@@ -520,8 +521,9 @@ function spawnBridgeProcess(accountId, port) {
   // cwd 钉到参考图根目录：bridge 内部的附件校验用 `process.cwd()` 当 allowedRoot，
   // 不指定它就等于「用户从哪个目录启动网关，哪个目录就整体可读」。
   // 目录缺失会让 spawn 直接失败，所以兜一层创建。
-  try { fs.mkdirSync(referenceRootDir(), { recursive: true }) } catch {}
+  try { fs.mkdirSync(referenceRootDir(), { recursive: true }) } catch (error) { if (storagePaths.managed) throw error }
   const c = spawn(BRIDGE_NODE, args, { env, stdio: ['ignore', 'pipe', 'pipe'], cwd: referenceRootDir() })
+  storageLease?.trackChild(c)
   // 多实例并存，日志必须带账号前缀，否则排障时分不清是哪条通道在说话
   c.stdout.on('data', (d) => String(d).split('\n').forEach((l) => l.trim() && pushLog(`[${label}] ${l}`)))
   c.stderr.on('data', (d) => String(d).split('\n').forEach((l) => {
@@ -579,14 +581,20 @@ function bridgeRunning() {
 function defaultBridgePort() {
   return bridgePool.port(primaryAccountId()) || BRIDGE_PORT
 }
+// Managed 控制台只能读取本实例拥有的 bridge；基准端口可能属于另一个网关。
+function consoleBridgePort() {
+  return storagePaths.managed ? bridgePool.port(primaryAccountId()) || null : defaultBridgePort()
+}
 const bridgeUrlFor = (port) => `http://127.0.0.1:${port}`
 
 function startBridge() {
   if (gwConfig.mode === 'openai') {
     return { ok: false, msg: '当前为 API Key 模式，无需启动 bridge' }
   }
-  if (!fs.existsSync(BRIDGE_CLI)) {
-    const msg = '未找到本地 bridge：' + BRIDGE_CLI + '（请先 cd gateway && npm install）'
+  try {
+    verifyBridgePatched({ bridgeCli: BRIDGE_CLI })
+  } catch (error) {
+    const msg = error.message
     pushLog('✗ ' + msg)
     return { ok: false, msg }
   }
@@ -619,6 +627,7 @@ function stopBridge() {
 // 否则进程退出前刚好到期的那一个会 spawn 出一个父进程已死的孤儿 bridge。
 const pendingTimers = new Set()
 function later(fn, ms) {
+  if (gatewayWork.draining) return null
   const t = setTimeout(() => {
     pendingTimers.delete(t)
     fn()
@@ -754,7 +763,8 @@ async function publicHealthSummary(req, res) {
 // 前端还 3 秒轮一次：每挂一次就漏一个 socket 和一个永不回收的 ServerResponse，
 // 控制台从此一直转圈，看不出任何原因。这类场景下 setTimeout 也帮不上忙，
 // 因为超时只管请求发出阶段，不管响应读数阶段。
-function fetchBridgeHealth(port = defaultBridgePort()) {
+function fetchBridgeHealth(port = consoleBridgePort()) {
+  if (port === null) return Promise.resolve({ ok: false, status: 0, data: null, error: 'bridge_not_running' })
   return new Promise((resolve) => {
     let settled = false
     const finish = (v) => {
@@ -845,6 +855,15 @@ function readBody(req, max = READ_BODY_MAX) {
   })
 }
 
+// Invalid optional JSON keeps the legacy empty-body behavior, but a transport
+// cancellation must never resume a mutation with default values.
+async function readOptionalBody(req) {
+  try { return await readBody(req) } catch (error) {
+    if (req.aborted || !req.complete) throw error
+    return {}
+  }
+}
+
 // 应用模式切换：bridge ↔ openai，并相应启停 bridge
 async function applyMode(mode, apiKey, { baseUrl } = {}) {
   gwConfig.mode = mode === 'openai' ? 'openai' : 'bridge'
@@ -907,13 +926,14 @@ const MAX_BODY = 32 * 1024 * 1024
 //     结果是一半字节已经发给客户端再撞 ERR_STREAM_WRITE_AFTER_END；
 //   · 'aborted' —— 中途断连时 promise/回调必须有人收尾（见 readBody 的说明）。
 function collectBody(req, cb) {
+  const endWork = gatewayWork.begin('background', () => req.destroy())
   const chunks = []
   let size = 0
   let done = false
   const finish = (err, buf) => {
     if (done) return
     done = true
-    cb(err, buf)
+    try { cb(err, buf) } finally { endWork() }
   }
   req.on('data', (c) => {
     size += c.length
@@ -1033,6 +1053,8 @@ function failUpstream(res, code, payload) {
 // 所以长 SSE 会话只要有数据持续到达就不会被误杀。
 const UPSTREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000
 function armUpstreamTimeouts(p, res, getUpstream) {
+  const endWork = gatewayWork.begin('background', () => p.destroy())
+  p.once('close', endWork)
   try {
     p.setTimeout(UPSTREAM_IDLE_TIMEOUT_MS, () => {
       try { p.destroy(new Error('upstream idle timeout')) } catch {}
@@ -1100,6 +1122,9 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
         cb()
       }
     })
+    up.once('error', () => res.destroy())
+    tap.once('error', () => res.destroy())
+    res.once('close', () => { up.destroy(); tap.destroy() })
     up.pipe(tap).pipe(res)
   }
   const prep = (base) => {
@@ -1118,7 +1143,7 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
     delete headers.host
     headers['Authorization'] = 'Bearer ' + (gwConfig.openaiApiKey || '')
     headers['Content-Type'] = headers['content-type'] || 'application/json'
-    pipeOpenAi(req, res, targetPath, headers, bodyBuf, attachUsageTap)
+    void gatewayWork.track(pipeOpenAi(req, res, targetPath, headers, bodyBuf, attachUsageTap))
     return
   }
   // bridge 模式：转发到「本请求所属账号」的实例端口。
@@ -1165,7 +1190,7 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
           pushLog(`⚠ 账号 ${accountLabel(fromId)} 返回 ${status}，没有可降级的备用账号`)
           return replyBridgeError(res, status, up.headers, raw)
         }
-        ensureBridgeForAccount(nextId).then((sw) => {
+        void gatewayWork.track(ensureBridgeForAccount(nextId).then((sw) => {
           if (!sw.ok) {
             metrics.failoverMisses++
             pushLog(`✗ 降级到 ${accountLabel(nextId)} 失败：${sw.msg}`)
@@ -1190,7 +1215,7 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
           pushLog(`✗ 降级到 ${accountLabel(nextId)} 异常：${e && e.message || e}`)
           if (!res.headersSent) replyBridgeError(res, status, up.headers, raw)
           else res.end()
-        })
+        }))
       })
     })
     p.on('error', () => {
@@ -1228,6 +1253,11 @@ export function openaiBaseUrl() {
 }
 
 async function pipeOpenAi(req, res, targetPath, headers, bodyBuf, attachUsageTap) {
+  const controller = new AbortController()
+  const endWork = gatewayWork.begin('background', () => controller.abort())
+  res.once('close', () => controller.abort())
+  if (res.destroyed) controller.abort()
+  try {
   const target = openaiBaseUrl() + targetPath
   const mod = await getUndici().catch(() => null)
   if (!mod) {
@@ -1238,6 +1268,7 @@ async function pipeOpenAi(req, res, targetPath, headers, bodyBuf, attachUsageTap
     const up = await mod.request(target, {
       method: req.method,
       headers,
+      signal: controller.signal,
       body: bodyBuf ? bodyBuf : req,
       dispatcher: mod.getGlobalDispatcher(),
       headersTimeout: 180000,
@@ -1252,7 +1283,12 @@ async function pipeOpenAi(req, res, targetPath, headers, bodyBuf, attachUsageTap
     }
     res.writeHead(up.statusCode || 502, outHeaders)
     // 低层 request 的 body 是 web ReadableStream，转成 Node 流再接 usage 探针
-    attachUsageTap(Readable.fromWeb(up.body))
+    const body = typeof up.body.pipe === 'function' ? up.body : Readable.fromWeb(up.body)
+    const endBody = gatewayWork.begin('background', () => body.destroy())
+    body.once('close', endBody)
+    body.once('end', endBody)
+    body.once('error', () => { endBody(); res.destroy() })
+    attachUsageTap(body)
   } catch (e) {
     if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({
@@ -1260,6 +1296,7 @@ async function pipeOpenAi(req, res, targetPath, headers, bodyBuf, attachUsageTap
       detail: String((e && e.message) || e).slice(0, 200)
     }))
   }
+  } finally { endWork() }
 }
 
 // 降级路径：undici 不可用时的裸 https 直连（无代理）。
@@ -1670,6 +1707,8 @@ let modelsCache = { at: 0, ids: [], ok: false, error: null }
 let modelsInflight = null
 
 async function fetchBridgeModels({ force = false } = {}) {
+  const port = consoleBridgePort()
+  if (port === null) return { ok: false, ids: [], error: 'bridge_not_running', cached: false }
   const now = Date.now()
   if (!force && now - modelsCache.at < MODELS_TTL_MS) {
     return { ok: modelsCache.ok, ids: modelsCache.ids, error: modelsCache.error, cached: true }
@@ -1678,7 +1717,7 @@ async function fetchBridgeModels({ force = false } = {}) {
   if (modelsInflight) return modelsInflight
   modelsInflight = (async () => {
     try {
-      const r = await fetch(`${bridgeUrlFor(defaultBridgePort())}/v1/models`, { signal: AbortSignal.timeout(5000) })
+      const r = await fetch(`${bridgeUrlFor(port)}/v1/models`, { signal: AbortSignal.timeout(5000) })
       const j = await r.json().catch(() => null)
       const ids = (j && Array.isArray(j.data)) ? j.data.map((m) => m && m.id).filter(Boolean) : []
       if (ids.length) {
@@ -1711,7 +1750,7 @@ async function handleModels(res, { force = false } = {}) {
   })
 }
 
-// ---- 生成图片：bridge image_generation 落盘产物（~/.chatgpt-bridge/gen-images） ----
+// ---- 生成图片：与 bridge 共用 storagePaths.generated ----
 // 控制面提供列表 / 原图伺服 / 删除，供前端「生成图片」页下载、复制、拖拽
 const GEN_IMAGE_RE = /^[A-Za-z0-9_-]+\.png$/
 // 取 URL 里的文件名。名称由对方构造，可能压根不是合法百分号编码
@@ -1727,7 +1766,7 @@ function safeDecodeName(raw) {
   }
 }
 function genImagesDir() {
-  return path.join(os.homedir(), '.chatgpt-bridge', 'gen-images')
+  return storagePaths.generated
 }
 
 // 参考图根目录：调用方传的 reference_paths / reference_images 只允许落在这个目录里。
@@ -1739,13 +1778,13 @@ function genImagesDir() {
 // 网关侧越界直接 400，直接打 /v1 的调用方也会撞上 bridge 自己的 allowedRoot。
 function referenceRootDir() {
   const configured = String(gwConfig?.referenceRoot || '').trim()
-  if (configured) return path.resolve(configured)
+  if (configured) return path.resolve(validateExternalPath(configured, storagePaths, '参考图目录'))
   // 默认根随数据走：参考图是用户素材，安装布局下不能长在程序目录里
   return defaultReferenceRoot(DATA_ROOT)
 }
 
 function ensureReferenceRoot() {
-  try { fs.mkdirSync(referenceRootDir(), { recursive: true }) } catch {}
+  try { fs.mkdirSync(referenceRootDir(), { recursive: true }) } catch (error) { if (storagePaths.managed) throw error }
 }
 // /v1/images/generations 响应增强：b64 落盘 + 附加 url / local_path（供外部模型/客户端直接取用）
 // owner：生成者身份 { keyId, keyName }。落盘同时写入 index.json，
@@ -2376,7 +2415,7 @@ async function handleHttpRequest(req, res) {
 
     if (p === '/__gw/account/quota' && req.method === 'GET') {
       // 端口必须按「激活账号」给：池化后每个账号一个 bridge，限流头只在自己那个进程里
-      return sendJson(res, 200, await getAccountQuota({ ...gwConfig, bridgePort: defaultBridgePort() }))
+      return sendJson(res, 200, await getAccountQuota({ ...gwConfig, bridgePort: consoleBridgePort() }))
     }
 
     // 主动探测：发一次最小真实请求把上游限流头拉回来（额度卡片上的「刷新」）。
@@ -2406,9 +2445,9 @@ async function handleHttpRequest(req, res) {
     }
 
     if (p === '/__gw/account/quota' && req.method === 'POST') {
-      const body = await readBody(req).catch(() => ({}))
+      const body = await readOptionalBody(req)
       try {
-        return sendJson(res, 200, await saveAccountQuota(body || {}, null, { ...gwConfig, bridgePort: defaultBridgePort() }))
+        return sendJson(res, 200, await saveAccountQuota(body || {}, null, { ...gwConfig, bridgePort: consoleBridgePort() }))
       } catch (e) {
         return sendJson(res, 400, { error: 'quota_save_failed', detail: e.message })
       }
@@ -2450,7 +2489,7 @@ async function handleHttpRequest(req, res) {
       return sendJson(res, 200, { images: listGenImages() })
     }
     if (p === '/__gw/gen-images' && req.method === 'DELETE') {
-      const body = await readBody(req).catch(() => ({}))
+      const body = await readOptionalBody(req)
       if (!body.name || !GEN_IMAGE_RE.test(body.name)) return sendJson(res, 400, { error: 'bad_name' })
       // 必须走 deleteGenImage：它除了删文件还会同步 index.json。
       // 此前这里直接 unlinkSync，索引里留下幽灵条目 —— 而 listGenImages 一旦
@@ -2491,7 +2530,7 @@ async function handleHttpRequest(req, res) {
       return sendJson(res, 200, { enabled: !!gwConfig.strictAuth, enforced: LAN_ENABLED || !!gwConfig.strictAuth })
     }
     if (p === '/__gw/strict-auth' && req.method === 'POST') {
-      const body = await readBody(req).catch(() => ({}))
+      const body = await readOptionalBody(req)
       gwConfig.strictAuth = !!body.enabled
       saveConfig(gwConfig)
       if (LAN_ENABLED) {
@@ -2541,7 +2580,7 @@ async function handleHttpRequest(req, res) {
     }
     if (p === '/__gw/proxy' && req.method === 'POST') {
       try {
-        const body = await readBody(req).catch(() => ({}))
+        const body = await readOptionalBody(req)
         const r = await applyProxy(body.proxy || '')
         if (!r.ok) return sendJson(res, 400, { error: 'proxy_failed', detail: r.error })
         gwConfig.proxy = r.url || ''
@@ -2557,7 +2596,7 @@ async function handleHttpRequest(req, res) {
     }
     if (p === '/__gw/proxy/test' && req.method === 'POST') {
       try {
-        const body = await readBody(req).catch(() => ({}))
+        const body = await readOptionalBody(req)
         return sendJson(res, 200, await testProxy(body.proxy === undefined ? gwConfig.proxy : body.proxy))
       } catch (e) {
         return sendJson(res, 400, { error: 'proxy_test_failed', detail: e.message })
@@ -2626,7 +2665,7 @@ async function handleHttpRequest(req, res) {
     }
     if (p === '/__gw/auth/device/poll' && req.method === 'POST') {
       try {
-        const body = await readBody(req).catch(() => ({}))
+        const body = await readOptionalBody(req)
         const r = await pollDeviceFlow()
         if (r.pending) return sendJson(res, 200, { pending: true })
         // 设备流成功 → 落到待授权卡片（若指定）或新建 OAuth 账号，并激活
@@ -2649,7 +2688,7 @@ async function handleHttpRequest(req, res) {
     }
     if (p === '/__gw/auth/browser/poll' && req.method === 'POST') {
       try {
-        const body = await readBody(req).catch(() => ({}))
+        const body = await readOptionalBody(req)
         const r = await pollBrowserLogin()
         if (r.pending) return sendJson(res, 200, { pending: true, info: getBrowserLoginInfo() })
         const acct = await finishOAuthLogin(r.tokens, body)
@@ -2754,7 +2793,7 @@ async function handleHttpRequest(req, res) {
         if (!info.exists || info.error) {
           return sendJson(res, 409, { error: 'no_local_auth', detail: info.detail || info.error || '本机没有可导入的 Codex 登录' })
         }
-        const body = await readBody(req).catch(() => ({}))
+        const body = await readOptionalBody(req)
         const data = normalizeAuthJson(JSON.parse(fs.readFileSync(info.path, 'utf-8')))
         const acct = await addAccount({
           name: body.name || (info.email ? info.email : '本机 Codex 导入'),
@@ -2795,7 +2834,7 @@ async function handleHttpRequest(req, res) {
     }
     if (p === '/__gw/codex-official-login/finish' && req.method === 'POST') {
       try {
-        const body = await readBody(req).catch(() => ({}))
+        const body = await readOptionalBody(req)
         const r = await officialLogin.finish(body.sessionId)
         const data = normalizeAuthJson(r.authJson)
         const email = jwtClaims(data.tokens?.id_token)?.email || null
@@ -2821,7 +2860,7 @@ async function handleHttpRequest(req, res) {
     }
     if (p === '/__gw/codex-official-login/cancel' && req.method === 'POST') {
       try {
-        const body = await readBody(req).catch(() => ({}))
+        const body = await readOptionalBody(req)
         await officialLogin.cancel(body.sessionId)
         pushLog('○ 官方客户端临时登录已取消')
         return sendJson(res, 200, { ok: true })
@@ -2878,7 +2917,7 @@ async function handleHttpRequest(req, res) {
         // 切激活账号**不再重启任何进程**：各账号的实例彼此独立，这里改的只是
         // 「默认路由目标」。目标账号若还没实例，后台预热一个，避免首个请求吃冷启动。
         if (gwConfig.mode === 'bridge') {
-          bridgePool.start(body.id).then(async (x) => {
+          void gatewayWork.track(bridgePool.start(body.id).then(async (x) => {
             if (!x.ok) return pushLog('✗ 预热 bridge 失败：' + (x.msg || '未知原因'))
             // 切过去顺手把新账号的额度探一次：限流头只存在它自己的 bridge 进程里，
             // 不探的话卡片会一直是空态，用户会以为「切了跟没切一样」。
@@ -2888,7 +2927,7 @@ async function handleHttpRequest(req, res) {
               model: defaultChatModel()
             })
             if (pr.ok) pushLog(`🔍 已探测新账号额度：${accountLabel(body.id)}`)
-          }).catch((e) => pushLog('✗ 预热 / 额度探测失败：' + (e && e.message || e)))
+          }).catch((e) => pushLog('✗ 预热 / 额度探测失败：' + (e && e.message || e))))
         }
         return sendJson(res, 200, { ok: true, path: r.path })
       } catch (e) {
@@ -2942,7 +2981,7 @@ async function handleHttpRequest(req, res) {
     }
     if (p === '/__gw/apikeys' && req.method === 'POST') {
       try {
-        const body = await readBody(req).catch(() => ({}))
+        const body = await readOptionalBody(req)
         const reg = loadAccounts()
         // accountIds：
         //   - 不传 / 空数组 / ['*']  表示「全部账号」（跟随当前激活账号）
@@ -3121,7 +3160,10 @@ async function handleHttpRequest(req, res) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' })
       return res.end('控制台登录仅限本机完成：请从本机浏览器打开该链接。')
     }
-    const r = adminAuth.consumeBootstrap(url.searchParams.get(BOOTSTRAP_PARAM))
+    const ticket = url.searchParams.get(BOOTSTRAP_PARAM)
+    const r = ticket.startsWith('d1.') ? (desktopTickets?.consume(ticket) || { ok: false }) : adminAuth.consumeBootstrap(ticket)
+    res.setHeader('Cache-Control', 'no-store')
+    res.setHeader('Referrer-Policy', 'no-referrer')
     if (!r.ok) {
       const why = { expired: '这条登录链接已过期（一次性链接 60 秒内有效）', already_used: '这条登录链接已被使用过', bad_signature: '这条登录链接无效' }[r.reason] || '这条登录链接无效'
       res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8' })
@@ -3161,7 +3203,28 @@ async function handleHttpRequest(req, res) {
 //   1. 处理器的异常一律降级成 500，写日志，进程照常服务（单个坏请求换掉整台网关不划算）；
 //   2. 响应期间的 socket 错误必须有监听，否则 EventEmitter 抛错又是一条 uncaughtException；
 //   3. 畸形请求走 clientError，留下日志而不是静默丢弃。
+let resolveReady, rejectReady
+export const gatewayReady = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject })
+gatewayReady.catch(() => {})
+const sockets = new Set()
 const server = http.createServer((req, res) => {
+  res.on('error', () => {}) // Includes rejected drain requests on already-closed sockets.
+  if (gatewayWork.draining) {
+    let p = ''
+    try { p = new URL(req.url, 'http://localhost').pathname } catch {}
+    const readonly = req.method === 'GET' && ['/__gw/status', '/__gw/logs', '/__gw/call-logs'].includes(p)
+    const callback = req.method === 'POST' && getBrowserLoginInfo() && ['/__gw/auth/browser/poll', '/__gw/auth/browser/callback'].includes(p)
+    if (!readonly && !callback) {
+      res.writeHead(503, { 'Content-Type': 'application/json', 'Connection': 'close', 'Cache-Control': 'no-store' })
+      return res.end(JSON.stringify({ error: 'gateway_shutting_down' }))
+    }
+  }
+  const endRequest = gatewayWork.begin('request', () => { req.destroy(); res.destroy() })
+  let handlerDone = false, responseDone = false
+  const endIfDone = () => { if (handlerDone && responseDone) endRequest() }
+  const responseEnded = () => { responseDone = true; queueMicrotask(endIfDone) }
+  res.once('finish', responseEnded)
+  res.once('close', responseEnded)
   // 客户端提前断开时 res 会 emit 'error'。没有监听它就变成未捕获异常 → 进程退出。
   // 这是最容易被忽略的一条：断连是常态（用户刷新页面、代理超时），不是异常。
   res.once('error', (e) => {
@@ -3182,8 +3245,9 @@ const server = http.createServer((req, res) => {
         res.end()
       }
     } catch {}
-  })
+  }).finally(() => { handlerDone = true; endIfDone() })
 })
+server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)) })
 
 server.on('clientError', (err, socket) => {
   // 畸形请求行 / 超大请求头。默认行为是直接销毁 socket 且不落任何记录，
@@ -3200,25 +3264,41 @@ server.on('clientError', (err, socket) => {
 // 会一直占着 10531+ 的端口，导致下次启动全部「端口被占」。
 // 这里尽力在退出路径上把它们带走（taskkill 强杀仍拦不住，属已知限制）。
 let shuttingDown = false
+export const gatewayRuntime = {
+  setTickets(tickets) { desktopTickets = tickets },
+  onExit(fn) { desktopExit = fn },
+  counts() { return { ...gatewayWork.counts(), bridgeCount: bridgePool.childCount() } },
+  drain() {
+    shuttingDown = true
+    gatewayWork.drain()
+    bridgePool.drain()
+    for (const t of pendingTimers) clearTimeout(t)
+    pendingTimers.clear()
+  },
+  cancel() { gatewayWork.cancel(); cancelBrowserLogin(); clearDeviceFlow() },
+  flush() {
+    const failures = []
+    for (const flush of [flushApiKeys, flushCallLogs]) { try { flush() } catch (error) { failures.push(error) } }
+    if (failures.length) throw new AggregateError(failures, 'FLUSH_FAILED')
+  },
+  async stopChildren(ms) { return (await Promise.all([bridgePool.stopAndWait(ms), officialLogin.stopAndWait(ms)])).every(Boolean) },
+  closeHttp(ms) {
+    cancelBrowserLogin(); clearDeviceFlow()
+    return new Promise(resolve => {
+      if (!server.listening) return resolve(true)
+      const timer = setTimeout(() => resolve(false), ms)
+      server.close(error => { clearTimeout(timer); resolve(!error) })
+      for (const socket of sockets) socket.destroy()
+    })
+  },
+  release() { return storageLease ? storageLease.release() : true }
+}
+let cliShutdown
 function shutdown(signal, exitCode = 0) {
-  if (shuttingDown) return
-  shuttingDown = true
-  // 定时器必须先清：restartBridgeFor / restartAllBridges 会延时拉起 bridge，
-  // 这些句柄此前既没 unref 也没登记，shutdown 走完 process.exit 后若刚好到期，
-  // 会在退出前 spawn 出一个没人管的 bridge —— 父进程已死，端口却还占着。
-  try { for (const t of pendingTimers) clearTimeout(t) } catch {}
-  try { pendingTimers.clear() } catch {}
-  // 顺序有讲究：先把两处内存态收据刷出去（它们都用了延迟写），再停 bridge 子进程。
-  // 调用日志此前从未挂在任何退出路径上 —— flushCallLogs() 全项目零调用点，
-  // 于是网关关闭前最后几秒的调用记录每次都整批丢失。
-  try { flushApiKeys() } catch {}
-  try { flushCallLogs() } catch {}
-  let n = 0
-  try { n = bridgePool.dispose() } catch {}
-  pushLog(`◆ 收到 ${signal}，已刷盘并停止 ${n} 个 bridge 实例`)
-  // 崩溃退出必须给非零码。此前一律 exit(0)，服务包装脚本（service/*.vbs、
-  // service-unix/*.sh）无法据此判断「这是崩了」还是「正常停了」，也就不会重启。
-  process.exit(exitCode)
+  if (DESKTOP && desktopExit) return desktopExit(exitCode)
+  if (!cliShutdown) cliShutdown = createShutdownManager({ runtime: gatewayRuntime,
+    finish: result => process.exit(result.exitCode) })
+  cliShutdown.begin({ urgent: true, exitCode })
 }
 
 // 进程级兜底：请求边界已经拦住「一个坏请求」这类情况（见 createServer 处的注释），
@@ -3261,6 +3341,7 @@ process.on('exit', () => { try { bridgePool.dispose() } catch {} })
 //   1 = 其它
 // 刻意不自动换端口：端口是对外契约，静默漂移会让「配置没动却连不上」无从解释。
 server.on('error', (err) => {
+  if (DESKTOP) { rejectReady(Object.assign(new Error('网关监听失败'), { code: err.code === 'EADDRINUSE' ? 'PORT_IN_USE' : err.code === 'EACCES' ? 'PORT_PERMISSION' : 'INTERNAL_ERROR' })); return }
   const code = err && err.code
   if (code === 'EADDRINUSE') {
     console.error(portInUseAdvice({ port: LAUNCHER_PORT, lanEnabled: LAN_ENABLED }))
@@ -3275,6 +3356,7 @@ server.on('error', (err) => {
 })
 
 server.listen(LAUNCHER_PORT, LISTEN_HOST, () => {
+  resolveReady({ state: 'ready', origin: `http://127.0.0.1:${LAUNCHER_PORT}`, port: LAUNCHER_PORT, bindHost: LISTEN_HOST, dataRoot: DATA_ROOT, storageVersion: 1, capabilities: ['bootstrap', 'graceful-shutdown'] })
   pushLog(`◆ 启动器已就绪：http://127.0.0.1:${LAUNCHER_PORT}`)
   // 数据目录与程序分离时明说一声：用户排障时不会找错地方
   pushLog(isInstalledLayout()
@@ -3287,7 +3369,7 @@ server.listen(LAUNCHER_PORT, LISTEN_HOST, () => {
     // 由桌面启动器（start-gateway.vbs / run-gateway.cmd）或 npm start 触发时，
     // 自动打开带一次性令牌的控制台 —— 保持"双击图标就能用"的原体验，
     // 否则用户只会看到一个 401 白屏控制台。
-    if (OPEN_BROWSER) {
+    if (OPEN_BROWSER && !DESKTOP) {
       const nonce = adminAuth.issueBootstrap(5 * 60 * 1000)
       const url = `http://127.0.0.1:${LAUNCHER_PORT}/?${BOOTSTRAP_PARAM}=${encodeURIComponent(nonce)}`
       setTimeout(() => {

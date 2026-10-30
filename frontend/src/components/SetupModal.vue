@@ -56,7 +56,7 @@ const TEMP_STEPS = [
   { key: 'waiting-login', label: '等待登录完成' },
   { key: 'closing', label: '关闭官方客户端' },
   { key: 'importing', label: '读取登录信息' },
-  { key: 'cleaning', label: '清理临时配置' }
+  { key: 'cleaning', label: '完成导入' }
 ]
 const tempSession = ref(null) // { sessionId, clientPath }
 const tempPhase = ref('idle') // idle | running | completed | failed
@@ -136,6 +136,9 @@ async function finishTempLogin() {
     }
     tempDoneSteps.value = 6
     tempPhase.value = 'completed'
+    tempHint.value = r.cleaned
+      ? '登录信息已导入，临时配置已清理。'
+      : '登录信息已导入。临时配置可能仍由客户端使用，已保留；可自行关闭官方客户端。'
     okMsg.value = `官方登录导入成功${r.email ? '（' + r.email + '）' : ''}${r.isExisting ? '，已有账号凭据已更新' : ''}`
     emit('changed')
   } catch (e) {
@@ -568,7 +571,7 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
           </button>
 
           <p class="hint dim">
-            成功导入后会清理临时配置与运行目录；最终导入失败时保留凭据供重试。你已登录的账号不受影响。
+            取消只停止本次导入，不会关闭已打开的官方客户端。无法确认客户端已退出时会保留临时配置；导入失败时保留凭据供重试。
           </p>
         </div>
 

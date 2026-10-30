@@ -5,6 +5,7 @@ import { parseBase } from '../api/client'
 const props = defineProps({
   active: { type: String, default: 'overview' },
   gwRunning: { type: Boolean, default: true },
+  connected: { type: Boolean, default: false },
   collapsed: { type: Boolean, default: false }
 })
 const emit = defineEmits(['navigate', 'toggle'])
@@ -23,7 +24,7 @@ const nav = [
   { key: 'models', label: '模型能力', icon: 'M12 2l9 5-9 5-9-5 9-5zM3 12l9 5 9-5M3 17l9 5 9-5' },
   { key: 'apikeys', label: 'API Key', icon: 'M21 2l-2 2m0 0l-9 9-2-2 9-9 2 2zM7.5 15.5L5 18l3 3 2.5-2.5' },
   { key: 'logs', label: '调用日志', icon: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01' },
-  { key: 'settings', label: '设置', icon: 'M12 12a3 3 0 100-6 3 3 0 000 6z' }
+  { key: 'settings', label: '设置', icon: 'M12 8a4 4 0 100 8 4 4 0 000-8zM9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1 1-3z' }
 ]
 </script>
 
@@ -31,15 +32,16 @@ const nav = [
   <aside class="sidebar" :class="{ collapsed }">
     <div class="logo">
       <div class="logo-mark">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#04130D" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" /></svg>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" /></svg>
       </div>
       <div v-if="!collapsed" class="logo-text-wrap">
         <div class="logo-text">Codex 网关</div>
-        <div class="logo-sub">local · bridge</div>
+        <div class="logo-sub">你的本地 AI 工作站</div>
       </div>
       <button
         class="collapse-btn inline"
         :title="collapsed ? '展开侧栏' : '收起侧栏'"
+        :aria-label="collapsed ? '展开侧栏' : '收起侧栏'"
         @click="emit('toggle')"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -50,25 +52,27 @@ const nav = [
     </div>
 
     <nav class="nav">
-      <div
+      <button
         v-for="item in nav"
         :key="item.key"
         class="nav-item"
         :class="{ active: active === item.key }"
-        :title="collapsed ? item.label : ''"
+        :title="item.label"
+        :aria-label="item.label"
+        :aria-current="active === item.key ? 'page' : undefined"
         @click="emit('navigate', item.key)"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path :d="item.icon" /></svg>
         <span v-if="!collapsed">{{ item.label }}</span>
-      </div>
+      </button>
     </nav>
 
     <div class="nav-spacer"></div>
 
-    <div class="status-box" :title="collapsed ? ('本地代理 · ' + (gwRunning ? '运行中' : '已停止')) : ''">
-      <div class="status-dot" :class="{ off: !gwRunning }"></div>
+    <div class="status-box" :title="collapsed ? ('本地代理 · ' + (!connected ? '等待连接' : gwRunning ? '运行中' : '已停止')) : ''">
+      <div class="status-dot" :class="{ off: !gwRunning, unknown: !connected }"></div>
       <div v-if="!collapsed">
-        <div class="status-label">本地代理 · {{ gwRunning ? '运行中' : '已停止' }}</div>
+        <div class="status-label">本地代理 · {{ !connected ? '等待连接' : gwRunning ? '运行中' : '已停止' }}</div>
         <div class="status-meta" style="font-family: var(--mono); font-size: 11px; color: var(--text-3)">{{ endpoint }}</div>
       </div>
     </div>
@@ -120,4 +124,23 @@ const nav = [
 .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--emerald); flex-shrink: 0; }
 .status-dot.off { background: var(--rose); }
 .status-label { font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+
+.sidebar { width: 220px; border: 0; padding: 28px 16px 20px; }
+.logo { padding-bottom: 34px; gap: 12px; }
+.logo-mark { width: 38px; height: 38px; border-radius: 14px; background: var(--primary-soft); color: var(--primary); }
+.logo-text { font-size: 16px; font-weight: 700; }
+.logo-sub { font-family: inherit; font-size: 10px; margin-top: 3px; }
+.nav { gap: 7px; }
+.nav-item { border: 0; background: transparent; text-align: left; padding: 13px 16px; border-radius: 28px; font-size: 13px; }
+.nav-item svg { width: 20px; height: 20px; stroke-width: 1.7; }
+.nav-item.active { background: var(--primary-soft); color: var(--primary); font-weight: 650; }
+.nav-item:hover { background: var(--border); }
+.nav-item.active:hover { background: var(--primary-soft); }
+.nav-item:last-child { margin-top: 22px; }
+.status-box { border: 0; border-radius: 18px; padding: 14px 12px; }
+.status-label { font-size: 11px; }
+.sidebar.collapsed { width: 76px; }
+.sidebar.collapsed .nav-item { padding: 13px 0; }
+@media (max-width: 520px) { .sidebar.collapsed { width: 60px; padding: 18px 7px; } .logo-mark { width: 32px; height: 32px; } }
+.status-dot.unknown { background: var(--text-3); animation: none; }
 </style>

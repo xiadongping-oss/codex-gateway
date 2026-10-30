@@ -33,11 +33,18 @@ function loadConfig(overrides = {}) {
     rateHourlyHard: overrides.rateHourlyHard ?? DEFAULTS.rateHourlyHard,
     imageModel: overrides.imageModel ?? env.CHATGPT_BRIDGE_IMAGE_MODEL ?? DEFAULTS.imageModel,
     authFilePath: overrides.authFilePath ?? env.CHATGPT_BRIDGE_AUTH_FILE,
-    dataHome: overrides.dataHome ?? path.join(homeDir(), ".chatgpt-bridge")
+    dataHome: overrides.dataHome ?? env.CHATGPT_BRIDGE_DATA_DIR ?? path.join(homeDir(), ".chatgpt-bridge")
   };
+  if (env.CHATGPT_BRIDGE_DATA_DIR && !path.isAbsolute(cfg.dataHome))
+    throw new Error("CHATGPT_BRIDGE_DATA_DIR must be absolute");
   return cfg;
 }
 function authFileCandidates(cfg) {
+  if (process.env.CGW_BRIDGE_AUTH_STRICT === "1") {
+    if (typeof cfg.authFilePath !== "string" || !path.isAbsolute(cfg.authFilePath))
+      throw new Error("Strict bridge auth requires an absolute CHATGPT_BRIDGE_AUTH_FILE");
+    return [cfg.authFilePath];
+  }
   const home = homeDir();
   const list = [
     cfg.authFilePath,

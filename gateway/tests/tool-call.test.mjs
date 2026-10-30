@@ -554,17 +554,17 @@ test('bridge：dist 里不再硬编码 image_generation 工具列表', { skip: n
   }
 })
 
-test('bridge：patches 快照与 dist 逐字节一致（改了 dist 忘了刷新快照 = 装机版没有改动）', { skip: needBridge }, () => {
+test('bridge：准备后的 dist 与快照规范化为 LF 后的字节一致', { skip: needBridge }, () => {
   for (const [distName, snapName] of [['cli.js', 'cli.patched.js'], ['index.js', 'index.patched.js']]) {
     const dist = fs.readFileSync(path.join(GW, 'node_modules', 'chatgpt-bridge', 'dist', distName))
-    const snap = fs.readFileSync(path.join(GW, 'patches', snapName))
-    assert.deepEqual(dist, snap, `${snapName} 与 dist/${distName} 不一致，请 cp 同步`)
+    const snap = Buffer.from(fs.readFileSync(path.join(GW, 'patches', snapName)).toString('latin1').replace(/\r\n/g, '\n'), 'latin1')
+    assert.deepEqual(dist, snap, `${snapName} 与 dist/${distName} 不一致，请审核快照和清单后运行 npm run prepare:bridge`)
   }
 })
 
-test('bridge：补丁检测 MARKER 已升级到第 5 组的新符号', { skip: needBridge }, () => {
-  const src = fs.readFileSync(path.join(GW, 'bridge-patches.mjs'), 'utf8')
-  assert.match(src, /chatTools\.convertChatToolsToResponses/, '旧 MARKER 会让新补丁被判为"未打补丁"从而被覆盖')
+test('bridge：当前依赖通过版本与完整哈希校验', { skip: needBridge }, async () => {
+  const { verifyBridgePatched } = await import('../bridge-patches.mjs')
+  assert.equal(verifyBridgePatched().version, '0.3.0')
 })
 
 test('仓库根目录：chat-tools.mjs 必须存在且可独立导入（装机热更只拷这一个文件）', { skip: needBridge }, () => {

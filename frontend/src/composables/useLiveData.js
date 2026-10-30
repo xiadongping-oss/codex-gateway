@@ -78,6 +78,8 @@ function createLiveData() {
   const gw = ref({ running: false, pid: null, startedAt: null, uptimeSec: 0, health: null, config: {} })
   const gwLogs = ref([])
   const gwBusy = ref(false)
+  const gwConnected = ref(null)
+  const gwActionError = ref('')
 
   // ---- 刷新策略 ----
   let refreshing = false
@@ -121,7 +123,8 @@ function createLiveData() {
         settle(api.getGatewayStatus()),
         settle(api.getGatewayLogs())
       ])
-      if (r1.ok && r1.value) gw.value = r1.value
+      gwConnected.value = !!(r1.ok && r1.value && typeof r1.value.running === 'boolean')
+      if (gwConnected.value) gw.value = r1.value
       if (r2.ok && r2.value && r2.value.lines) gwLogs.value = r2.value.lines
     } finally {
       gwRefreshing = false
@@ -160,36 +163,45 @@ function createLiveData() {
   }
 
   async function gwStart() {
+    if (gwBusy.value) return
+    gwActionError.value = ''
     gwBusy.value = true
     try {
-      await api.startGateway()
+      const result = await api.startGateway()
+      if (!result || result.ok === false) throw new Error('启动失败')
       setTimeout(refreshGateway, 600)
       await refreshGateway()
     } catch {
-      /* 忽略：由状态条呈现 */
+      gwActionError.value = '启动失败，请检查控制台登录状态与运行日志。'
     } finally {
       gwBusy.value = false
     }
   }
   async function gwStop() {
+    if (gwBusy.value) return
+    gwActionError.value = ''
     gwBusy.value = true
     try {
-      await api.stopGateway()
+      const result = await api.stopGateway()
+      if (!result || result.ok === false) throw new Error('停止失败')
       await refreshGateway()
     } catch {
-      /* 忽略 */
+      gwActionError.value = '操作未完成，请检查控制台登录状态与运行日志。'
     } finally {
       gwBusy.value = false
     }
   }
   async function gwRestart() {
+    if (gwBusy.value) return
+    gwActionError.value = ''
     gwBusy.value = true
     try {
-      await api.restartGateway()
+      const result = await api.restartGateway()
+      if (!result || result.ok === false) throw new Error('重启失败')
       setTimeout(refreshGateway, 1200)
       await refreshGateway()
     } catch {
-      /* 忽略 */
+      gwActionError.value = '操作未完成，请检查控制台登录状态与运行日志。'
     } finally {
       gwBusy.value = false
     }
@@ -206,7 +218,7 @@ function createLiveData() {
   return {
     status, account, capabilities, capabilitiesBase, models, health, logs,
     lastFetchAt, lastError, errFlags,
-    gw, gwLogs, gwBusy,
+    gw, gwLogs, gwBusy, gwConnected, gwActionError,
     diagnose, gwStart, gwStop, gwRestart, addLog, toggleCapability,
     refresh, refreshLogs
   }

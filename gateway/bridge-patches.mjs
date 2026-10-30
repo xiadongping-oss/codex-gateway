@@ -1,47 +1,59 @@
-// chatgpt-bridge vendored 补丁守护
-//
-// 背景：gateway/node_modules/chatgpt-bridge 是 vendored 零依赖包，其上叠加了 4 组手写补丁：
-//   1) Upstream.call 捕获上游 x-codex-* / x-ratelimit-* 限流头，/health 透出 last_upstream_limits
-//   2) translateChatMessages：assistant 消息 text/input_text → output_text（Codex 严格校验）
-//   3) normalizeResponsesBody：sanitizeResponsesInput 对 /v1/responses 的 input 做同规则净化
-//   4) /v1/responses 非流式：上游强制 stream:true → 本地强制流式并聚合为 Responses JSON
-//   5) /v1/chat/completions 工具调用：调用方 tools/tool_choice/tool 历史转 Responses，
-//      Responses function_call 事件回转 Chat Completions tool_calls（逻辑在 gateway/chat-tools.mjs）
-// npm install / 升级该包会静默清掉全部补丁。本模块在网关启动时校验标记，缺失即从快照恢复。
-//
-// 快照位置：gateway/patches/{cli,index}.patched.js（由补丁改完后的 dist 文件复制而来）。
-// 若将来再给 bridge 打新补丁：改完 dist 后务必同步刷新快照，否则会被旧快照覆盖。
+// 运行时只读校验；补丁写入仅由 prepare-bridge.mjs 在构建/开发准备阶段执行。
 import fs from 'node:fs'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-// 标记取最晚加入的补丁符号；存在即认为整套补丁在位
-const MARKER = 'chatTools.convertChatToolsToResponses'
-const FILES = ['cli.js', 'index.js']
+export const BRIDGE_FILES = ['cli.js', 'index.js']
+const DEFAULT_GATEWAY = path.dirname(fileURLToPath(import.meta.url))
+export const bridgeSha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 
-export function ensureBridgePatched(log = () => {}) {
-  const distDir = path.join(__dirname, 'node_modules', 'chatgpt-bridge', 'dist')
-  const snapDir = path.join(__dirname, 'patches')
-  const repaired = []
-  for (const f of FILES) {
-    const distPath = path.join(distDir, f)
-    const snapPath = path.join(snapDir, f.replace(/\.js$/, '.patched.js'))
-    if (!fs.existsSync(snapPath)) {
-      log(`⚠ bridge 补丁快照缺失：patches/${f.replace(/\.js$/, '.patched.js')}，跳过恢复`)
-      continue
-    }
-    let cur = null
-    try { cur = fs.readFileSync(distPath, 'utf8') } catch {}
-    if (cur && cur.includes(MARKER)) continue
-    try {
-      fs.copyFileSync(snapPath, distPath)
-      repaired.push(f)
-    } catch (e) {
-      log(`✗ 恢复 bridge 补丁失败（${f}）：${e.message}`)
-    }
+function invalid(detail) {
+  const error = new Error(`bridge 补丁校验失败：${detail}。请重新安装完整发行包；源码开发请运行 npm run prepare:bridge。`)
+  error.code = 'BRIDGE_PATCH_INVALID'
+  return error
+}
+
+export function readBridgeManifest(gatewayDir = DEFAULT_GATEWAY) {
+  let manifest
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(gatewayDir, 'patches', 'manifest.json'), 'utf8'))
+  } catch {
+    throw invalid('补丁清单缺失或无法读取')
   }
-  if (repaired.length) log(`◆ 检测到 bridge 补丁丢失，已从快照恢复：${repaired.join(', ')}`)
-  else log('· bridge 补丁校验通过')
-  return { repaired }
+  if (manifest?.schemaVersion !== 1 || manifest.package !== 'chatgpt-bridge' ||
+      typeof manifest.version !== 'string' || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(manifest.version) ||
+      !manifest.files || Object.keys(manifest.files).length !== BRIDGE_FILES.length ||
+      !BRIDGE_FILES.every((name) => /^[a-f0-9]{64}$/.test(manifest.files[name]))) {
+    throw invalid('补丁清单格式无效')
+  }
+  return manifest
+}
+
+export function verifyBridgeVersion(packageDir, manifest) {
+  let pkg
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf8'))
+  } catch {
+    throw invalid('bridge package.json 缺失或无法读取')
+  }
+  if (pkg?.name !== manifest.package || pkg.version !== manifest.version) {
+    throw invalid(`bridge 版本不匹配（要求 ${manifest.version}，实际 ${pkg?.version ?? '未知'}）`)
+  }
+}
+
+export function verifyBridgePatched({ gatewayDir = DEFAULT_GATEWAY, bridgeCli, log = () => {} } = {}) {
+  const manifest = readBridgeManifest(gatewayDir)
+  // 校验实际将执行的入口，BRIDGE_CLI 覆盖也不能绕过检查。
+  const cli = bridgeCli || path.join(gatewayDir, 'node_modules', 'chatgpt-bridge', 'dist', 'cli.js')
+  const distDir = path.dirname(path.resolve(cli))
+  verifyBridgeVersion(path.dirname(distDir), manifest)
+  for (const name of BRIDGE_FILES) {
+    const file = name === 'cli.js' ? cli : path.join(distDir, name)
+    let content
+    try { content = fs.readFileSync(file) } catch { throw invalid(`${name} 缺失或无法读取`) }
+    if (bridgeSha256(content) !== manifest.files[name]) throw invalid(`${name} 内容不匹配`)
+  }
+  log('· bridge 补丁版本与完整性校验通过（只读）')
+  return manifest
 }

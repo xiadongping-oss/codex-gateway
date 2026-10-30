@@ -1,3 +1,4 @@
+import { gatewayWork } from './work-tracker.mjs'
 // Codex 网关 · 授权核心（零依赖，供 gateway/launcher.mjs 使用）
 //
 // 负责的“登录态”相关能力：
@@ -16,12 +17,21 @@ import http from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { writeJsonAtomic, writeTextAtomic, createCachedTextReader } from './atomic-write.mjs'
 import { resolveDataRoot, normalizeAuthFilePath } from './data-root.mjs'
+import { resolveStoragePaths } from './storage-paths.mjs'
+import { validateExternalPath } from './storage-init.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // 数据根：安装布局（CGW_DATA_DIR）下账号/配置/凭据住数据目录，
 // 未设置时就是程序目录 —— 绿色版行为不变。
 const DATA_ROOT = resolveDataRoot(process.env, __dirname)
+const STORAGE = resolveStoragePaths(process.env, __dirname)
+
+function validateConfigPaths(cfg) {
+  if (!STORAGE.managed) return
+  if (cfg.authFilePath) validateExternalPath(cfg.authFilePath, STORAGE, '凭据文件')
+  if (cfg.referenceRoot) validateExternalPath(cfg.referenceRoot, STORAGE, '参考图目录')
+}
 
 const OAUTH_ISSUER = 'https://auth.openai.com'
 const OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
@@ -45,15 +55,18 @@ export function loadConfig() {
     const txt = fs.readFileSync(CONFIG_PATH, 'utf-8')
     const j = JSON.parse(txt)
     const merged = { ...base, ...j }
+    validateConfigPaths(merged)
     // 绿色版 → 安装版升级后，config 里存的旧程序目录路径要归一化到数据根
     merged.authFilePath = normalizeAuthFilePath(merged.authFilePath, __dirname, defaultAuthFilePath())
     return merged
-  } catch {
+  } catch (error) {
+    if (STORAGE.managed && error.code !== 'ENOENT') throw error
     return base
   }
 }
 
 export function saveConfig(cfg) {
+  validateConfigPaths(cfg)
   try {
     writeJsonAtomic(CONFIG_PATH, {
       mode: cfg.mode,
@@ -149,6 +162,7 @@ export function findAccountByFingerprint(reg, data) {
 
 // ---------- 写入 bridge 兼容的 auth.json ----------
 export async function writeAuthFile(filePath, data) {
+  validateExternalPath(filePath, STORAGE, '凭据文件')
   // 原子写。这里是 refresh_token 这类长期凭据，写一半被杀的结果是文件留在半截 JSON，
   // 上层把这当成「文件不存在」，用户在控制台看到的是账号莫名不可用。
   writeTextAtomic(filePath, JSON.stringify(data, null, 2) + '\n')
@@ -356,6 +370,7 @@ const DEVICE_CALLBACK_URI = `${OAUTH_ISSUER}/deviceauth/callback`
 let pendingDevice = null // 单会话：{ device_auth_id, user_code, interval, expires_at, lastPoll }
 
 export async function startDeviceFlow() {
+  if (gatewayWork.draining) throw new Error('gateway_shutting_down')
   const res = await fetch(DEVICE_USERCODE_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -458,6 +473,7 @@ const OAUTH_TIMEOUT_MS = 10 * 60 * 1000
 const OFFICIAL_CLIENT_VERSION = '26.820.60940'
 const CLIENT_IDENTITY_FILE = path.join(DATA_ROOT, '.codex-client-identity')
 
+let browserWorkDone = null
 let pendingBrowser = null
 
 // 查找本机已有的官方 Codex 客户端身份文件（cockpit-tools / 官方 Codex CLI 会生成）
@@ -498,7 +514,7 @@ function loadClientIdentity() {
   const id = crypto.randomUUID()
   try {
     fs.writeFileSync(CLIENT_IDENTITY_FILE, id, { encoding: 'utf-8', mode: 0o600 })
-  } catch {}
+  } catch (error) { if (STORAGE.managed) throw error }
   return id
 }
 const CLIENT_IDENTITY = loadClientIdentity()
@@ -604,8 +620,10 @@ function respondHtml(res, title, body) {
 
 // 发起浏览器登录：起本地回调服务器，返回授权地址（含官方托管登录页地址）
 export async function startBrowserLogin() {
+  if (gatewayWork.draining) throw new Error('gateway_shutting_down')
   if (pendingBrowser) cancelBrowserLogin()
   const port = await findAvailablePort(OAUTH_CALLBACK_PORT)
+  if (gatewayWork.draining) throw new Error('gateway_shutting_down')
   const { verifier, challenge } = generatePkce()
   const state = b64url(crypto.randomBytes(24))
   const loginId = b64url(crypto.randomBytes(16))
@@ -645,7 +663,7 @@ export async function startBrowserLogin() {
       session.error = 'state 校验失败，已中止此次登录'
       return respondHtml(res, '授权已中止', 'state 不匹配，已中止此次登录。')
     }
-    exchangeCodeForToken({ code, verifier: session.verifier, redirectUri: session.redirectUri })
+    void gatewayWork.track(exchangeCodeForToken({ code, verifier: session.verifier, redirectUri: session.redirectUri })
       .then((tokens) => {
         session.result = tokens
         respondHtml(res, '授权成功', '已获取登录态，可关闭此页面并返回应用。')
@@ -653,7 +671,7 @@ export async function startBrowserLogin() {
       .catch((e) => {
         session.error = e.message
         respondHtml(res, '授权失败', e.message)
-      })
+      }))
   })
 
   session.server = server
@@ -670,6 +688,7 @@ export async function startBrowserLogin() {
   }, OAUTH_TIMEOUT_MS)
 
   pendingBrowser = session
+  browserWorkDone = gatewayWork.begin('background', cancelBrowserLogin)
   // 端口漂移风险提示：官方 Codex 桌面端 / CLI 常驻占用 1455，
   // 一旦漂移到其它端口，redirect_uri 与官方客户端的既有约定不一致，
   // 部分账号（尤其 Google 联邦登录）会在授权页直接报 URL / redirect_uri 错误。
@@ -744,11 +763,14 @@ export function getBrowserLoginInfo() {
 }
 
 export function cancelBrowserLogin() {
+  browserWorkDone?.()
+  browserWorkDone = null
   const s = pendingBrowser
   pendingBrowser = null
   if (!s) return
   if (s.timer) clearTimeout(s.timer)
   try {
+    s.server?.closeAllConnections?.()
     s.server?.close()
   } catch {}
 }
@@ -984,6 +1006,7 @@ export function resolveActiveAuthFilePath() {
 // ② 写盘一旦抛错就是未处理的 Promise rejection，足以掀翻整个进程。
 export async function migrateLegacyAuth() {
   const reg = loadAccounts()
+  if (STORAGE.managed) return reg
   if (reg.accounts.length) return reg
   const legacy = defaultAuthFilePath()
   if (fs.existsSync(legacy)) {

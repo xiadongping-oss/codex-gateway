@@ -12,7 +12,7 @@ import Settings from './views/Settings.vue'
 import { useLiveData } from './composables/useLiveData'
 
 const activePage = ref('overview')
-const { gw } = useLiveData()
+const { gw, gwConnected } = useLiveData()
 
 // 侧栏折叠状态（记忆到 localStorage）
 const sidebarCollapsed = ref(localStorage.getItem('gw.sidebar.collapsed') === '1')
@@ -64,7 +64,7 @@ const titles = {
 
 <template>
   <div class="app">
-    <Sidebar :active="activePage" :gw-running="gw.running" :collapsed="effectiveCollapsed" @navigate="activePage = $event" @toggle="onToggleSidebar" />
+    <Sidebar :active="activePage" :gw-running="gw.running" :connected="gwConnected === true" :collapsed="effectiveCollapsed" @navigate="activePage = $event" @toggle="onToggleSidebar" />
 
     <main class="main">
       <Topbar :title="titles[activePage].title" :subtitle="titles[activePage].subtitle" :running="gw.running" />

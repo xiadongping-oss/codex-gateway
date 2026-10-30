@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "package": "chatgpt-bridge",
+  "version": "0.3.0",
+  "files": {
+    "cli.js": "1262e66aed470aa7cfa6587d481b98486194e7fb6beb1458c095557c911459b5",
+    "index.js": "f3771f0e4f37e023a070e504d017a72e8e06533288abef3f2cbc228000f64502"
+  }
+}

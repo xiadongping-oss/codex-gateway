@@ -19,6 +19,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
+import { loginTempRoot } from './storage-paths.mjs'
 
 const SESSION_ID_RE = /^[0-9a-f]{16}$/
 export const LOGIN_TIMEOUT_MS = 10 * 60 * 1000
@@ -40,7 +41,7 @@ function digestText(text) {
 }
 
 export function tempLoginRootDir(dataRoot) {
-  return path.join(dataRoot, 'tmp', 'codex-temp-login')
+  return loginTempRoot(dataRoot)
 }
 
 export function profileDirFor(dataRoot, sessionId) {
@@ -214,11 +215,38 @@ export function discoverCodexClient({
 }
 
 // ---------- 会话管理器 ----------
-// spawnImpl / discoverImpl / pidAliveImpl / killTree 可注入：单测不真启进程、不真探 pid。
-export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discoverImpl = discoverCodexClient, pidAliveImpl, killTree, defaultAuthText = readDefaultAuthText } = {}) {
+// ChildProcess objects are the only process authority. Persisted PIDs are diagnostic data.
+export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discoverImpl = discoverCodexClient, pidAliveImpl, trackChild = () => {}, defaultAuthText = readDefaultAuthText } = {}) {
   const root = tempLoginRootDir(dataRoot)
   // sessionId -> { sessionId, profileDir, pid, clientPath, startedAt, hasCredentials, clientExited, phase, error }
   const sessions = new Map()
+  const children = new Set()
+  function own(child, session) {
+    session.child = child
+    if (typeof child.once !== 'function') return // injected test doubles only
+    children.add(child)
+    trackChild(child)
+    child.once('exit', () => { children.delete(child); session.clientExited = true })
+    child.once('error', () => {
+      if (!child.pid) { children.delete(child); session.clientExited = true }
+      session.phase = 'failed'; session.error = '启动官方客户端失败，请使用浏览器授权重试'
+    })
+  }
+  async function stopAndWait(ms = 3000) {
+    const owned = [...children]
+    if (!owned.length) return true
+    return new Promise(resolve => {
+      let timer
+      const check = () => { if (owned.every(c => !children.has(c))) done(true) }
+      const done = ok => { clearTimeout(timer); for (const c of owned) { c.removeListener('exit', check); c.removeListener('error', check) }; resolve(ok) }
+      timer = setTimeout(() => done(false), ms)
+      for (const c of owned) {
+        c.once('exit', check); c.once('error', check)
+        try { c.kill('SIGKILL') } catch {}
+      }
+      check()
+    })
+  }
 
   function readMarker(profileDir) {
     try {
@@ -308,6 +336,7 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
           env: { ...process.env, CODEX_HOME: profileDir }
         })
         session.pid = child.pid || null
+        own(child, session)
         child.unref?.()
       } else if (process.platform === 'darwin' && client.kind === 'app') {
         // macOS GUI 应用走 open（--env 需要 macOS 13+）。open 立即返回，
@@ -317,6 +346,7 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
           env: { ...process.env, CODEX_HOME: profileDir }
         })
         session.pid = null // open 的壳进程不可作存活信号
+        own(child, session)
         child.unref?.()
       } else {
         throw new Error('posix 平台暂不支持 CLI 形态的官方登录（TUI 需要交互终端），请使用浏览器授权。')
@@ -340,8 +370,8 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     const info = resolveAuth(s)
     s.hasCredentials = !!info
     s.credSource = info ? info.source : null
-    const alive = pidAlive(s.pid)
-    s.clientExited = s.pid != null && !alive
+    const alive = pidAliveImpl ? pidAlive(s.pid) : !!s.child && !s.clientExited
+    if (pidAliveImpl) s.clientExited = s.pid != null && !alive
     const d = derivePhase(s, { now: Date.now(), pidRunning: alive })
     if (d.phase === 'failed') {
       s.phase = 'failed'
@@ -370,13 +400,10 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     if (!info) {
       throw new Error('还没读到本次登录的凭据：临时目录为空，默认 Codex 凭据也没有变化。请先在官方客户端完成登录')
     }
-    // 关掉仍在运行的客户端（用户可能登录完没关）
-    if (!s.clientExited && s.pid && pidAlive(s.pid) && killTree) {
-      try { await killTree(s.pid) } catch { /* 关不掉也不影响读凭据 */ }
-    }
+    // Import never kills a GUI that may have handed off to an existing instance.
     const marker = readMarker(s.profileDir)
     const result = { authJson: JSON.parse(info.text), credSource: info.source, clientPath: s.clientPath, marker }
-    const cleaned = destroyProfile(s.profileDir)
+    const cleaned = !s.recovered && s.clientExited && !s.defaultWatch && destroyProfile(s.profileDir)
     sessions.delete(sessionId)
     return { ...result, cleaned }
   }
@@ -384,10 +411,9 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
   async function cancel(sessionId) {
     const s = sessions.get(sessionId)
     if (!s) return { ok: true }
-    if (s.pid && pidAlive(s.pid) && killTree) {
-      try { await killTree(s.pid) } catch { /* 尽力而为 */ }
-    }
-    destroyProfile(s.profileDir)
+    // Cancelling stops watching/importing. Keep a profile while a client may still
+    // write to it; the shell owns new descendants and cleans them on application exit.
+    if (!s.recovered && s.clientExited && !s.defaultWatch) destroyProfile(s.profileDir)
     sessions.delete(sessionId)
     return { ok: true }
   }
@@ -412,22 +438,21 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
         sessions.set(ent.name, {
           sessionId: ent.name, profileDir: dir,
           clientPath: marker?.clientPath || null,
-          pid: marker?.pid || null,
+          pid: null,
           startedAt: marker?.createdAt ? Date.parse(marker.createdAt) : Date.now(),
           hasCredentials: true, clientExited: true,
           phase: 'ready', error: null, recovered: true
         })
         kept += 1
       } else {
-        if (marker?.pid && pidAlive(marker.pid) && killTree) {
-          try { killTree(marker.pid) } catch { /* 尽力而为 */ }
-        }
-        destroyProfile(dir)
-        removed += 1
+        // A stale PID can now belong to an unrelated process. Never signal it,
+        // and do not remove a profile whose previous writer cannot be verified.
+        if (marker?.pid || marker?.clientPath) { kept += 1; continue }
+        if (destroyProfile(dir)) removed += 1
       }
     }
     return { kept, removed }
   }
 
-  return { start, status, finish, cancel, recover, destroyProfile }
+  return { start, status, finish, cancel, recover, destroyProfile, stopAndWait }
 }

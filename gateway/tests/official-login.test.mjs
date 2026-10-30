@@ -230,7 +230,7 @@ function makeManager(root, { spawnImpl, killImpl, discoverImpl, alive = { flag: 
   })
 }
 
-test('start→status→finish 全流程：凭据出现+客户端退出 → finish 返回 auth 并清理目录', async () => {
+test('start→status→finish：GUI 交接退出后返回 auth，保留可能仍被使用的目录', async () => {
   const root = tmpDataRoot()
   const alive = { flag: true }
   const mgr = makeManager(root, { alive })
@@ -252,20 +252,20 @@ test('start→status→finish 全流程：凭据出现+客户端退出 → finis
 
   const fin = await mgr.finish(r.sessionId)
   assert.equal(fin.authJson.tokens.refresh_token, 'b')
-  assert.equal(fin.cleaned, true)
-  assert.ok(!fs.existsSync(r.profileDir))
+  assert.equal(fin.cleaned, false)
+  assert.ok(fs.existsSync(r.profileDir))
   // 会话已消费：再次 finish 报错
   await assert.rejects(mgr.finish(r.sessionId), /会话不存在/)
 })
 
-test('cancel：杀进程 + 清理目录 + 会话移除', async () => {
+test('cancel：取消导入，不按 PID 杀客户端，不删除未确认退出的目录', async () => {
   const root = tmpDataRoot()
   const killed = []
   const mgr = makeManager(root, { killImpl: async (pid) => killed.push(pid) })
   const r = await mgr.start()
   await mgr.cancel(r.sessionId)
-  assert.deepEqual(killed, [4321])
-  assert.ok(!fs.existsSync(r.profileDir))
+  assert.deepEqual(killed, [])
+  assert.ok(fs.existsSync(r.profileDir))
   const st = await mgr.status(r.sessionId)
   assert.equal(st.phase, 'unknown')
 })
@@ -372,4 +372,37 @@ test('destroyProfile：只删会话命名空间内的目录', async () => {
   fs.mkdirSync(sess, { recursive: true })
   assert.equal(mgr.destroyProfile(sess), true)
   assert.ok(!fs.existsSync(sess))
+})
+
+test('recover never signals a stale PID or removes a potentially live profile', async () => {
+  const root = tmpDataRoot()
+  const dir = profileDirFor(root, 'd'.repeat(16))
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'session-marker.json'), JSON.stringify({ pid: process.pid, clientPath: 'unrelated.exe' }))
+  let signalled = false
+  const mgr = makeManager(root, { killImpl: () => { signalled = true } })
+  assert.deepEqual(mgr.recover(), { kept: 1, removed: 0 })
+  assert.equal(signalled, false)
+  assert.ok(fs.existsSync(dir))
+})
+
+test('shutdown waits for actual owned helper exit, even after cancelling its session', async () => {
+  const { EventEmitter } = await import('node:events')
+  const child = new EventEmitter()
+  child.pid = 9876; child.unref = () => {}
+  let killed = 0; child.kill = () => { killed++; return true }
+  const tracked = []
+  const mgr = createOfficialLoginManager({ dataRoot: tmpDataRoot(),
+    spawnImpl: () => child, discoverImpl: () => ({ path: 'C:\\fake\\client.exe', kind: 'app' }),
+    trackChild: c => tracked.push(c), defaultAuthText: () => null })
+  const session = await mgr.start()
+  await mgr.cancel(session.sessionId)
+  assert.equal(await mgr.stopAndWait(10), false)
+  let finished = false
+  const stop = mgr.stopAndWait(1000).then(ok => { finished = true; return ok })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(finished, false)
+  child.emit('exit', 0)
+  assert.equal(await stop, true)
+  assert.equal(killed, 2); assert.deepEqual(tracked, [child])
 })

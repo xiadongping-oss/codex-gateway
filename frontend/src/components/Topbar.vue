@@ -14,6 +14,13 @@ const props = defineProps({
   running: { type: Boolean, default: true }
 })
 
+const theme = ref(localStorage.getItem('cgw.theme') === 'dark' ? 'dark' : 'light')
+document.documentElement.dataset.theme = theme.value
+function toggleTheme() {
+  theme.value = theme.value === 'light' ? 'dark' : 'light'
+  document.documentElement.dataset.theme = theme.value
+  localStorage.setItem('cgw.theme', theme.value)
+}
 const copied = ref(false)
 const copyErr = ref('')
 const access = ref({ baseUrl: props.address, apiKey: null })
@@ -47,6 +54,9 @@ async function copyConfig() {
       <div class="subtitle">{{ subtitle }}</div>
     </div>
     <div class="topbar-right">
+      <button class="theme-toggle" @click="toggleTheme" :aria-label="theme === 'light' ? '切换深色主题' : '切换浅色主题'" :title="theme === 'light' ? '切换深色主题' : '切换浅色主题'">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path v-if="theme === 'light'" d="M20 14A8 8 0 0110 4a8.5 8.5 0 1010 10Z"/><g v-else><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/></g></svg>
+      </button>
       <span class="addr-chip">{{ shownAddress }}</span>
       <span class="pill" :class="{ off: !running }">
         <span class="dot" :class="{ off: !running }"></span>{{ running ? '运行中' : '已停止' }}
@@ -80,4 +90,14 @@ async function copyConfig() {
   background: rgba(244,63,94,0.14); border: 1px solid rgba(244,63,94,0.35);
   color: #fda4af; font-size: 12px; padding: 6px 10px; border-radius: 8px;
 }
+
+.topbar { height: 96px; border: 0; padding: 0 32px; gap: 16px; }
+.topbar h1 { font-size: 23px; font-weight: 650; letter-spacing: -.5px; }
+.subtitle { font-family: inherit; margin-top: 5px; }
+.ver-chip { border: 0; background: var(--card-2); vertical-align: 3px; }
+.topbar-right { gap: 10px; }
+.topbar-right .pill, .addr-chip { display: none; }
+.theme-toggle { border: 1px solid var(--border); background: var(--card); color: var(--text-2); width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; cursor: pointer; }
+.copy-err { color: var(--rose); background: var(--card); }
+@media(max-width:680px) { .topbar { height: auto; min-height: 96px; padding: 18px; flex-wrap: wrap; } .topbar h1 { font-size: 20px; } .subtitle { font-size: 11px; } }
 </style>
