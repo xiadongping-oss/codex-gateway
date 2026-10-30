@@ -82,6 +82,7 @@ foreach ($item in $items) {
 export function initializeStorage(paths, { protect = protectStorageTree } = {}) {
   if (!paths.managed) return null
   let fd
+  let guardFd
   let owner
   const created = []
   const lock = path.join(paths.runtime, 'owner.lock')
@@ -98,6 +99,7 @@ export function initializeStorage(paths, { protect = protectStorageTree } = {}) 
       return true
     } finally {
       try { fs.closeSync(heldFd) } catch {}
+      if (guardFd !== undefined) { fs.closeSync(guardFd); guardFd = undefined }
     }
   }
   try {
@@ -111,6 +113,22 @@ export function initializeStorage(paths, { protect = protectStorageTree } = {}) 
     }
     const runtimeStat = fs.lstatSync(paths.runtime)
     if (runtimeStat.isSymbolicLink() || !runtimeStat.isDirectory()) throw storageError('DATA_DIR_INVALID', '拒绝无效运行目录')
+    if (process.platform === 'darwin') {
+      // Darwin O_EXLOCK (sys/fcntl.h): libuv passes numeric flags to open(2).
+      // Keep this empty file permanently: unlinking an advisory lock splits its
+      // identity and could allow a second writer. Rust recovery uses the same lock.
+      const guard = path.join(paths.runtime, 'owner.guard')
+      const flags = fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW | 0x20
+      try { guardFd = fs.openSync(guard, flags, 0o600) } catch (error) {
+        if (['EAGAIN', 'EWOULDBLOCK'].includes(error.code)) throw storageError('DATA_IN_USE', '数据目录正在使用或恢复中')
+        throw error
+      }
+      const held = fs.fstatSync(guardFd), current = fs.lstatSync(guard)
+      if (!held.isFile() || held.nlink !== 1 || held.size !== 0 || held.uid !== process.getuid() ||
+          (held.mode & 0o022) || current.isSymbolicLink() || held.dev !== current.dev || held.ino !== current.ino) {
+        throw storageError('DATA_DIR_INVALID', '数据目录互斥文件无效')
+      }
+    }
     try { fd = fs.openSync(lock, 'wx', 0o600) } catch (error) {
       if (error.code === 'EEXIST') throw storageError('DATA_IN_USE', '数据目录已有所有权记录；请停止原实例，异常退出记录需人工确认后恢复')
       throw error
@@ -120,7 +138,7 @@ export function initializeStorage(paths, { protect = protectStorageTree } = {}) 
     fs.fsyncSync(fd)
     assertStorageTree(paths.root)
     const existing = fs.readdirSync(paths.root).filter(name => name !== 'runtime')
-    existing.push(...fs.readdirSync(paths.runtime).filter(name => name !== 'owner.lock'))
+    existing.push(...fs.readdirSync(paths.runtime).filter(name => name !== 'owner.lock' && !(guardFd !== undefined && name === 'owner.guard')))
     if (existing.length && !fs.existsSync(paths.layout)) {
       throw storageError('DATA_MIGRATION_REQUIRED', '旧数据目录需要显式迁移，未更改原有文件')
     }
@@ -148,6 +166,7 @@ export function initializeStorage(paths, { protect = protectStorageTree } = {}) 
     })
   } catch (error) {
     try { if (fd !== undefined) release() } catch {}
+    if (guardFd !== undefined) { try { fs.closeSync(guardFd) } catch {}; guardFd = undefined }
     for (const dir of created.reverse()) { try { fs.rmdirSync(dir) } catch {} }
     if (error.code?.startsWith('DATA_')) throw error
     throw storageError('DATA_DIR_UNWRITABLE', `无法准备数据目录：${error.code || '权限或写入失败'}`)

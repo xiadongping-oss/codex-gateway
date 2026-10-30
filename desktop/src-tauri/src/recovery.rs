@@ -30,6 +30,8 @@ impl Budget {
 pub struct Lease {
     pub(super) path: PathBuf,
     pub(super) bytes: Vec<u8>,
+    #[cfg(target_os = "macos")]
+    pub(super) identity: crate::mac_recovery::Identity,
 }
 impl Lease {
     pub fn capture(data: &Path, pid: u32) -> Result<Self, String> {
@@ -49,7 +51,15 @@ impl Lease {
         {
             return Err("LEASE_UNVERIFIED".into());
         }
-        Ok(Self { path, bytes })
+        #[cfg(target_os = "macos")]
+        let identity =
+            crate::mac_recovery::capture(data, &bytes).map_err(|_| "LEASE_UNVERIFIED")?;
+        Ok(Self {
+            path,
+            bytes,
+            #[cfg(target_os = "macos")]
+            identity,
+        })
     }
     // Call only after Child::try_wait and owned-tree termination both succeeded.
     pub fn release_after_tree_exit(&self) -> bool {
@@ -90,7 +100,11 @@ impl Lease {
                 ) != 0
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        {
+            crate::mac_recovery::release(self)
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             // Do not clear a stale lock until handle-based recovery has been
             // implemented and verified on the supported macOS builds.
@@ -142,13 +156,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!("cgw-lease-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(root.join("runtime")).unwrap();
         let lock = root.join("runtime/owner.lock");
+        #[cfg(target_os = "macos")]
+        fs::write(root.join("runtime/owner.guard"), "").unwrap();
         fs::write(
             &lock,
             serde_json::json!({"pid":123,"ownerId":uuid::Uuid::new_v4()}).to_string(),
         )
         .unwrap();
         let lease = Lease::capture(&root, 123).unwrap();
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         assert!(!lease.release_after_tree_exit()); // Unknown stale files remain intact.
         fs::remove_file(&lock).unwrap();
         assert!(lease.release_after_tree_exit());

@@ -6,6 +6,8 @@ mod console;
 mod desktop;
 mod desktop_check;
 mod diagnostics;
+#[cfg(target_os = "macos")]
+mod mac_recovery;
 mod process_tree;
 mod protocol;
 mod recovery;

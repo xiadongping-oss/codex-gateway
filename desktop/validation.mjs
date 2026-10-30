@@ -61,7 +61,7 @@ export class ValidationRun {
     fs.mkdirSync(path.dirname(this.directory), { recursive: true })
     fs.mkdirSync(this.directory)
     this.report = { schemaVersion: 1, startedAt: new Date().toISOString(), status: 'running', scope: 'build_and_core_tests', ...metadata,
-      acceptance: { nativeUi: 'not_run', realOAuth: 'not_run', signedInstaller: 'not_run', macLockRecovery: 'not_implemented' }, stages: [] }
+      acceptance: { nativeUi: 'not_run', realOAuth: 'not_run', signedInstaller: 'not_run', macLockRecovery: 'not_run' }, stages: [] }
     this.save()
   }
   save() { fs.writeFileSync(path.join(this.directory, 'report.json'), JSON.stringify(this.report, null, 2) + '\n') }

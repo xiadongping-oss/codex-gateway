@@ -12,6 +12,10 @@ pub struct Tree {
 }
 
 impl Tree {
+    #[cfg(target_os = "macos")]
+    pub fn group_id(&self) -> i32 {
+        self.group
+    }
     pub fn spawn(command: &mut Command) -> Result<(Child, Self), String> {
         #[cfg(windows)]
         {

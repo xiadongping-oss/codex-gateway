@@ -30,6 +30,7 @@ try {
   await run.step('validation-tests', process.execPath, ['--test', 'desktop/validation.test.mjs'], { cwd: root })
   await run.step('gateway-core', process.execPath, ['--test', '--test-timeout=60000', 'gateway/tests/storage.test.mjs', 'gateway/tests/storage-integration.test.mjs', 'gateway/tests/desktop.test.mjs', 'gateway/tests/desktop-integration.test.mjs'], { cwd: root })
   await run.step('rust-tests', process.execPath, ['desktop/build.mjs', '--test', '--locked', ...offline], { cwd: root, env: { ...process.env, ...(process.platform === 'darwin' ? { MACOSX_DEPLOYMENT_TARGET: '13.0' } : {}) } })
+  if (process.platform === 'darwin') { run.report.acceptance.macLockRecovery = 'core_scenarios_passed'; run.save() }
   const build = JSON.parse(fs.readFileSync(path.join(root, 'desktop/.generated/last-build.json')))
   const env = cargoEnvironment(root, build)
   const manifest = verifyDesktop({ target: run.report.host.target, outDir: env.CGW_BUILD_RESOURCES })

@@ -214,6 +214,10 @@ fn launch(settings: &Settings, cancel: &AtomicBool) -> Result<Session, String> {
     if crate::cold_recovery::recover(&settings.data) {
         let _ = Log::new(&settings.webview_data).record(Event::RecoveryScheduled);
     }
+    #[cfg(target_os = "macos")]
+    if crate::mac_recovery::recover(&settings.data) {
+        let _ = Log::new(&settings.webview_data).record(Event::RecoveryScheduled);
+    }
     let mut command = Command::new(&resources.node);
     command
         .arg(&resources.entry)
@@ -316,6 +320,12 @@ fn launch(settings: &Settings, cancel: &AtomicBool) -> Result<Session, String> {
     )?);
     #[cfg(windows)]
     crate::cold_recovery::save(
+        session.lease.as_ref().unwrap(),
+        session.tree.as_ref().unwrap(),
+    )
+    .map_err(|_| "RECOVERY_RECEIPT_FAILED")?;
+    #[cfg(target_os = "macos")]
+    crate::mac_recovery::save(
         session.lease.as_ref().unwrap(),
         session.tree.as_ref().unwrap(),
     )
@@ -917,8 +927,100 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    fn cold_settings(data: std::path::PathBuf) -> Settings {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        Settings {
+            resources: std::env::var("CGW_BUILD_RESOURCES").unwrap().into(),
+            webview_data: data.parent().unwrap().join("webview"),
+            data,
+            port,
+            smoke: true,
+            isolated: true,
+            smoke_case: "normal".into(),
+        }
+    }
     #[test]
-    #[cfg(windows)]
+    #[cfg(target_os = "macos")]
+    #[ignore = "cold recovery owner subprocess, invoked by parent test"]
+    fn cold_owner_fixture() {
+        use std::io::Write;
+        let settings = cold_settings(std::env::var("CGW_COLD_DATA").unwrap().into());
+        let _session = launch(&settings, &AtomicBool::new(false)).unwrap();
+        println!("MAC_COLD_READY");
+        std::io::stdout().flush().unwrap();
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn mac_shell_crash_recovers_only_owned_lock_and_restarts_gateway() {
+        use std::io::{BufRead, BufReader};
+        let root = std::env::temp_dir().join(format!("cgw-cold-shell-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let data = root.join("data");
+        let mut owner = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "supervisor::tests::cold_owner_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("CGW_COLD_DATA", &data)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let output = owner.stdout.take().unwrap();
+        let (tx, rx) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            for line in BufReader::new(output).lines().map_while(Result::ok) {
+                if line == "MAC_COLD_READY" {
+                    let _ = tx.send(());
+                    break;
+                }
+            }
+        });
+        let ready = rx.recv_timeout(Duration::from_secs(40)).is_ok();
+        let live_refused = !crate::mac_recovery::recover(&data);
+        let _ = owner.kill();
+        owner.wait().unwrap();
+        assert!(ready, "owner fixture failed to start");
+        assert!(live_refused);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut recovered = false;
+        while Instant::now() < deadline {
+            if crate::mac_recovery::recover(&data) {
+                recovered = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            recovered,
+            "dead shell and empty group must allow exact owned lock recovery"
+        );
+        assert!(!data.join("runtime/owner.lock").exists());
+        assert!(!data.join("runtime/desktop-recovery.json").exists());
+        let mut session = launch(&cold_settings(data), &AtomicBool::new(false)).unwrap();
+        session
+            .send("shutdown", json!({"reason":"user_exit"}))
+            .unwrap();
+        wait_frame(
+            &mut session,
+            Duration::from_secs(8),
+            &AtomicBool::new(false),
+            |v| v["type"] == "stopped",
+        )
+        .unwrap();
+        assert!(session.cleanup());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    #[cfg(any(windows, target_os = "macos"))]
     fn recovered_gateway_rejects_old_ticket_and_preserves_unknown_lock() {
         use std::io::{Read, Write};
         let root = std::env::temp_dir().join(format!("cgw-d04-{}", uuid::Uuid::new_v4()));
@@ -937,6 +1039,8 @@ mod tests {
         };
         let cancel = AtomicBool::new(false);
         let mut first = launch(&settings, &cancel).unwrap();
+        #[cfg(target_os = "macos")]
+        assert!(!first.lease.as_ref().unwrap().release_after_tree_exit());
         first.send("bootstrap", json!({})).unwrap();
         let frame = wait_frame(&mut first, Duration::from_secs(5), &cancel, |v| {
             v["type"] == "bootstrap"
