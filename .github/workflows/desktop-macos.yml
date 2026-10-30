@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   native-build:
-    name: ${{ matrix.target }} build and core tests
+    name: ${{ matrix.target }} build and native checks
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     strategy:
@@ -42,7 +42,7 @@ jobs:
       - name: Install frontend build dependencies
         run: npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
       - name: Validate on the actual target architecture
-        run: node desktop/verify.mjs --expect-target=${{ matrix.target }} --report-dir=output/desktop-ci/${{ matrix.target }}
+        run: node desktop/verify.mjs --native --expect-target=${{ matrix.target }} --report-dir=output/desktop-ci/${{ matrix.target }}
       - name: Preserve verification evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

@@ -29,7 +29,7 @@ try {
   await run.step('frontend', process.execPath, [path.join(root, 'frontend/node_modules/vite/bin/vite.js'), 'build'], { cwd: path.join(root, 'frontend') })
   await run.step('validation-tests', process.execPath, ['--test', 'desktop/validation.test.mjs'], { cwd: root })
   await run.step('gateway-core', process.execPath, ['--test', '--test-timeout=60000', 'gateway/tests/storage.test.mjs', 'gateway/tests/storage-integration.test.mjs', 'gateway/tests/desktop.test.mjs', 'gateway/tests/desktop-integration.test.mjs'], { cwd: root })
-  await run.step('rust-tests', process.execPath, ['desktop/build.mjs', '--test', '--locked', ...offline], { cwd: root, env: { ...process.env, ...(process.platform === 'darwin' ? { MACOSX_DEPLOYMENT_TARGET: '13.0' } : {}) } })
+  await run.step('rust-tests', process.execPath, ['desktop/build.mjs', '--test', '--locked', ...offline], { cwd: root, timeout: 25 * 60_000, env: { ...process.env, ...(process.platform === 'darwin' ? { MACOSX_DEPLOYMENT_TARGET: '13.0' } : {}) } })
   if (process.platform === 'darwin') { run.report.acceptance.macLockRecovery = 'core_scenarios_passed'; run.save() }
   const build = JSON.parse(fs.readFileSync(path.join(root, 'desktop/.generated/last-build.json')))
   const env = cargoEnvironment(root, build)
@@ -41,12 +41,18 @@ try {
   await run.step('rust-build', 'cargo', ['build', ...common], { cwd: root, env })
   await run.step('bundled-gateway', process.execPath, ['gateway/tests/prepared-resources-smoke.mjs', `--resources=${env.CGW_BUILD_RESOURCES}`], { cwd: root, env })
   if (args.includes('--native')) {
-    for (const scenario of ['normal', 'session-loss', 'channel-loss']) await run.step(`window-${scenario}`, process.execPath, ['desktop/smoke.mjs', `--case=${scenario}`], { cwd: root, timeout: 90_000 })
+    run.report.acceptance.nativeScenarios = {}
+    for (const scenario of ['normal', 'session-loss', 'channel-loss', 'desktop', 'node-crash', 'crash-loop', 'shell-crash']) {
+      run.report.acceptance.nativeScenarios[scenario] = 'running'; run.save()
+      await run.step(`window-${scenario}`, process.execPath, ['desktop/smoke.mjs', `--case=${scenario}`], { cwd: root, timeout: 90_000 })
+      run.report.acceptance.nativeScenarios[scenario] = 'passed'; run.save()
+    }
     await run.step('window-port-conflict', process.execPath, ['desktop/smoke.mjs', '--port-conflict'], { cwd: root, timeout: 90_000 })
-    run.report.acceptance.nativeUi = 'basic_scenarios_passed'
+    run.report.acceptance.nativeScenarios['port-conflict'] = 'passed'
+    run.report.acceptance.nativeUi = 'automated_scenarios_passed'
   }
   run.finish()
-  console.log('PASS: 构建与核心检查完成；真实登录、安装签名及 Mac 异常锁恢复另行验收。')
+  console.log('PASS: 所选构建与自动化检查完成；真实鼠标操作、系统登录自启动、OAuth/API 和安装签名仍需另行验收。')
 } catch (error) {
   run.report.error = error.message
   run.finish('failed')

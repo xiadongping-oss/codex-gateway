@@ -84,6 +84,7 @@ fn main() {
             args.iter()
                 .filter(|s| {
                     s.starts_with("--data-dir=")
+                        || s.starts_with("--resources=")
                         || s.starts_with("--port=")
                         || s.as_str() == "--isolated"
                 })
