@@ -246,11 +246,17 @@ impl Session {
         let end = std::time::Instant::now() + Duration::from_secs(6);
         while std::time::Instant::now() < end {
             if matches!(self.child.try_wait(), Ok(Some(_))) {
-                return self.tree.as_mut().is_none_or(|t| t.terminate());
+                return self
+                    .tree
+                    .as_mut()
+                    .is_none_or(|t| t.terminate(&mut self.child));
             }
             std::thread::sleep(Duration::from_millis(25));
         }
-        let tree_empty = self.tree.as_mut().is_none_or(|t| t.terminate());
+        let tree_empty = self
+            .tree
+            .as_mut()
+            .is_none_or(|t| t.terminate(&mut self.child));
         let _ = self.child.kill();
         self.child.wait().is_ok() && tree_empty
     }

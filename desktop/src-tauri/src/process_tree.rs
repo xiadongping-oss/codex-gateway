@@ -161,7 +161,7 @@ impl Tree {
                 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
         }
     }
-    pub fn terminate(&mut self) -> bool {
+    fn request_termination(&mut self) {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle;
@@ -176,9 +176,16 @@ impl Tree {
         {
             self.guardian.stdin.take();
         }
+    }
+    pub fn terminate(&mut self, child: &mut Child) -> bool {
+        self.request_termination();
         let end = Instant::now() + Duration::from_secs(3);
         while Instant::now() < end {
-            if self.empty() {
+            // Reap the owned root while waiting for its group to disappear.
+            // On Unix an exited, unreaped root can keep the group observable.
+            // Use Child so no unrelated/reused PID is waited on or signalled.
+            let root_exited = matches!(child.try_wait(), Ok(Some(_)));
+            if self.empty() && root_exited {
                 return true;
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -188,7 +195,19 @@ impl Tree {
 }
 impl Drop for Tree {
     fn drop(&mut self) {
-        let _ = self.terminate();
+        self.request_termination();
+        // The caller owns/reaps the root. Drop is a best-effort fallback; only
+        // terminate(child) can certify that both the root and tree have exited.
+        #[cfg(unix)]
+        {
+            let end = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < end {
+                if matches!(self.guardian.try_wait(), Ok(Some(_))) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
     }
 }
 
@@ -254,7 +273,7 @@ mod unix_tests {
         // Terminate only the Child held by this test; no descendants were spawned.
         root.kill().unwrap();
         root.wait().unwrap();
-        let finally_empty = tree.terminate();
+        let finally_empty = tree.terminate(&mut root);
         assert!(root_alive);
         assert!(!prematurely_empty);
         assert!(finally_empty);
@@ -342,7 +361,7 @@ mod tests {
         let (mut child, mut tree) = fixture();
         let handles = owned_handles(child.stdout.take().unwrap());
         assert!(!tree.empty());
-        assert!(tree.terminate());
+        assert!(tree.terminate(&mut child));
         child.wait().unwrap();
         exited(&handles);
         assert!(canary.try_wait().unwrap().is_none());
@@ -459,7 +478,7 @@ mod portable_tests {
         );
         let (mut root, mut tree) = fixture(false);
         let rx = events(root.0.stdout.take().unwrap());
-        assert!(tree.terminate());
+        assert!(tree.terminate(&mut root.0));
         assert!(!rx.recv_timeout(Duration::from_secs(5)).unwrap());
         root.0.wait().unwrap();
         assert!(canary.0.try_wait().unwrap().is_none());
