@@ -86,8 +86,10 @@ export async function gwRequest(path, method = 'GET', body = null, fallback = un
   return await res.json().catch(() => ({}))
 }
 
-// 超时控制器：Node/浏览器都支持 AbortSignal.timeout，优先用它
-function timeoutSignal(ms) {
+// 超时控制器：Node/浏览器都支持 AbortSignal.timeout，优先用它。
+// 导出是因为 gateway.js 里几个需要自定义语义的接口（上传、导入、连接测试）
+// 直接用了 fetch，它们同样不能没有超时。
+export function timeoutSignal(ms) {
   if (!ms) return undefined
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
     return AbortSignal.timeout(ms)

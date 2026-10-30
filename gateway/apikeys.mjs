@@ -377,6 +377,9 @@ export function flushApiKeys() {
     clearTimeout(writeTimer)
     writeTimer = null
   }
+  // 从未 reg() 过就不要落盘：regCache 此时还是 null，写下去会把 api-keys.json
+  // 变成字面量 `null`，下次 loadReg() 读不到 .keys，用户全部 Key 静默消失。
+  if (!regCache) return
   try {
     writeJsonAtomic(KEYS_FILE, regCache)
   } catch {}

@@ -978,7 +978,11 @@ export function resolveActiveAuthFilePath() {
 }
 
 // 首次启动迁移：已有旧 auth.json 且无账号仓库时，导入为“默认账号”
-export function migrateLegacyAuth() {
+//
+// 必须是 async：addAccount 内部还要写盘。此前这里不 await 也不 catch，
+// 后果有两个 —— ① 返回的 loadAccounts() 读的是写入前的旧注册表，调用方拿到空列表；
+// ② 写盘一旦抛错就是未处理的 Promise rejection，足以掀翻整个进程。
+export async function migrateLegacyAuth() {
   const reg = loadAccounts()
   if (reg.accounts.length) return reg
   const legacy = defaultAuthFilePath()
@@ -986,13 +990,15 @@ export function migrateLegacyAuth() {
     try {
       const raw = JSON.parse(fs.readFileSync(legacy, 'utf-8'))
       const data = normalizeAuthJson(raw)
-      addAccount({
+      await addAccount({
         name: '默认账号',
         provider: data.auth_mode === 'api_key' ? 'apikey' : 'token',
         mode: 'bridge',
         data
       })
-    } catch {}
+    } catch (e) {
+      console.error('[codex-gateway] 迁移旧 auth.json 失败：' + (e && e.message || e))
+    }
   }
   return loadAccounts()
 }

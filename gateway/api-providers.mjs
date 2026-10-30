@@ -12,11 +12,15 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { writeJsonAtomic } from './atomic-write.mjs'
 import { resolveDataRoot } from './data-root.mjs'
 
-// 存储路径可用环境变量注入（测试隔离数据目录）；默认挂数据根
-const STORE_PATH = process.env.API_PROVIDERS_STORE_PATH || path.join(resolveDataRoot(process.env), 'api-providers.json')
+// 存储路径可用环境变量注入（测试隔离数据目录）；默认挂数据根。
+// 第二参必须传 __dirname：绿色版下 process.cwd() 可能是桌面或任意启动目录，
+// 漏传会让供应商清单落到不可预期的位置（其余模块全部传 __dirname）。
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const STORE_PATH = process.env.API_PROVIDERS_STORE_PATH || path.join(resolveDataRoot(process.env, __dirname), 'api-providers.json')
 const MAX_SAVED = 30
 
 function loadStore() {

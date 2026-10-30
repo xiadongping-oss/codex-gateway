@@ -119,7 +119,15 @@ export function createAdminAuth(options = {}) {
       const eq = part.indexOf('=')
       if (eq < 0) continue
       const k = part.slice(0, eq).trim()
-      if (k) out[k] = decodeURIComponent(part.slice(eq + 1).trim())
+      if (!k) continue
+      // 畸形百分号编码（Cookie: a=%）会让 decodeURIComponent 抛 URIError。
+      // 这个 header 是客户端完全可控的，不能让半吊子编码把请求处理器掀翻 ——
+      // 单条解不开就当这条 Cookie 不存在，其余照常解析。
+      try {
+        out[k] = decodeURIComponent(part.slice(eq + 1).trim())
+      } catch {
+        out[k] = part.slice(eq + 1).trim()
+      }
     }
     return out
   }

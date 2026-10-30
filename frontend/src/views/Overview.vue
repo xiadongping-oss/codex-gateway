@@ -12,14 +12,10 @@ import LanMiniCard from '../components/LanMiniCard.vue'
 import BridgePoolCard from '../components/BridgePoolCard.vue'
 import SetupModal from '../components/SetupModal.vue'
 
-const { status, account, logs, capabilities, capabilitiesBase, gw, gwBusy, gwRestart, loadingDiagnose, diagnoseError, health, toggleCapability, diagnose } =
+const { status, account, logs, capabilities, capabilitiesBase, gw, gwBusy, gwRestart, toggleCapability, diagnose } =
   useLiveData()
 
 const showSetup = ref(false)
-
-async function handleDiagnose() {
-  await diagnose()
-}
 const fmtUptime = (s) => {
   const h = String(Math.floor(s / 3600)).padStart(2, '0')
   const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0')
@@ -149,14 +145,11 @@ const authHint = computed(() => {
       <LogsCard :logs="logs" />
     </div>
 
-    <SetupModal
-      v-if="showSetup"
-      :loading="loadingDiagnose"
-      :error="diagnoseError"
-      :health="health"
-      @close="showSetup = false"
-      @diagnose="handleDiagnose"
-    />
+    <!-- SetupModal 只声明了 close / changed 两个事件，也不接受任何 prop。
+         此前这里传的 :loading / :error / :health / @diagnose 全部走 attribute
+         fallthrough 落到根 div 上（DOM 里出现 loading="false"），
+         @diagnose 则是一个永远不会触发的原生监听器。 -->
+    <SetupModal v-if="showSetup" @close="showSetup = false" @changed="showSetup = false" />
   </div>
 </template>
 

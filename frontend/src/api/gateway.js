@@ -36,7 +36,11 @@
 //   POST /__gw/apikeys                  创建 API Key（一次性返回明文 token）
 //   DELETE /__gw/apikeys                按 id 删除 API Key
 
-import { request, gwRequest, parseBase, BASE } from './client'
+import { request, gwRequest, parseBase, BASE, timeoutSignal } from './client'
+
+// 上传 / 导入要传整个文件的二进制，超时给得比控制面宽得多：
+// 大图 + 慢网时 30 秒不够，但没有上限又会让按钮永久转圈。
+const UPLOAD_TIMEOUT_MS = 120000
 
 // ---------- 代理状态（归一化 /__gw/status） ----------
 export async function getProxyStatus() {
@@ -210,21 +214,28 @@ export async function getAssetSources() {
   const r = await gwRequest('/__gw/assets/sources', 'GET').catch(() => null)
   return (r && Array.isArray(r.sources)) ? r.sources : []
 }
+// 这几个接口此前是裸 fetch，一个超时都没有 —— 与 client.js 里
+// 「避免网关假死 → 前端无限 pending → 按钮永远转圈」的设计目标直接冲突。
+// 上传大图时网络卡死，uploading / importing 会永久为真，按钮再也不能点。
 export async function saveAssetSource(body) {
   const res = await fetch('/__gw/assets/sources', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    signal: timeoutSignal(30000)
   })
   const j = await res.json().catch(() => ({}))
   if (!res.ok || !j.ok) throw new Error(j.detail || j.error || 'HTTP ' + res.status)
   return j
 }
 export async function deleteAssetSource(id) {
-  return await gwRequest('/__gw/assets/sources', 'DELETE', { id })
+  // 其余素材接口都吞错返回 null，唯独这里会 reject：
+  // 调用方没接 catch 就变成 unhandled rejection，界面「没反应」。
+  return await gwRequest('/__gw/assets/sources', 'DELETE', { id }).catch(() => null)
 }
 // 连接测试（不落盘）：传 {type, config} 测表单值，或传 {id} 测已保存源
 export async function testAssetSource(body) {
   const res = await fetch('/__gw/assets/sources/test', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    signal: timeoutSignal(30000)
   })
   const j = await res.json().catch(() => ({}))
   if (j.message === undefined) throw new Error(j.detail || j.error || 'HTTP ' + res.status)
@@ -238,7 +249,8 @@ export const assetFileUrl = (src, name) =>
   BASE + '/__gw/assets/file?src=' + encodeURIComponent(src || 'generated') + '&n=' + encodeURIComponent(name)
 export async function uploadAsset(sourceId, origin, name) {
   const res = await fetch('/__gw/assets/upload', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId, origin, name })
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId, origin, name }),
+    signal: timeoutSignal(UPLOAD_TIMEOUT_MS)
   })
   const j = await res.json().catch(() => ({}))
   if (!res.ok || !j.ok) throw new Error(j.detail || j.error || 'HTTP ' + res.status)
@@ -249,7 +261,8 @@ export async function importAsset(sourceId, file) {
   const res = await fetch('/__gw/assets/import?src=' + encodeURIComponent(sourceId), {
     method: 'POST',
     headers: { 'x-filename': encodeURIComponent(file.name), 'Content-Type': 'application/octet-stream' },
-    body: file
+    body: file,
+    signal: timeoutSignal(UPLOAD_TIMEOUT_MS)
   })
   const j = await res.json().catch(() => ({}))
   if (!res.ok || !j.ok) throw new Error(j.detail || j.error || 'HTTP ' + res.status)

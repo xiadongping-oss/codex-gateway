@@ -206,8 +206,6 @@ function createLiveData() {
   return {
     status, account, capabilities, capabilitiesBase, models, health, logs,
     lastFetchAt, lastError, errFlags,
-    loadingDiagnose: ref(false),
-    diagnoseError: ref(''),
     gw, gwLogs, gwBusy,
     diagnose, gwStart, gwStop, gwRestart, addLog, toggleCapability,
     refresh, refreshLogs

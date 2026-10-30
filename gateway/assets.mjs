@@ -196,7 +196,22 @@ export function saveSource(body = {}) {
 
 // ---------- 素材源连接测试（不落盘，凭据错误提前暴露） ----------
 const PROBE_TIMEOUT = 12000
+// 上传超时必须比探测宽松得多：单张图几 MB，企业内网 + 代理下 12 秒不够。
+// 但**必须有**——没有超时的 fetch 会让请求永久挂住，前端只能一直转圈，
+// 而启动器那条 HTTP 连接也跟着不释放。
+const UPLOAD_TIMEOUT = 120000
 const EMPTY_SHA = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+
+// 超时/网络异常统一成一句人话，别把裸的 `The operation was aborted due to timeout` 丢给用户。
+// 只处理超时这一类；其余错误（HTTP 403、域名写错等）自带信息量，原样上抛更好排障。
+function uploadTimeoutError(where, e) {
+  const name = String((e && e.name) || '')
+  const msg = String((e && e.message) || e)
+  if (name === 'TimeoutError' || name === 'AbortError' || /timeout|aborted/i.test(msg)) {
+    return new Error(`${where}超时（${Math.round(UPLOAD_TIMEOUT / 1000)}s）：检查网络 / 出网代理，或目标站点是否可达`)
+  }
+  return null
+}
 
 async function probeS3(cfg) {
   const { origin, host, canonicalUri } = s3Urls(cfg, '')
@@ -233,7 +248,8 @@ async function probeLsky(cfg) {
 async function probeSmms(cfg) {
   const res = await fetch('https://sm.ms/api/v2/profile', {
     headers: { Authorization: 'Bearer ' + cfg.token },
-    signal: AbortSignal.timeout(PROBE_TIMEOUT)
+    signal: AbortSignal.timeout(PROBE_TIMEOUT),
+    ...OUTBOUND_FETCH_OPTS
   })
   const j = await res.json().catch(() => null)
   if (res.ok && j?.success) return { ok: true, message: `连接成功：${j.data?.email || '账号可用'}` }
@@ -441,7 +457,8 @@ async function s3Put(cfg, name, buf, contentType) {
   })
   const res = await fetch(`${origin}${canonicalUri}`, {
     method: 'PUT',
-    ...OUTBOUND_FETCH_OPTS,
+    ...OUTBOUND_FETCH_OPTS, // 不跟随重定向：避免 302 把凭据带到别处
+    signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
     headers: {
       Host: host,
       Authorization: authorization,
@@ -483,6 +500,7 @@ async function lskyPut(cfg, name, buf, contentType) {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + cfg.token },
     body: fd,
+    signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
     ...OUTBOUND_FETCH_OPTS
   })
   const j = await res.json().catch(() => null)
@@ -497,7 +515,11 @@ async function smmsPut(cfg, name, buf, contentType) {
   const res = await fetch('https://sm.ms/api/v2/upload', {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + cfg.token },
-    body: fd
+    body: fd,
+    signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
+    // 此前这三处只有 s3 / lsky 带了 redirect:manual，SM.MS 漏了 ——
+    // 站点一旦回 302，undici 默认会跟着跳，Authorization 就跟着头一起被带到新地址。
+    ...OUTBOUND_FETCH_OPTS
   })
   const j = await res.json().catch(() => null)
   const url = j?.data?.url
@@ -510,10 +532,16 @@ export async function uploadToSource(sourceId, { name, buf, contentType }) {
   if (!src) throw new Error('素材源不存在：' + sourceId)
   if (!buf || !buf.length) throw new Error('空文件')
   let url
-  if (src.type === 's3') url = await s3Put(src.config, name, buf, contentType)
-  else if (src.type === 'lsky') url = await lskyPut(src.config, name, buf, contentType)
-  else if (src.type === 'smms') url = await smmsPut(src.config, name, buf, contentType)
-  else throw new Error('该素材源类型不支持上传：' + src.type)
+  try {
+    if (src.type === 's3') url = await s3Put(src.config, name, buf, contentType)
+    else if (src.type === 'lsky') url = await lskyPut(src.config, name, buf, contentType)
+    else if (src.type === 'smms') url = await smmsPut(src.config, name, buf, contentType)
+    else throw new Error('该素材源类型不支持上传：' + src.type)
+  } catch (e) {
+    // 把 AbortSignal.timeout 抛出的裸 TimeoutError 转成人话；其余错误原样上抛
+    const timedOut = uploadTimeoutError('上传到「' + (src.name || src.type) + '」', e)
+    throw timedOut || e
+  }
   const entry = { name, url, size: buf.length, at: Date.now() }
   recordUpload(sourceId, entry)
   return entry
@@ -680,7 +708,9 @@ export async function handleAssets(req, res, p) {
         res.writeHead(304, { ETag: etag, 'Cache-Control': 'no-cache' })
         return res.end()
       }
-      const buf = fs.readFileSync(f.full)
+      // 异步读：素材原图动辄数 MB，readFileSync 会在读盘期间把整个事件循环卡住——
+      // 网格一屏几十张时，控制台的所有轮询会被一起拖慢。
+      const buf = await fs.promises.readFile(f.full)
       res.writeHead(200, {
         'Content-Type': f.contentType,
         'Content-Length': buf.length,
@@ -699,7 +729,7 @@ export async function handleAssets(req, res, p) {
       const body = await readBody(req)
       const f = resolveFile(body.origin || 'generated', body.name)
       if (!f) return json(res, 400, { error: 'bad_file', detail: '源文件不存在或不可访问' })
-      const buf = fs.readFileSync(f.full)
+      const buf = await fs.promises.readFile(f.full)
       const entry = await uploadToSource(body.sourceId, { name: body.name, buf, contentType: f.contentType })
       return json(res, 200, { ok: true, ...entry })
     } catch (e) {

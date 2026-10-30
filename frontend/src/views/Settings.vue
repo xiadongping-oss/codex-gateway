@@ -1,12 +1,23 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { BASE, gwRequest, copyText } from '../api/client'
 import { loadAccessConfig, loadAccessConfigWithKey, formatAccessConfig } from '../api/access-config'
 import { getStrictAuth, setStrictAuth, getLanInfo } from '../api/gateway'
 
-const baseUrl = BASE
+// 页面里有一批「N 秒后复位提示」的 setTimeout。组件卸载后它们仍会写 ref，
+// 所以统一登记并在 onUnmounted 清掉。
+const timers = []
+function later(fn, ms) {
+  const t = setTimeout(fn, ms)
+  timers.push(t)
+  return t
+}
+onUnmounted(() => { timers.forEach(clearTimeout) })
+
 const copied = ref(false)
 const copyErr = ref('')
+// 是否**存在**可用 Key（与「明文是否取到」是两件事：明文只在复制那一刻短暂存在）
+const hasKey = ref(false)
 
 // ---- 局域网接入（摘要行；完整地址列表 / 接入三项 / 安全边界在「模型能力」页） ----
 const lan = ref({ enabled: false, addresses: [], port: 4173 })
@@ -19,10 +30,10 @@ async function copyLanAddr(a) {
   try {
     await copyText(`http://${a.address}:${lan.value.port}/v1`)
     lanCopied.value = a.address
-    setTimeout(() => (lanCopied.value = ''), 1500)
+    later(() => (lanCopied.value = ''), 1500)
   } catch (e) {
     copyErr.value = e?.message || '复制失败'
-    setTimeout(() => (copyErr.value = ''), 3000)
+    later(() => (copyErr.value = ''), 3000)
   }
 }
 
@@ -174,18 +185,29 @@ function refreshAccessCfg() {
     accessModel.value
   )
 }
-// 复制时才去取明文：列表轮询不再携带密钥
+// 复制时才去取明文：列表轮询不再携带密钥。
+//
+// 明文只活在这一次复制里 —— 取到后用它拼出要复制的文本，随即丢弃，
+// 页面上的 <pre> 仍显示占位符。此前把明文写回 accessKey 并重新生成展示文本，
+// 于是完整的 `OPENAI_API_KEY=cgw-…` 会一直挂在 DOM 里直到离开设置页，
+// 与「按需取明文」的初衷正好相反（API Key 页已刻意不再把明文放进轮询响应）。
 async function copyConfig() {
   copyErr.value = ''
   try {
     const cfg = await loadAccessConfigWithKey()
     accessBase.value = cfg.baseUrl
-    accessKey.value = cfg.apiKey
     accessModel.value = cfg.model
+    const text = formatAccessConfig(accessBase.value, cfg.apiKey, accessModel.value)
+    accessKey.value = null // 明文不落 ref
+    hasKey.value = !!cfg.apiKey
     refreshAccessCfg()
-    await copyText(accessCfgText.value)
+    if (!cfg.apiKey) {
+      copyErr.value = '尚未创建 API Key：请先在「API Key」页创建一个，再回来复制'
+      return
+    }
+    await copyText(text)
     copied.value = true
-    setTimeout(() => (copied.value = false), 1500)
+    later(() => (copied.value = false), 1500)
   } catch (e) {
     copyErr.value = e?.message || '复制失败'
   }
@@ -207,7 +229,7 @@ async function copyConfig() {
       <pre class="code">{{ accessCfgText }}</pre>
       <div v-if="copyErr" class="msg err" style="margin-top: 10px">{{ copyErr }}</div>
       <div class="card-sub hint" style="margin-top: 10px">
-        <template v-if="accessKey">API Key 即「API Key」页创建的 cgw- 密钥（仅本机可见）。严格鉴权开启后，客户端必须携带此 Key。</template>
+        <template v-if="hasKey">API Key 即「API Key」页创建的 cgw- 密钥（仅本机可见；点「复制接入配置」时才会取明文）。严格鉴权开启后，客户端必须携带此 Key。</template>
         <template v-else>尚未创建 API Key：请到「API Key」页创建后填入客户端；严格鉴权开启时，无 Key 的调用会被 401 拒绝。</template>
       </div>
 

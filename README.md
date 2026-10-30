@@ -283,7 +283,33 @@ ChatGPT 没有公开的额度查询接口，剩余比例只能从**真实上游�
 | `CGW_BRIDGE_POOL_MAX` | `6` | 最多同时存在几个账号实例（详见「多账号是怎么跑起来的」） |
 | `CGW_BRIDGE_IDLE_MS` | `900000` | 非激活账号实例的空闲回收时间 |
 | `BRIDGE_PORT` | `10531` | 实例池的**基准**端口（第一个槽位），实际端口依次 +1 |
+| `CGW_ALLOWED_HOSTS` | — | 额外放行的 Host，逗号分隔（如 `gw.example.com,gw2.example.com`）。**只有反代部署才需要**，详见下节 |
 | `DISABLE_AUTOSTART` | — | 置 `1` 不自动拉起内部代理 |
+
+### 放在反向代理后面
+
+网关默认只认「Host 是本机地址」的请求——这是挡 DNS rebinding 的闸门，域名解析到 127.0.0.1 也没用。所以用 nginx / Caddy 反代时，Host 变成了 `gw.example.com`，请求会被 403 `host_not_allowed` 拦下。
+
+解法是显式声明放行的域名：
+
+```bash
+# Windows（run-gateway.cmd 里加 set，或写进 installed.env）
+set CGW_ALLOWED_HOSTS=gw.example.com
+# macOS / Linux
+CGW_ALLOWED_HOSTS=gw.example.com ./start-gateway.sh
+```
+
+三点要留意：
+
+1. **不声明就是不放行**。设计上宁可挡住也不默认放开——默认值一旦宽松，DNS rebinding 防护就等于没有。
+2. **同源校验无法通过反代绕过**。反代要把 Host 原样透传（`proxy_set_header Host $host;`），并让浏览器访问的域名与后端看到的一致，否则仍会 403 `cross_site_origin`。
+3. 反代场景下 **`/v1/*` 也不适合直接暴露给公网**：它按账号配额计费，把 Key 贴到公网页面等于把订阅额度送人。
+
+### 浏览器里直接调 `/v1/*`
+
+`/v1/*` 现在与 `/mcp`、控制面走同一套来源校验：带 `Origin` / `Referer` 的跨站请求会被 403 拒绝。
+
+影响范围：**只影响浏览器**。curl、OpenAI SDK、MCP 客户端、WorkBuddy 后端都不发这两个头，走「无来源标记 → 放行」分支，完全不受影响。如果你真的在做浏览器端直连（前端页面 fetch 网关），把页面部署到**同源**位置即可——跨源本来也读不到响应（网关不下发 CORS 头），只是此前副作用（烧额度、触发生图）拦不住。
 
 ### 端口被占用怎么办
 

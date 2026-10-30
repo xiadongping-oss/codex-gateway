@@ -39,6 +39,10 @@ async function loadSources() {
 async function load() {
   await loadSources()
   assets.value = await api.getAssets(active.value)
+  // 首轮必须把指纹回填：lastGenKeys 初始是空串，若这里不写，
+  // 4 秒后的第一次 pollTick 会把整张已有列表全判成「新图」，
+  // 于是每次进页面都必然弹一次「检测到 N 张新生成图片」的假告警。
+  if (active.value === 'generated') lastGenKeys = genFingerprint(assets.value)
   loaded.value = true
 }
 onMounted(load)
@@ -304,7 +308,13 @@ async function saveSource() {
 
 async function removeSource(s) {
   if (!window.confirm(`删除素材源「${s.name}」？云端已上传的文件不受影响，仅移除本地记录。`)) return
-  await api.deleteAssetSource(s.id)
+  // deleteAssetSource 现在失败返回 null（而不是 reject）。必须判一下：
+  // 不判的话删不掉也照样切走 tab 并刷新，用户以为删了，列表里却还在。
+  const r = await api.deleteAssetSource(s.id)
+  if (!r?.ok) {
+    tip.value = '删除素材源失败，请重试'
+    return
+  }
   if (active.value === s.id) { active.value = 'generated'; loaded.value = false }
   load()
 }

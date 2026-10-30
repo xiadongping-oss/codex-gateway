@@ -137,11 +137,10 @@ const RT_STALE_MS = 30 * 60 * 1000 // 超 30 分钟没观测到就标 stale：�
 
 async function fetchRealtimeQuota(port, { since = 0 } = {}) {
   const p = Number(port) || Number(process.env.BRIDGE_PORT || 10531)
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 1200)
   try {
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), 1200)
     const res = await fetch(`http://127.0.0.1:${p}/health`, { signal: ctrl.signal })
-    clearTimeout(timer)
     if (!res.ok) return null
     const j = await res.json()
     const lul = j?.last_upstream_limits
@@ -152,6 +151,11 @@ async function fetchRealtimeQuota(port, { since = 0 } = {}) {
     return realtimeQuotaFrom(lul.headers || {}, lul.at)
   } catch {
     return null
+  } finally {
+    // 必须在 finally 里清：bridge 没跑时 fetch 直接抛（ECONNREFUSED），
+    // 走不到原来那句 clearTimeout，定时器就一直挂到 1.2 秒后才自己醒。
+    // 单个定时器不致命，但这条路径挂在每次状态轮询上，白攒一堆。
+    clearTimeout(timer)
   }
 }
 

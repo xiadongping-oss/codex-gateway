@@ -37,7 +37,9 @@ export function hardenSecretFile(file) {
     if (process.platform === 'win32') {
       const args = icaclsArgsFor(file, currentUserForAcl())
       if (!args) return false
-      const r = spawnSync('icacls', args, { windowsHide: true })
+      // 必须带 timeout：icacls 在文件被占用/网络驱动器/ACL 损坏时可能卡住，
+      // 而 spawnSync 是同步的 —— 一旦卡住会冻结整个事件循环，网关对外无响应。
+      const r = spawnSync('icacls', args, { windowsHide: true, timeout: 5000, killSignal: 'SIGKILL' })
       return r.status === 0
     }
     fs.chmodSync(file, 0o600)

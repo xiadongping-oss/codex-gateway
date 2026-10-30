@@ -138,8 +138,12 @@ const adminAuth = ADMIN_AUTH_DISABLED ? null : createAdminAuth({ token: adminTok
 
 // 多模式配置：bridge（复用 codex login OAuth）/ openai（自带 API Key 直连）
 let gwConfig = loadConfig()
-// 多账号：启动迁移旧 auth.json，并让 bridge 指向“当前激活账号”
-const _reg = migrateLegacyAuth()
+// 多账号：启动迁移旧 auth.json，并让 bridge 指向“当前激活账号”。
+//
+// 必须 await：migrateLegacyAuth 里的 addAccount 要写盘。不 await 会让 gwConfig
+// 指向迁移前的 authFilePath（等于迁移白做），同时留一个无人接管的 Promise ——
+// 写盘一失败就是未捕获 rejection。顶层 await 在这里只影响启动阶段一次。
+const _reg = await migrateLegacyAuth()
 if (_reg.activeId) gwConfig.authFilePath = accountAuthPath(_reg.activeId)
 
 // 数据根必须先存在：admin-token / .codex-client-identity 等首次写盘
@@ -319,6 +323,16 @@ const LOCAL_HOSTS = (() => {
   return set
 })()
 
+// Host 白名单的逃生口：反向代理部署时 Host 是域名，永远不可能等于本机地址。
+// 需要的人显式声明（CGW_ALLOWED_HOSTS=a.example.com,b.example.com），
+// 不声明就默认只认本机地址——宁可挡住，也不默认放行。
+const EXTRA_ALLOWED_HOSTS = new Set(
+  String(process.env.CGW_ALLOWED_HOSTS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+)
+
 // '127.0.0.1:4173' → '127.0.0.1'；'[::1]:4173' → '[::1]'
 function hostOf(h) {
   const s = String(h || '').trim().toLowerCase()
@@ -353,7 +367,7 @@ function crossSiteOrigin(req) {
 function browserOriginGuard(req, res) {
   const h = hostOf(req.headers['host'])
   // HTTP/1.0 或无 Host 头时无法判断，放行以免影响本机命令行工具
-  if (h && !LOCAL_HOSTS.has(h)) {
+  if (h && !LOCAL_HOSTS.has(h) && !EXTRA_ALLOWED_HOSTS.has(h)) {
     recordCallLog({ method: req.method, endpoint: req.url?.split('?')[0] || '/', model: '—', status: 403, latency: 0, tokens: null })
     res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify({
@@ -422,6 +436,27 @@ const MAX_LOG = 800
 const logBuf = []
 // 本地用量统计：经本启动器反代的请求数 与 命中的 429 限流数
 let metrics = { requests: 0, rateLimited: 0, modelAliases: 0, failovers: 0, failoverMisses: 0 }
+
+// ---- 真实 QPS ----
+// metrics.requests 是累计值，看不出「现在有多忙」。这里另开一个 30 秒滑动窗口：
+// 只记时间戳（8 字节/条），窗口外的自动丢掉，内存与请求量无关。
+// 只统计被转发的 /v1 请求 —— 控制台每 1.5~3 秒的轮询不该混进吞吐量指标里。
+const QPS_WINDOW_MS = 30000
+const reqTicks = []
+function tickRequest() {
+  reqTicks.push(Date.now())
+  const cut = Date.now() - QPS_WINDOW_MS
+  while (reqTicks.length && reqTicks[0] < cut) reqTicks.shift()
+}
+function currentQps() {
+  const now = Date.now()
+  const cut = now - QPS_WINDOW_MS
+  while (reqTicks.length && reqTicks[0] < cut) reqTicks.shift()
+  if (!reqTicks.length) return 0
+  // 启动期窗口还没填满时按实际跨度折算，否则刚起进程的前 30 秒数字会虚低
+  const spanSec = Math.max(5, (now - reqTicks[0]) / 1000)
+  return Number((reqTicks.length / Math.min(spanSec, QPS_WINDOW_MS / 1000)).toFixed(2))
+}
 
 // 429/401 的账号降级。判定逻辑在 failover.mjs 里（纯函数，有单测），
 // 这里只负责把它接到转发路径上：谁被标记、换到谁、换完怎么写回。
@@ -580,14 +615,26 @@ function stopBridge() {
   return { ok: r.ok, msg: r.msg }
 }
 
+// 会延时拉起子进程的定时器统一登记。shutdown() 里逐个 clearTimeout：
+// 否则进程退出前刚好到期的那一个会 spawn 出一个父进程已死的孤儿 bridge。
+const pendingTimers = new Set()
+function later(fn, ms) {
+  const t = setTimeout(() => {
+    pendingTimers.delete(t)
+    fn()
+  }, ms)
+  pendingTimers.add(t)
+  return t
+}
+
 // 重启单个账号的实例：auth 文件被改写、新登录完成、删除账号等场景需要重读凭据。
 // 只影响这一个账号，其余账号的通道继续服务——这是实例池相对一期的实际收益。
 function restartBridgeFor(accountId, why = '') {
   if (gwConfig.mode !== 'bridge') return
   const id = accountId ?? primaryAccountId()
   bridgePool.stop(id)
-  setTimeout(() => {
-    if (gwConfig.mode !== 'bridge') return
+  later(() => {
+    if (shuttingDown || gwConfig.mode !== 'bridge') return
     bridgePool.start(id).then((r) => {
       if (!r.ok) pushLog('✗ bridge 重启失败' + (why ? `（${why}）` : '') + '：' + (r.msg || '未知原因'))
     }).catch((e) => pushLog('✗ bridge 重启异常：' + (e && e.message || e)))
@@ -598,8 +645,8 @@ function restartBridgeFor(accountId, why = '') {
 function restartAllBridges(why = '') {
   const n = bridgePool.stopAll()
   pushLog(`● 配置变更${why ? `（${why}）` : ''}：已停止 ${n} 个 bridge 实例，准备重启`)
-  setTimeout(() => {
-    if (gwConfig.mode !== 'bridge') return
+  later(() => {
+    if (shuttingDown || gwConfig.mode !== 'bridge') return
     const id = primaryAccountId()
     bridgePool.start(id).then((r) => {
       if (!r.ok) pushLog('✗ bridge 重启失败：' + (r.msg || '未知原因'))
@@ -964,9 +1011,49 @@ function accountLabel(id) {
   return a?.note || a?.email || String(id).slice(0, 8)
 }
 
+// 上游（bridge / OpenAI）不可达或中途出错时的统一收尾。
+//
+// 关键边界：响应头一旦发出去（流式 SSE 发了一半上游崩了），**绝不能**再往 body
+// 里追加一段 JSON —— 客户端会收到「半截 SSE + 一段 JSON」，OpenAI SDK 解析失败
+// 且拿不到任何明确错误，只能看到一个莫名其妙的 parse error，排障方向被带偏。
+// 这种局面唯一正确的做法是掐断连接，让客户端的 stream 明确报错。
+function failUpstream(res, code, payload) {
+  if (res.headersSent || res.destroyed) {
+    try { res.destroy() } catch {}
+    return
+  }
+  try {
+    res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' })
+    res.end(JSON.stringify(payload))
+  } catch {}
+}
+
+// 上游空闲超时：bridge 接受了连接但卡死（死循环 / GC 卡住 / 上游挂起）时，
+// 不能让客户端的请求无限挂着。这是**空闲**超时（socket 无活动才计时），
+// 所以长 SSE 会话只要有数据持续到达就不会被误杀。
+const UPSTREAM_IDLE_TIMEOUT_MS = 10 * 60 * 1000
+function armUpstreamTimeouts(p, res, getUpstream) {
+  try {
+    p.setTimeout(UPSTREAM_IDLE_TIMEOUT_MS, () => {
+      try { p.destroy(new Error('upstream idle timeout')) } catch {}
+    })
+  } catch {}
+  // 客户端断开：pipe() 只会在 dest close 时 unpipe，**不会** destroy 源。
+  // 不显式销毁的话，bridge 侧会把整段生成跑完（订阅额度照烧），
+  // socket 也要挂到上游自然结束才释放。用户点了「停止」，代价却照付。
+  res.once('close', () => {
+    try { p.destroy() } catch {}
+    const up = getUpstream && getUpstream()
+    if (up && typeof up.destroy === 'function') {
+      try { up.destroy() } catch {}
+    }
+  })
+}
+
 // 真正的转发；bodyBuf 非空时用它替代原始请求流（改写过 model）
 function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
   metrics.requests++
+  tickRequest()
   const callT0 = Date.now()
   let callModel = null
   if (bodyBuf) {
@@ -974,7 +1061,10 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
   }
   let callUsage = null
   if (targetPath.startsWith('/v1/')) {
-    res.on('finish', () => {
+    // 挂 close 而不是 finish：客户端中途断开时 finish 永远不触发，
+    // 于是「取消 / 中断」这类请求在调用日志里完全不可见 —— 排障时最想看的
+    // 恰恰是这些。close 在成功与中断两种路径下都会触发。
+    res.once('close', () => {
       recordCallLog({
         method: req.method,
         endpoint: targetPath.split('?')[0],
@@ -1040,6 +1130,7 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
   // MODEL_REWRITE_PATHS 里），bodyBuf 就在手上，重放不必重新读 req 流——
   // 那时候 req 早就读完了。
   function attemptToBridge(port, attempt) {
+    let lastUp = null
     const opts = {
       host: '127.0.0.1',
       port,
@@ -1048,6 +1139,7 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
       headers: prep({ ...req.headers, host: `127.0.0.1:${port}` })
     }
     const p = http.request(opts, (up) => {
+      lastUp = up
       const status = up.statusCode || 0
       if (status === 429) metrics.rateLimited++
 
@@ -1102,9 +1194,9 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
       })
     })
     p.on('error', () => {
-      if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'bridge_unreachable', detail: `bridge 未运行或不可达（${bridgeUrlFor(port)}）` }))
+      failUpstream(res, 502, { error: 'bridge_unreachable', detail: `bridge 未运行或不可达（${bridgeUrlFor(port)}）` })
     })
+    armUpstreamTimeouts(p, res, () => lastUp)
     pump(p)
   }
   attemptToBridge(req.__bridgePort || defaultBridgePort(), 0)
@@ -1185,15 +1277,17 @@ function pipeOpenAiDirect(req, res, targetPath, headers, bodyBuf, attachUsageTap
     method: req.method,
     headers
   }
+  let lastUp = null
   const p = https.request(opts, (up) => {
+    lastUp = up
     if (up.statusCode === 429) metrics.rateLimited++
     res.writeHead(up.statusCode || 502, up.headers)
     attachUsageTap(up)
   })
   p.on('error', () => {
-    if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'openai_unreachable', detail: 'undici 不可用，已降级为直连（不经过出网代理）' }))
+    failUpstream(res, 502, { error: 'openai_unreachable', detail: 'undici 不可用，已降级为直连（不经过出网代理）' })
   })
+  armUpstreamTimeouts(p, res, () => lastUp)
   if (bodyBuf) p.end(bodyBuf)
   else req.pipe(p)
 }
@@ -1281,13 +1375,32 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
   const headers = { ...req.headers, host: `127.0.0.1:${port}` }
   delete headers['content-length']
   headers['content-length'] = String(body.length)
+  let lastUp = null
   const p = http.request({
     host: '127.0.0.1', port, path: targetPath, method: 'POST', headers
   }, (up) => {
+    lastUp = up
     if (up.statusCode === 429) metrics.rateLimited++
     let buf = ''
-    up.on('data', (c) => { buf += c.toString('utf8') })
+    // 这条路径必须整段缓冲（要改 body 把 b64 换成本地 url），所以不能像流式那样只留窗口。
+    // 但绝不能无限涨：上游异常时可能吐出巨大的错误体，把网关内存吃干。
+    // 64MB 足够容纳任何合法生图响应（单张 b64 通常 3~8MB），越界即掐断。
+    const IMAGE_RESP_MAX = 64 * 1024 * 1024
+    let overflow = false
+    up.on('data', (c) => {
+      if (overflow) return
+      buf += c.toString('utf8')
+      if (buf.length > IMAGE_RESP_MAX) {
+        overflow = true
+        buf = ''
+        try { up.destroy() } catch {}
+      }
+    })
     up.on('end', () => {
+      if (overflow) {
+        failUpstream(res, 502, { error: 'image_response_too_large', detail: '上游生图响应超过 64MB，已中断' })
+        return
+      }
       try {
         const j = JSON.parse(buf)
         const b64 = j?.data?.[0]?.b64_json
@@ -1342,9 +1455,9 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
     })
   })
   p.on('error', () => {
-    if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ error: 'bridge_unreachable', detail: `bridge 未运行或不可达（${bridgeUrlFor(port)}）` }))
+    failUpstream(res, 502, { error: 'bridge_unreachable', detail: `bridge 未运行或不可达（${bridgeUrlFor(port)}）` })
   })
+  armUpstreamTimeouts(p, res, () => lastUp)
   p.end(body)
 }
 
@@ -1382,6 +1495,9 @@ function isInsideDir(base, target) {
 
 // 静态文件 ETag 缓存：以 mtime + size 为键，命中则 304，避免重复读盘与传输
 const staticCache = new Map() // filePath -> { etag, buf, mtime, size, ext }
+// dist 只有几十个文件，但每条缓存都持有整份 buffer（含单文件构建出的 index.html，
+// 通常是 MB 级）。给个硬上限，防止长期运行 + 反复热替换后无界增长。
+const STATIC_CACHE_MAX_ENTRIES = 128
 
 // 未登录访问控制台的引导页。
 // 为什么需要它：前端 SPA 首屏会立刻请求 /__gw/*，没有会话时全部 401，
@@ -1523,6 +1639,14 @@ function serveStatic(req, res, urlPath) {
       }
       fs.readFile(filePath, (e2, buf) => {
         if (e2 || !buf) return spaFallback(res, send)
+        // 缓存必须有上限：每条都持有一整份文件 buffer，只增不减的 Map 会在
+        // 长期运行 + 多次热替换构建产物后把内存慢慢吃干。
+        // dist 里的文件数量有限（几十个），按条目数与总字节双封顶，
+        // 超限就从最早插入的那条开始淘汰（Map 保持插入顺序）。
+        if (staticCache.size >= STATIC_CACHE_MAX_ENTRIES) {
+          const oldest = staticCache.keys().next().value
+          if (oldest !== undefined) staticCache.delete(oldest)
+        }
         staticCache.set(filePath, { etag, buf, mtime: stat.mtimeMs, size: stat.size, ext })
         res.writeHead(200, {
           'Content-Type': MIME[ext] || 'application/octet-stream',
@@ -1646,6 +1770,11 @@ function writeImageIndex(idx) {
   }
 }
 function saveGenImageB64(b64, owner) {
+  // 文件名必须在这里生成。曾有一次重构把这一行删掉了，而下面的 catch 是空的 ——
+  // 于是 ReferenceError: name is not defined 被静默吞掉，函数恒返回 null：
+  // 图不落盘、index.json 不写入、素材站与 MCP 图库永远空，界面却照样显示「已生成」。
+  // 所以这里除了恢复生成，catch 也必须出声。
+  const name = `${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}.png`
   try {
     fs.mkdirSync(genImagesDir(), { recursive: true })
     const filePath = path.join(genImagesDir(), name)
@@ -1665,7 +1794,10 @@ function saveGenImageB64(b64, owner) {
       writeImageIndex(idx)
     }
     return name
-  } catch {
+  } catch (e) {
+    // 绝不能再静默：返回 null 会让上层以为「这次没有图」，用户看到的是
+    // 生成成功但图库里什么都没有，且日志里一条线索都没有。
+    console.error('[codex-gateway] 生成图落盘失败：' + (e && e.stack || e))
     return null
   }
 }
@@ -2155,9 +2287,18 @@ async function handleHttpRequest(req, res) {
         reason: '局域网模式下控制接口仅允许本机访问；请使用 /v1/* 接口并携带 cgw- API Key'
       }))
     }
-    // 应用层闸门：即使来源是回环（本机浏览器可能被任意网页驱动），
-    // 也要求 Host 指向本机 + Origin 同源，挡 DNS rebinding 与 CSRF。
-    if (controlPlaneGuard(req, res)) return
+    // 局域网放行例外必须在控制面鉴权**之前**生效，否则等于没写：
+    // 局域网用户手上只有 cgw- API Key，没有控制台会话，controlPlaneGuard 会一律
+    // 401 admin_auth_required —— 素材站缩略图与 MCP 返回的图片链接全部打不开。
+    // 放行仍保留前两道闸（Host 白名单 + 同源），只是不要求管理令牌。
+    const lanImagePass = lanGenImageGet && !isLoopbackReq(req)
+    if (lanImagePass) {
+      if (browserOriginGuard(req, res)) return
+    } else if (controlPlaneGuard(req, res)) {
+      // 应用层闸门：即使来源是回环（本机浏览器可能被任意网页驱动），
+      // 也要求 Host 指向本机 + Origin 同源，挡 DNS rebinding 与 CSRF。
+      return
+    }
     // ---- 管理鉴权自身 ----
     // 签发一次性登录链接：60 秒有效、用过即废。CLI 用管理令牌换取。
     if (p === '/__gw/admin/bootstrap' && req.method === 'POST') {
@@ -2186,6 +2327,9 @@ async function handleHttpRequest(req, res) {
         pid: pInst ? pInst.pid : null,
         startedAt: pInst ? pInst.startedAt : null,
         uptimeSec: pInst && pInst.startedAt ? Math.floor((Date.now() - pInst.startedAt) / 1000) : 0,
+        // 真实 QPS。此前前端 status.qps 是硬编码的 0，状态卡永远显示「0 req/s」——
+        // 一个看起来像指标、实际什么都没测的假数字，比没有更有误导性。
+        qps: currentQps(),
         health,
         // 实例池视图：每个账号的端口 / 状态 / 在途请求数，供控制台展示与排障
         bridgeInstances: bridgePool.list(),
@@ -2308,13 +2452,14 @@ async function handleHttpRequest(req, res) {
     if (p === '/__gw/gen-images' && req.method === 'DELETE') {
       const body = await readBody(req).catch(() => ({}))
       if (!body.name || !GEN_IMAGE_RE.test(body.name)) return sendJson(res, 400, { error: 'bad_name' })
-      try {
-        fs.unlinkSync(path.join(genImagesDir(), body.name))
-        pushLog('● 已删除生成图片：' + body.name)
-        return sendJson(res, 200, { ok: true })
-      } catch (e) {
-        return sendJson(res, 404, { error: 'not_found', detail: e.message })
-      }
+      // 必须走 deleteGenImage：它除了删文件还会同步 index.json。
+      // 此前这里直接 unlinkSync，索引里留下幽灵条目 —— 而 listGenImages 一旦
+      // 在索引里查到 meta（含 size/mtime）就不再 stat 文件，于是那张已删除的图
+      // 照样出现在列表里，点开 404。
+      const r = deleteGenImage(body.name, null)
+      if (!r.ok) return sendJson(res, r.error === 'bad_name' ? 400 : 404, { error: r.error })
+      pushLog('● 已删除生成图片：' + body.name)
+      return sendJson(res, 200, { ok: true })
     }
     if (p.startsWith('/__gw/gen-images/') && req.method === 'GET') {
       const name = safeDecodeName(p.slice('/__gw/gen-images/'.length))
@@ -2852,7 +2997,15 @@ async function handleHttpRequest(req, res) {
   // 在此之前先做 API Key 鉴权：如果 Authorization 是 cgw-...，验证后按 key 绑定的账号
   // 热切换 bridge，并原样转发 /v1/*（bridge 会用其内部 auth 头覆盖客户端 auth）。
   if (p.startsWith('/v1/') || p === '/health') {
-    if (p.startsWith('/v1/') && strictAuthReject(req, res, p)) return
+    if (p.startsWith('/v1/')) {
+      // /v1/* 此前在浏览器侧完全没有防护：用户浏览的任意网页都能
+      // fetch('http://127.0.0.1:4173/v1/chat/completions')。
+      // 响应读不到（同源策略），但**副作用与配额消耗是实打实的** ——
+      // 烧 ChatGPT 订阅额度、触发生图，而默认配置（未启用严格鉴权）下 /v1/* 零凭据放行。
+      // 程序化客户端（curl / MCP / WorkBuddy 后端）不发 Origin/Referer，不受影响。
+      if (browserOriginGuard(req, res)) return
+      if (strictAuthReject(req, res, p)) return
+    }
     // /health 是透传给 bridge 的探活端点。没有任何实例时不要往虚空转发——
     // 那会得到 502 bridge_unreachable，看日志的人分不清「没启动」和「刚崩了」。
     if (p === '/health') {
@@ -2874,6 +3027,15 @@ async function handleHttpRequest(req, res) {
       }
     }
     const token = extractBearerToken(req.headers['authorization'])
+    // 带了 Authorization 却不是 cgw- 前缀（多半是贴了 OpenAI 的 sk-），
+    // 在**未启用严格鉴权**时会被静默降级成匿名放行 —— 用户得不到任何提示，
+    // 只会觉得「莫名奇妙能用了」，实际是拿宿主机激活账号在跑，用量还记不到他头上。
+    // 只要带了凭据就一律按凭据校验，前缀不对就明确拒绝。
+    if (!token && rawBearer(req)) {
+      recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
+      return res.end(JSON.stringify(authRejectBody({ reason: 'bad_prefix' })))
+    }
     let authKeyId = null
     let authOwner = null
     if (token) {
@@ -3038,9 +3200,14 @@ server.on('clientError', (err, socket) => {
 // 会一直占着 10531+ 的端口，导致下次启动全部「端口被占」。
 // 这里尽力在退出路径上把它们带走（taskkill 强杀仍拦不住，属已知限制）。
 let shuttingDown = false
-function shutdown(signal) {
+function shutdown(signal, exitCode = 0) {
   if (shuttingDown) return
   shuttingDown = true
+  // 定时器必须先清：restartBridgeFor / restartAllBridges 会延时拉起 bridge，
+  // 这些句柄此前既没 unref 也没登记，shutdown 走完 process.exit 后若刚好到期，
+  // 会在退出前 spawn 出一个没人管的 bridge —— 父进程已死，端口却还占着。
+  try { for (const t of pendingTimers) clearTimeout(t) } catch {}
+  try { pendingTimers.clear() } catch {}
   // 顺序有讲究：先把两处内存态收据刷出去（它们都用了延迟写），再停 bridge 子进程。
   // 调用日志此前从未挂在任何退出路径上 —— flushCallLogs() 全项目零调用点，
   // 于是网关关闭前最后几秒的调用记录每次都整批丢失。
@@ -3049,7 +3216,9 @@ function shutdown(signal) {
   let n = 0
   try { n = bridgePool.dispose() } catch {}
   pushLog(`◆ 收到 ${signal}，已刷盘并停止 ${n} 个 bridge 实例`)
-  process.exit(0)
+  // 崩溃退出必须给非零码。此前一律 exit(0)，服务包装脚本（service/*.vbs、
+  // service-unix/*.sh）无法据此判断「这是崩了」还是「正常停了」，也就不会重启。
+  process.exit(exitCode)
 }
 
 // 进程级兜底：请求边界已经拦住「一个坏请求」这类情况（见 createServer 处的注释），
@@ -3065,7 +3234,7 @@ function shutdown(signal) {
 let rejectWarnCount = 0
 process.on('uncaughtException', (err) => {
   pushLog('✗ 未捕获异常，网关即将停止：' + String(err && err.stack || err))
-  shutdown('uncaughtException')
+  shutdown('uncaughtException', 1)
 })
 process.on('unhandledRejection', (reason) => {
   rejectWarnCount += 1

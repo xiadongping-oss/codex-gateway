@@ -36,7 +36,8 @@ npm start       # = node launcher.mjs  → 自动拉起 bridge + 托管前端
 环境变量：`LAUNCHER_PORT`（默认 4173）、`BRIDGE_PORT`（默认 10531）、
 `FRONTEND_DIR`、`BRIDGE_CLI`（本地 cli 路径，默认 `node_modules/chatgpt-bridge/dist/cli.js`）、
 `BRIDGE_NODE`（运行 bridge 的 node，默认即启动器自身 node）、
-`BRIDGE_ARGS`（默认 `serve`）、`DISABLE_AUTOSTART=1`。
+`BRIDGE_ARGS`（默认 `serve`）、`DISABLE_AUTOSTART=1`、
+`CGW_ALLOWED_HOSTS`（额外放行的 Host，逗号分隔；默认只认本机地址，反代部署必须显式声明）。
 
 命令行参数优先于环境变量：`--port N` 覆盖 `LAUNCHER_PORT`，`--bridge-port N` 覆盖 `BRIDGE_PORT`。
 端口被占用时启动器以**退出码 2** 结束并打出中文诊断（`EACCES` 为 3），不会只丢一句 `EADDRINUSE`。

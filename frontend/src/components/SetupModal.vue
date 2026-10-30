@@ -179,6 +179,19 @@ async function loadProviders() {
   if (r?.ok) savedProviders.value = r.saved || []
 }
 
+// 删除已保存供应商。此前模板里裸调 deleteProvider(...) —— 它既没导入也没定义，
+// 点击「×」直接 ReferenceError；同时那行还把 ref 当普通数组赋值
+// （savedProviders = ... 而不是 .value = ...），界面根本不会更新。
+async function removeProvider(id) {
+  const before = savedProviders.value
+  savedProviders.value = before.filter((x) => x.id !== id) // 先乐观移除，交互不卡顿
+  const r = await api.deleteProvider(id)
+  if (!r?.ok) {
+    savedProviders.value = before // 失败回滚，不要留下「删了又回来」的错觉
+    setError('删除供应商失败，请重试')
+  }
+}
+
 onMounted(() => {
   loadState()
   loadProviders()
@@ -188,7 +201,11 @@ onMounted(() => {
       if (data?.code) {
         // 端口取自本次会话的 redirectUri（1455 被占用时会漂移到其它端口，不能硬编码）
         const base = browser.value?.redirectUri || 'http://localhost:1455/auth/callback'
-        callbackUrl.value = `${base}?code=${data.code}&state=${data.state || ''}`
+        // code / state 必须编码：它们会出现在查询串里，未编码会让回调解析拿到半个值
+        const q = new URLSearchParams()
+        q.set('code', String(data.code))
+        if (data.state) q.set('state', String(data.state))
+        callbackUrl.value = `${base}?${q.toString()}`
         submitCallback()
       }
     })
@@ -255,24 +272,60 @@ async function savePendingCard() {
 }
 
 // ---------- OAuth ----------
+// 注意函数名：api 层导出的是 *Api 后缀（startBrowserLoginApi / pollBrowserLoginApi /
+// submitBrowserCallbackApi / startDeviceFlowApi）。此前这里调用的是不带后缀的名字，
+// 运行时直接 TypeError: api.startBrowserLogin is not a function，
+// 被 catch 吞成一句「操作失败」—— OAuth 与设备授权两条路一度完全不可用。
 async function startAuth() {
   loading.value = true
   error.value = ''
   try {
     if (authMode.value === 'device') {
-      const r = await api.startDeviceLogin(currentPayload())
-      if (r?.ok) { device.value = r; setOk('设备授权已发起：打开链接并输入用户码') }
+      const r = await api.startDeviceFlowApi()
+      if (r?.ok || r?.verification_uri || r?.user_code) { device.value = r; setOk('设备授权已发起：打开链接并输入用户码') }
       else setError(r)
     } else {
-      const r = await api.startBrowserLogin(currentPayload())
-      if (r?.ok) { browser.value = r; setOk('浏览器授权已发起，请在打开的页面完成登录') }
-      else setError(r)
+      const r = await api.startBrowserLoginApi()
+      if (r?.ok || r?.hostedUrl) {
+        browser.value = r
+        setOk('浏览器授权已发起，请在打开的页面完成登录')
+        // 自动检测回调。此前 pollTimer 从未被赋值，界面上「正在等待回调…
+        // （每 2 秒检测一次）」是一句假提示 —— 实际没有任何轮询在跑。
+        startPolling()
+      } else setError(r)
     }
   } catch (e) {
     setError(e)
   } finally {
     loading.value = false
   }
+}
+
+// 每 2 秒问一次后端「授权完成了吗」，完成后自动收尾。
+// 上一轮没回来就跳过这一轮，避免慢响应时请求叠加。
+function startPolling() {
+  stopPoll()
+  polling.value = true
+  pollTimer = setInterval(async () => {
+    if (loading.value || !polling.value) return
+    try {
+      const r = await api.pollBrowserLoginApi(currentPayload())
+      if (r?.ok) {
+        stopPoll()
+        browser.value = null
+        setOk('授权完成，账号已就绪')
+        emit('changed')
+      } else if (r?.pending) {
+        // 继续等
+      } else {
+        stopPoll()
+        setError(r)
+      }
+    } catch (e) {
+      stopPoll()
+      setError(e)
+    }
+  }, 2000)
 }
 function stopPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
@@ -285,7 +338,8 @@ async function submitCallback() {
   loading.value = true
   error.value = ''
   try {
-    const r = await api.submitBrowserCallback({ callbackUrl: callbackUrl.value, pendingId: pendingId.value || undefined })
+    // 签名是 (callbackUrl, payload)，不是 ({ callbackUrl, pendingId })
+    const r = await api.submitBrowserCallbackApi(callbackUrl.value, { pendingId: pendingId.value || undefined, name: email.value.trim() || undefined })
     if (r?.ok) {
       stopPoll()
       setOk('授权完成，账号已就绪')
@@ -301,13 +355,19 @@ async function continueAuth() {
   loading.value = true
   error.value = ''
   try {
-    const r = await api.pollBrowserLogin({ pendingId: pendingId.value || undefined })
-    if (r?.ok && r.done) {
+    const r = authMode.value === 'device'
+      ? await api.pollDeviceFlowApi(currentPayload())
+      : await api.pollBrowserLoginApi(currentPayload())
+    // 后端成功时返回的是 { ok: true, accountId, path }，**没有** done 字段。
+    // 此前判 `r?.ok && r.done` 恒为假，于是即使授权真的完成了也走不到成功分支 ——
+    // 用户点「我已授权，继续」永远只会看到「还没检测到授权完成」。
+    if (r?.ok) {
       stopPoll()
+      browser.value = null
+      device.value = null
       setOk('授权完成，账号已就绪')
       emit('changed')
     } else if (r?.pending) {
-      polling.value = true
       setOk('还没检测到授权完成，完成授权后稍等片刻再点一次')
     } else setError(r)
   } catch (e) {
@@ -672,7 +732,7 @@ at-xxxxxxxxxxxxxxxx
               @click="providerPresetId = CUSTOM_PROVIDER_ID; providerBaseUrl = p.baseUrl"
             >
               {{ p.name }}
-              <span class="chip-x" @click.stop="deleteProvider(p.id); savedProviders = savedProviders.filter((x) => x.id !== p.id)">×</span>
+              <span class="chip-x" @click.stop="removeProvider(p.id)">×</span>
             </button>
           </div>
 

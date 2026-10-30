@@ -115,24 +115,20 @@ export async function applyProxy(proxyUrl) {
     return { ok: false, error: lastError, url: '' }
   }
 
+  // 新建的 agent（失败时要在 catch 里关掉，避免泄漏一个半初始化的连接池）
+  let fresh = []
   try {
-    // 先摘下旧引用再关闭。注意：未启用代理时 proxyAgent 与 directAgent 是同一个对象，
-    // 必须去重，否则对同一 agent 二次 close() 会挂起（曾导致设置代理时接口无响应）。
-    const prevDirect = directAgent
-    const prevProxy = proxyAgent
-    directAgent = null
-    proxyAgent = null
-    if (prevProxy && prevProxy !== prevDirect) await safeClose(prevProxy)
-    await safeClose(prevDirect)
-
-    directAgent = new mod.Agent({ connectTimeout: 15000 })
-    proxyAgent = next ? new mod.ProxyAgent({ uri: next, connectTimeout: 15000 }) : directAgent
+    // 「先建新 → 切全局 → 再关旧」，顺序不能反。
+    // 旧写法是先 close 旧的、再 new 新的：一旦 new ProxyAgent（URI 非法）
+    // 或 setGlobalDispatcher 抛错，smartDispatcher 会永久指向一个已 close 的
+    // agent，此后所有出网 fetch 全部失败且无法自愈，只能重启网关。
+    const direct = new mod.Agent({ connectTimeout: 15000 })
+    const proxied = next ? new mod.ProxyAgent({ uri: next, connectTimeout: 15000 }) : direct
+    fresh = proxied === direct ? [direct] : [direct, proxied]
+    const enabled = !!next
 
     // 自定义 dispatcher：按目标主机二选一
     // undici 只要求实现 dispatch(opts, handler)，但 close/destroy 一并实现以防内部调用
-    const direct = directAgent
-    const proxied = proxyAgent
-    const enabled = !!next
     smartDispatcher = {
       dispatch(opts, handler) {
         try {
@@ -148,10 +144,24 @@ export async function applyProxy(proxyUrl) {
     }
 
     mod.setGlobalDispatcher(smartDispatcher)
+
+    // 到这里切换已经成功，才轮到回收旧的连接池。
+    // 注意：未启用代理时旧 proxyAgent 与旧 directAgent 是同一个对象，必须去重，
+    // 否则对同一 agent 二次 close() 会挂起（曾导致设置代理时接口无响应）。
+    const prevDirect = directAgent
+    const prevProxy = proxyAgent
+    directAgent = direct
+    proxyAgent = proxied
     currentProxy = next
     lastError = ''
+    try {
+      if (prevProxy && prevProxy !== prevDirect) await safeClose(prevProxy)
+      await safeClose(prevDirect)
+    } catch { /* 旧池关不掉不影响新池可用 */ }
     return { ok: true, url: next, changed: true }
   } catch (e) {
+    // 构造/切换失败：旧池此刻仍完好（还没关），只回收这次新建出来的
+    try { for (const a of fresh) await safeClose(a) } catch {}
     lastError = String((e && e.message) || e)
     return { ok: false, error: lastError, url: currentProxy }
   }

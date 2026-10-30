@@ -203,14 +203,25 @@ export function createBridgePool(options = {}) {
           // 只有「还是当前这个实例」时才清理，避免旧实例的退出事件
           // 把刚重启起来的新实例从池里误删
           if (instances.get(key)?.id !== inst.id) return
+          inst.exitCode = code ?? null
+          inst.exitSignal = sig ?? null
           log(`■ bridge[${labelOf(key)}] 退出 code=${code ?? ''} sig=${sig ?? ''}`)
+          // 进程已经没了，还在等监听就是白等：把状态推到 stopped，
+          // waitListening 下一轮立刻返回，不必耗满 startTimeoutMs（20s）才报错。
+          // 否则「二进制缺失 / 端口被占 / 配置错误」这类秒级失败会被放大成 20 秒无响应。
+          if (inst.state === 'starting') inst.state = 'stopped'
           instances.delete(key)
         })
         child.on('error', (e) => log(`[spawn error] bridge[${labelOf(key)}]: ${e.message}`))
       }
 
       const r = await waitListening(inst)
-      if (inst.state === 'stopped') throw new Error('启动过程中被停止')
+      if (inst.state === 'stopped') {
+        const exitNote = inst.exitCode != null
+          ? `（进程已退出 code=${inst.exitCode}${inst.exitSignal ? ' sig=' + inst.exitSignal : ''}，多见于二进制缺失或端口被占用）`
+          : ''
+        throw new Error('启动过程中被停止' + exitNote)
+      }
       if (!r.listening) {
         killInstance(inst, 'not-listening')
         stats.failures++

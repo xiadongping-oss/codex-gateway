@@ -70,13 +70,23 @@ function fmtTime(iso) {
 const diagResult = ref(null)
 let diagTimer = null
 
-async function diagnose() {
+// 8 秒定时刷新与手动操作（切换 / 删除 / 重命名后都会 refresh）会重叠。
+// 网络慢时先发的旧响应可能后到，把刚切换完的新状态覆盖回去 ——
+// 典型表现就是「明明点了切换，『当前』标记却还在旧账号上」。
+// 用单调递增的序号作废过期响应：只有最后一次发起的刷新有权写状态。
+let refreshSeq = 0
+const isStale = (seq) => typeof seq === 'number' && seq !== refreshSeq
+
+async function diagnose(seq = null) {
   loading.value = true
   error.value = ''
   try {
-    health.value = await api.diagnose()
-    account.value = await api.getAccount()
+    const h = await api.diagnose()
+    const acc = await api.getAccount()
     const s = await api.getAuthState().catch(() => null)
+    if (isStale(seq)) return
+    health.value = h
+    account.value = acc
     if (s?.mode) mode.value = s.mode
     const bridgeOk = health.value?.ok === true
     const parts = []
@@ -92,37 +102,41 @@ async function diagnose() {
     clearTimeout(diagTimer)
     diagTimer = setTimeout(() => (diagResult.value = null), 10000)
   } catch (e) {
+    if (isStale(seq)) return
     error.value = e?.message || '诊断失败'
     fetchErr.value = error.value
     diagResult.value = { ok: false, text: '检测失败：' + (e?.message || '网关控制接口无响应') }
     clearTimeout(diagTimer)
     diagTimer = setTimeout(() => (diagResult.value = null), 10000)
   } finally {
-    loading.value = false
+    if (!isStale(seq)) loading.value = false
   }
 }
 
-async function loadAccounts() {
+async function loadAccounts(seq = null) {
   fetchErr.value = ''
   try {
     const a = await api.getAccounts()
+    if (isStale(seq)) return
     if (a && Array.isArray(a.accounts)) {
       accounts.value = a.accounts
       activeId.value = a.activeId
-    } else {
-      accounts.value = []
-      activeId.value = null
+      return
     }
-  } catch (e) {
-    fetchErr.value = e?.message || '账号列表拉取失败'
+    // 拉取失败不要清空已有列表：一次网络抖动就让账号页变成「尚无账号」，
+    // 用户会以为数据被删了。保留上一次的结果 + 顶部提示更诚实。
+    if (!a) { fetchErr.value = '账号列表拉取失败'; return }
     accounts.value = []
     activeId.value = null
+  } catch (e) {
+    fetchErr.value = e?.message || '账号列表拉取失败'
   }
 }
 
 async function refresh() {
-  await diagnose()
-  await loadAccounts()
+  const seq = ++refreshSeq
+  await diagnose(seq)
+  await loadAccounts(seq)
 }
 
 async function switchTo(id) {
@@ -187,6 +201,8 @@ onMounted(() => {
 })
 onUnmounted(() => {
   timers.forEach(clearInterval)
+  // diagTimer 是 setTimeout，上面只清了 setInterval —— 组件卸载后它仍会写 ref
+  clearTimeout(diagTimer)
 })
 </script>
 
@@ -217,7 +233,9 @@ onUnmounted(() => {
             <template v-if="account.loggedIn">
               <span class="cs-name-text">{{ account.name }}</span>
               <span class="prov" :class="'prov-' + account.provider">{{ providerLabel(account.provider) }}</span>
-              <span class="mode-badge">API Key 模式</span>
+              <!-- 此前这里恒显示「API Key 模式」：只要 account.loggedIn 为真就渲染，
+                   于是在 bridge 模式 + 已登录 + 列表为空时也会谎报模式。 -->
+              <span class="mode-badge">{{ mode === 'openai' ? 'API Key 模式' : 'Bridge 模式' }}</span>
             </template>
             <template v-else>
               <span class="cs-name-text">{{ account.detail || '尚未配置账号' }}</span>

@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveDataRoot } from './data-root.mjs'
+import { writeJsonAtomic } from './atomic-write.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const STORE_PATH = path.join(resolveDataRoot(process.env, __dirname), 'data', 'call-logs.json')
@@ -22,8 +23,9 @@ let flushTimer = null
 function flush() {
   dirty = false
   try {
-    fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true })
-    fs.writeFileSync(STORE_PATH, JSON.stringify({ seq, logs: logs.slice(0, MAX_DISK) }))
+    // 原子写：写一半被杀（装机被 taskkill / 断电）不会留下截断的 JSON。
+    // 上一次用的是裸 writeFileSync，损坏后 load() 的空 catch 会把整份历史静默丢掉。
+    writeJsonAtomic(STORE_PATH, { seq, logs: logs.slice(0, MAX_DISK) })
   } catch {}
 }
 

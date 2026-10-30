@@ -234,16 +234,27 @@ async function copyToken() {
 const lanBase = ref('')
 async function loadLanBase() {
   try {
-    const s = await fetch('/__gw/status').then((r) => r.json())
-    const first = s?.lan?.addresses?.[0]?.address
-    lanBase.value = first ? `http://${first}:${s?.lan?.port || 4173}` : window.location.origin
+    // 必须走 primaryLanAddress()：addresses[0] 是网卡枚举顺序的第一条，
+    // 装了 Tailscale / Docker 的机器上它往往是 100.x 或虚拟网卡 —— 把这种地址
+    // 复制给同事，对方永远连不上。后端已按「真实内网 → 虚拟网卡 → Tailscale」
+    // 排序并标出 preferred，前端只认那个。
+    // 同时改走 api.getLanInfo()：裸 fetch 没有超时，网关假死时这里会永久 pending。
+    const s = await api.getLanInfo()
+    const addr = api.primaryLanAddress(s?.addresses)
+    lanBase.value = addr?.address ? `http://${addr.address}:${s?.port || 4173}` : ''
   } catch {
-    lanBase.value = window.location.origin
+    lanBase.value = ''
   }
 }
 const inviteCopiedId = ref('')
 async function copyInvite(k) {
   copyErr.value = ''
+  // 拿不到局域网地址就别生成半截邀请文本（"/setup" 这种发给同事是错的）
+  if (!lanBase.value) {
+    copyErr.value = '未取到局域网地址，请确认网关已用局域网模式启动'
+    setTimeout(() => (copyErr.value = ''), 4000)
+    return
+  }
   try {
     const rv = await api.revealApiKey(k.id)
     if (!rv || !rv.token) throw new Error('取不到该 Key 的明文')
