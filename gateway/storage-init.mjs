@@ -104,6 +104,22 @@ export function initializeStorage(paths, { protect = protectStorageTree } = {}) 
   }
   try {
     assertSeparateRoots(realLocation(paths.root), realLocation(paths.resourceRoot))
+    // Read-only refusal before adding the persistent Mac guard to an old or
+    // incompatible directory. Validation is repeated under ownership below.
+    if (process.platform === 'darwin' && fs.existsSync(paths.root)) {
+      if (fs.existsSync(paths.layout)) {
+        let layout
+        try { layout = JSON.parse(fs.readFileSync(paths.layout, 'utf8')) } catch {}
+        if (layout?.schemaVersion !== 1) throw storageError('DATA_VERSION_UNSUPPORTED', '数据布局版本不支持或标记损坏')
+      } else {
+        const entries = fs.readdirSync(paths.root).filter(name => name !== 'runtime')
+        if (fs.existsSync(paths.runtime)) entries.push(...fs.readdirSync(paths.runtime).filter(name => !['owner.lock', 'owner.guard'].includes(name)))
+        if (entries.length) {
+          assertStorageTree(paths.root)
+          throw storageError('DATA_MIGRATION_REQUIRED', '旧数据目录需要显式迁移，未更改原有文件')
+        }
+      }
+    }
     fs.mkdirSync(paths.root, { recursive: true, mode: 0o700 })
     // Claim ownership before inspecting mutable files or applying permissions. A second
     // starter must not race the first one's probes, layout marker or runtime directory.

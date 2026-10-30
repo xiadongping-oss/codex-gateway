@@ -89,11 +89,18 @@ test('初始化：真实平台权限设置并保持新文件继承保护', (t) =
   } finally { lease.release() }
 })
 
-test('初始化：权限失败不产生身份/布局，清理自己的空目录后可重试', (t) => {
+test('初始化：权限失败不产生身份/布局，保留稳定互斥后可重试', (t) => {
   const { paths } = fixture(t)
   assert.throws(() => initializeStorage(paths, { protect() { throw new Error('denied') } }), { code: 'DATA_DIR_UNWRITABLE' })
-  assert.deepEqual(fs.readdirSync(paths.root), [])
+  let guardIdentity
+  if (process.platform === 'darwin') {
+    assert.deepEqual(fs.readdirSync(paths.root), ['runtime'])
+    assert.deepEqual(fs.readdirSync(paths.runtime), ['owner.guard'])
+    assert.equal(fs.readFileSync(path.join(paths.runtime, 'owner.guard')).length, 0)
+    guardIdentity = fs.statSync(path.join(paths.runtime, 'owner.guard')).ino
+  } else assert.deepEqual(fs.readdirSync(paths.root), [])
   initializeStorage(paths, unprotected).release()
+  if (process.platform === 'darwin') assert.equal(fs.statSync(path.join(paths.runtime, 'owner.guard')).ino, guardIdentity)
 })
 
 test('初始化：旧目录和更高/损坏布局拒绝启动，原数据保持不变', (t) => {
