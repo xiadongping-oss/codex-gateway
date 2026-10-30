@@ -358,4 +358,74 @@ mod tests {
         assert!(!recover(&f.0));
         assert_eq!(fs::read(&lease.path).unwrap(), lease.bytes);
     }
+    #[test]
+    fn dead_shell_cannot_recover_until_its_group_is_gone() {
+        use std::{
+            os::unix::process::CommandExt,
+            process::{Child, Command},
+        };
+        struct Owned(Child);
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut retired = Command::new("/usr/bin/true").spawn().unwrap();
+        let shell = retired.id() as i32;
+        retired.wait().unwrap();
+        let mut group = Owned(
+            Command::new("/bin/sleep")
+                .arg("30")
+                .process_group(0)
+                .spawn()
+                .unwrap(),
+        );
+        let f = Fixture::new();
+        let lock = f.0.join("runtime/owner.lock");
+        fs::write(
+            &lock,
+            serde_json::json!({"pid":group.0.id(),"ownerId":uuid::Uuid::new_v4()}).to_string(),
+        )
+        .unwrap();
+        let lease = Lease::capture(&f.0, group.0.id()).unwrap();
+        let r = Receipt {
+            schema: 1,
+            shell,
+            group: group.0.id() as i32,
+            owner: lease.bytes.clone(),
+            identity: lease.identity.clone(),
+        };
+        let path = f.0.join("runtime/desktop-recovery.json");
+        let receipt = serde_json::to_vec(&r).unwrap();
+        fs::write(&path, &receipt).unwrap();
+        assert!(!recover(&f.0));
+        assert!(group.0.try_wait().unwrap().is_none());
+        assert_eq!(fs::read(&lock).unwrap(), lease.bytes);
+        assert_eq!(fs::read(&path).unwrap(), receipt);
+        group.0.kill().unwrap();
+        group.0.wait().unwrap();
+        assert!(recover(&f.0));
+        assert!(!lock.exists());
+        assert!(!recover(&f.0));
+        // A normal release with an informational receipt is not a crash recovery.
+        fs::write(&path, receipt).unwrap();
+        assert!(!recover(&f.0));
+        assert!(!path.exists());
+    }
+    #[test]
+    fn replaced_or_linked_guard_is_never_used_for_recovery() {
+        use std::os::unix::fs::symlink;
+        let f = Fixture::new();
+        let lease = f.lease();
+        let guard = f.0.join("runtime/owner.guard");
+        let original = f.0.join("original.guard");
+        fs::rename(&guard, &original).unwrap();
+        fs::write(&guard, "").unwrap();
+        assert!(!release(&lease));
+        fs::remove_file(&guard).unwrap();
+        symlink(&original, &guard).unwrap();
+        assert!(!release(&lease));
+        assert_eq!(fs::read(&lease.path).unwrap(), lease.bytes);
+    }
 }
