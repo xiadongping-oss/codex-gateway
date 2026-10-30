@@ -84,11 +84,27 @@ impl Anchor {
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
             .open(data)?;
         let runtime = open_at(&root, c"runtime", libc::O_RDONLY | libc::O_DIRECTORY)?;
-        let guard = open_at(
-            &runtime,
-            c"owner.guard",
-            libc::O_RDWR | libc::O_NONBLOCK | if exclusive { libc::O_EXLOCK } else { 0 },
-        )?;
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let guard = loop {
+            match open_at(
+                &runtime,
+                c"owner.guard",
+                libc::O_RDWR | libc::O_NONBLOCK | if exclusive { libc::O_EXLOCK } else { 0 },
+            ) {
+                Ok(file) => break file,
+                // Other contenders can briefly hold the guard while rejecting a
+                // stale owner. Also CLOEXEC descriptors survive fork until exec.
+                // Retry only contention, bounded; never retry identity failures.
+                Err(e)
+                    if exclusive
+                        && e.kind() == io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < until =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => return Err(e),
+            }
+        };
         if !secure(&root.metadata()?, true)
             || !secure(&runtime.metadata()?, true)
             || !secure(&guard.metadata()?, false)
@@ -159,15 +175,16 @@ pub fn capture(data: &Path, owner: &[u8]) -> io::Result<Identity> {
     Ok(identity)
 }
 pub fn release(lease: &Lease) -> bool {
-    let Some(data) = lease.path.parent().and_then(Path::parent) else {
-        return false;
-    };
-    let Ok(anchor) = Anchor::open(data, true) else {
-        return false;
-    };
-    anchor
-        .release(data, &lease.identity, &lease.bytes)
-        .unwrap_or(false)
+    release_checked(lease).unwrap_or(false)
+}
+fn release_checked(lease: &Lease) -> io::Result<bool> {
+    let data = lease
+        .path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(invalid)?;
+    let anchor = Anchor::open(data, true)?;
+    anchor.release(data, &lease.identity, &lease.bytes)
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -313,7 +330,11 @@ mod tests {
         assert!(!release(&lease));
         assert_eq!(fs::read_to_string(&lock).unwrap(), "foreign owner");
         fs::write(&lock, &lease.bytes).unwrap();
-        assert!(release(&lease));
+        let result = release_checked(&lease);
+        assert!(
+            matches!(result, Ok(true)),
+            "verified release failed: {result:?}"
+        );
         assert!(f.0.join("runtime/owner.guard").exists());
     }
     #[test]
@@ -427,5 +448,22 @@ mod tests {
         symlink(&original, &guard).unwrap();
         assert!(!release(&lease));
         assert_eq!(fs::read(&lease.path).unwrap(), lease.bytes);
+    }
+    #[test]
+    fn short_guard_contention_can_settle_without_relaxing_ownership_checks() {
+        let f = Fixture::new();
+        let lease = f.lease();
+        let guard = Anchor::open(&f.0, true).unwrap();
+        let contender = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(guard);
+        });
+        let result = release_checked(&lease);
+        contender.join().unwrap();
+        assert!(
+            matches!(result, Ok(true)),
+            "short guard contention did not settle: {result:?}"
+        );
+        assert!(!lease.path.exists());
     }
 }
