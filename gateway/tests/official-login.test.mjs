@@ -316,6 +316,7 @@ test('start：CLI 形态补 login 子命令；桌面客户端进入 defaultWatch
   // 用独立管理器翻转探活：模拟交接退出
   const mgrStore2 = createOfficialLoginManager({
     dataRoot: root,
+    platform: 'win32',
     spawnImpl: () => ({ pid: 33, unref() {} }),
     killTree: async () => {},
     discoverImpl: () => ({ path: 'C:\\Store\\ChatGPT.exe', kind: 'store' }),
@@ -332,6 +333,7 @@ test('start：CLI 形态补 login 子命令；桌面客户端进入 defaultWatch
   const defRef = { text: null }
   const mgrStore3 = createOfficialLoginManager({
     dataRoot: root,
+    platform: 'win32',
     spawnImpl: () => ({ pid: 44, unref() {} }),
     killTree: async () => {},
     discoverImpl: () => ({ path: 'C:\\Store\\ChatGPT.exe', kind: 'store' }),
