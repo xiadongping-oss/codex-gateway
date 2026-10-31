@@ -33,7 +33,7 @@ pub fn start(app: &tauri::AppHandle, settings: &Settings) -> Arc<AtomicBool> {
             include_str!("../scripts/migration-check.js")
         );
         let mut injected = false;
-        let end = Instant::now() + Duration::from_secs(150);
+        let end = Instant::now() + Duration::from_secs(210);
         while Instant::now() < end {
             let (tx, rx) = mpsc::sync_channel(1);
             let probe = if injected {

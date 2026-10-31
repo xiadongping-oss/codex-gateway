@@ -44,7 +44,14 @@
     check($('migration-archive').textContent.includes('.migration-committed-'))
     check($('migration-rollback').disabled)
     stage = 5
-    confirm(); $('migration-rollback').click()
+    await wait(() => !$('backup-refresh').disabled)
+    $('backup-refresh').click()
+    await wait(() => $('backup-list').querySelector('button') && !$('backup-list').querySelector('button').disabled)
+    $('backup-list').querySelector('button').click()
+    await wait(() => !$('backup-review').hidden && !$('backup-stopped').disabled)
+    check($('backup-restore').disabled)
+    $('backup-stopped').checked = true; $('backup-stopped').dispatchEvent(new Event('change'))
+    $('backup-restore').click()
     await wait(async () => (await invoke('gateway_status')).phase === 'setup')
     await wait(() => !$('migration-form').hidden && !$('migration-plan').disabled)
     check(!(await invoke('migration_request', { request: { operation: 'context' } })).targetExists)
@@ -59,6 +66,17 @@
     try { await invoke('migration_request', { request: { operation: 'context' } }) }
     catch (error) { refused = error === 'MIGRATION_GATEWAY_ACTIVE' }
     check(refused)
+    stage = 8
+    await wait(() => !$('maintenance').hidden)
+    $('maintenance').click()
+    await wait(async () => (await invoke('gateway_status')).phase === 'maintenance')
+    await wait(() => $('backup-list').querySelector('button') && !$('backup-list').querySelector('button').disabled)
+    $('backup-list').querySelector('button').click()
+    await wait(() => !$('backup-review').hidden && $('backup-decision').textContent.includes('发生变化'))
+    check($('backup-restore').disabled)
+    stage = 9
+    $('retry').click()
+    await wait(async () => (await invoke('gateway_status')).phase === 'ready')
     window.__migrationCheck = 'passed'
   } catch { window.__migrationCheck = 'failed:' + stage }
 })()

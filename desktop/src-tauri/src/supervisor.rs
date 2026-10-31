@@ -147,6 +147,15 @@ impl ViewState {
         }
     }
 }
+fn backup_view(port: u16) -> ViewState {
+    ViewState::new(
+        "maintenance",
+        "网关已停止",
+        "可以检查历史迁移备份。已有新增数据时不会直接覆盖；完成后可重新启动网关。",
+        "备份与恢复",
+        port,
+    )
+}
 fn failure(code: &str, port: u16) -> ViewState {
     let message = match code {
         "PORT_IN_USE" => "服务端口已被其他程序占用。请从原入口停止已有服务，再重新启动。",
@@ -204,6 +213,7 @@ impl Controller {
             "logs",
             "restart",
             "fresh-start",
+            "maintenance",
         ]
         .contains(&action)
         {
@@ -514,6 +524,7 @@ fn run(
     let mut session: Option<Session> = None;
     let mut console: Option<Console> = None;
     let mut exit_requested = false;
+    let mut stay_for_backups = false;
     let mut stop_deadline = None;
     let mut last_status = Instant::now();
     let mut smoke_stage = 0;
@@ -592,6 +603,20 @@ fn run(
             }
             None => None,
         };
+        if action.as_deref() == Some("quit") {
+            stay_for_backups = false;
+        }
+        if action.as_deref() == Some("maintenance") && !exit_requested && !tree_blocked {
+            retry_at = None;
+            if session.is_some() {
+                stay_for_backups = true;
+                action = Some("quit".into());
+            } else {
+                *view.lock().unwrap() = backup_view(settings.port);
+                crate::desktop::show_main(&app);
+                action = None;
+            }
+        }
         if action.as_deref() == Some("fresh-start") {
             action = if session.is_none() && crate::migration::new_install(&settings) {
                 Some("retry".into())
@@ -966,6 +991,18 @@ fn run(
                         }
                         let tree_clean = s.cleanup();
                         let _ = log.record(Event::Stopped);
+                        if stay_for_backups
+                            && !cancel.load(Ordering::Relaxed)
+                            && clean
+                            && tree_clean
+                        {
+                            stay_for_backups = false;
+                            exit_requested = false;
+                            stop_deadline = None;
+                            *view.lock().unwrap() = backup_view(settings.port);
+                            crate::desktop::show_main(&app);
+                            continue;
+                        }
                         if exit_requested {
                             quitting.store(true, Ordering::Relaxed);
                             app.exit(if clean && tree_clean { 0 } else { 1 });

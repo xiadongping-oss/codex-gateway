@@ -6,7 +6,7 @@ import os from 'node:os'
 import crypto from 'node:crypto'
 import { spawnSync, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { planMigration, summarizePlan, prepareMigration, finishMigration, rollbackMigration } from './migration.mjs'
+import { planMigration, summarizePlan, prepareMigration, finishMigration, rollbackMigration, listMigrationBackups, reviewMigrationBackup, rollbackMigrationBackup } from './migration.mjs'
 import { migrationGuardPath, resolveStoragePaths, containsPath } from '../gateway/storage-paths.mjs'
 import { initializeStorage, validateStorageReader } from '../gateway/storage-init.mjs'
 import { handleMigrationRequest } from './migration-service.mjs'
@@ -358,6 +358,61 @@ test('native service fixes destination, exposes only summary, and supports pendi
   assert.throws(() => handleMigrationRequest({ operation: 'rollback', archive: result.archive, sourceStopped: true }, path.join(f.temp, 'other-target'), f.resources), { code: 'MIGRATION_UNKNOWN_TRANSACTION' })
   call({ operation: 'rollback', archive: result.archive, sourceStopped: true })
   assert.equal(fs.existsSync(f.target), false)
+})
+
+test('history survives a new client, lists aborted backups and restores only a reviewed fixed target', t => {
+  const f = fixture(t), before = bytes(f.source)
+  prepareMigration(planMigration(f.options), stopped)
+  const committed = finishMigration(f.guard, stopped)
+  const history = handleMigrationRequest({ operation: 'history' }, f.target, f.resources)
+  assert.equal(history.backups.length, 1); assert.equal(history.unavailable, 0)
+  const id = history.backups[0].id
+  const review = handleMigrationRequest({ operation: 'backup_review', archiveId: id }, f.target, f.resources)
+  assert.equal(review.canRollback, true); assert.equal(review.archive, committed.archive)
+  assert.ok(!JSON.stringify([history, review]).includes('FAKE_'))
+  assert.throws(() => rollbackMigrationBackup(f.target, id, review.fingerprint, {}), { code: 'MIGRATION_STOP_CONFIRMATION_REQUIRED' })
+  const result = handleMigrationRequest({ operation: 'backup_restore', archiveId: id, fingerprint: review.fingerprint, sourceStopped: true }, f.target, f.resources)
+  assert.equal(result.phase, 'aborted'); assert.equal(fs.existsSync(f.target), false)
+  assert.equal(listMigrationBackups(f.target).backups[0].phase, 'aborted')
+  assert.deepEqual(bytes(f.source), before)
+})
+
+test('history review and restore reject changed data or damaged snapshots without losing new files', t => {
+  const f = fixture(t)
+  prepareMigration(planMigration(f.options), stopped); finishMigration(f.guard, stopped)
+  const id = listMigrationBackups(f.target).backups[0].id, review = reviewMigrationBackup(f.target, id)
+  put(f.target, 'new-record', 'new content')
+  const before = bytes(f.target)
+  assert.equal(reviewMigrationBackup(f.target, id).canRollback, false)
+  assert.throws(() => rollbackMigrationBackup(f.target, id, review.fingerprint, stopped), { code: 'MIGRATION_CONTENT_CHANGED' })
+  assert.deepEqual(bytes(f.target), before)
+  fs.unlinkSync(path.join(f.target, 'new-record'))
+  put(review.archive, 'snapshot/data/auth.json', { changed: true })
+  assert.equal(reviewMigrationBackup(f.target, id).canRollback, false)
+  assert.equal(reviewMigrationBackup(f.target, id).reason, 'MIGRATION_CONTENT_CHANGED')
+})
+
+test('history refuses traversal, forged target records and linked archive roots without disclosing journal data', t => {
+  const f = fixture(t)
+  for (const id of ['../other', path.join(f.temp, 'other'), '__proto__', 'x'.repeat(100)]) {
+    assert.throws(() => reviewMigrationBackup(f.target, id), { code: 'MIGRATION_UNKNOWN_TRANSACTION' })
+  }
+  const id = crypto.randomUUID(), forged = `${f.guard}-committed-${id}`
+  put(forged, 'transaction.json', { secret: 'FAKE_SECRET_SENTINEL' })
+  const linked = `${f.guard}-committed-${crypto.randomUUID()}`
+  fs.symlinkSync(f.source, linked, process.platform === 'win32' ? 'junction' : 'dir')
+  let history
+  try { history = listMigrationBackups(f.target) }
+  finally { fs.unlinkSync(linked) }
+  assert.equal(history.backups.length, 0); assert.equal(history.unavailable, 2)
+  assert.ok(!JSON.stringify(history).includes('FAKE_'))
+  const other = fixture(t)
+  prepareMigration(planMigration(other.options), stopped)
+  const result = finishMigration(other.guard, stopped)
+  const otherId = listMigrationBackups(other.target).backups[0].id
+  put(`${f.guard}-committed-${otherId}`, 'transaction.json', fs.readFileSync(path.join(result.archive, 'transaction.json'), 'utf8'))
+  assert.equal(listMigrationBackups(f.target).unavailable, 2)
+  assert.throws(() => reviewMigrationBackup(f.target, otherId), { code: 'MIGRATION_UNKNOWN_TRANSACTION' })
 })
 
 test('native service stdin bounds, malformed JSON and unknown fields do not disclose input', t => {

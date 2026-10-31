@@ -14,6 +14,7 @@
         <button id="reopen" hidden>打开控制台</button><button id="retry" hidden>启动网关</button><button id="fresh-start" hidden>建立全新工作空间</button>
         <button id="continue" hidden>继续等待</button><button id="force" class="secondary" hidden>结束任务并退出</button><button id="restart" hidden>结束并重启</button>
         <button id="logs" class="secondary">打开诊断日志</button><button id="quit" class="secondary">退出应用</button>
+        <button id="maintenance" class="secondary" hidden>停止网关并管理备份</button>
       </div>
     </section>
     <section id="migration-panel" class="card migration-card" aria-labelledby="migration-title" hidden>
@@ -46,6 +47,15 @@
       </div>
       <p id="migration-progress" role="status" aria-live="polite"></p><p id="migration-error" role="alert"></p>
     </section>
+    <section id="backup-panel" class="card migration-card" hidden aria-labelledby="backup-title">
+      <div class="card-top"><span class="eyebrow">备份与恢复</span><button id="backup-refresh" class="secondary">刷新列表</button></div>
+      <h2 id="backup-title">历史迁移备份</h2><p>仅查看当前工作空间的备份，不会自动删除备份或覆盖新增数据。</p>
+      <p id="backup-status" role="status"></p><div id="backup-list"></div>
+      <div id="backup-review" class="migration-review" hidden><h3>回退检查</h3><p id="backup-summary"></p><code id="backup-location"></code><p id="backup-decision"></p>
+        <label class="check"><input id="backup-stopped" type="checkbox"><span>我已退出其他使用这些数据的程序，并确认回退到迁移前状态</span></label>
+        <button id="backup-restore" class="secondary" disabled>回退所选迁移</button>
+      </div><p id="backup-error" role="alert"></p>
+    </section>
     <p class="footnote">关闭窗口后仍在托盘运行 · 从托盘菜单可恢复窗口、设置自启动或退出</p><p id="desktop-notice" role="status"></p><p id="action-error" role="alert"></p>
   </main>
-</div><script src="migration-ui.js"></script><script src="app.js"></script></body></html>
+</div><script src="migration-ui.js"></script><script src="backup-ui.js"></script><script src="app.js"></script></body></html>

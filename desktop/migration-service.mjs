@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { planMigration, summarizePlan, prepareMigration, finishMigration, rollbackMigration, describePendingMigration } from './migration.mjs'
+import { planMigration, summarizePlan, prepareMigration, finishMigration, rollbackMigration, describePendingMigration, listMigrationBackups, reviewMigrationBackup, rollbackMigrationBackup } from './migration.mjs'
 import { migrationGuardPath } from '../gateway/storage-paths.mjs'
 
 const fail = code => { throw Object.assign(new Error(code), { code }) }
@@ -12,11 +12,14 @@ export function handleMigrationRequest(request, targetRoot, resourceRoot) {
   if (!path.isAbsolute(targetRoot) || !path.isAbsolute(resourceRoot)) fail('MIGRATION_ABSOLUTE_PATH_REQUIRED')
   const guard = migrationGuardPath(targetRoot)
   const allowed = {
-    context: [], plan: ['selection'], apply: ['selection', 'fingerprint', 'sourceStopped'],
+    context: [], history: [], backup_review: ['archiveId'], backup_restore: ['archiveId', 'fingerprint', 'sourceStopped'], plan: ['selection'], apply: ['selection', 'fingerprint', 'sourceStopped'],
     resume: ['sourceStopped'], abort: ['sourceStopped'], rollback: ['archive', 'sourceStopped']
   }[request?.operation]
   if (!allowed || Object.keys(request).some(k => k !== 'operation' && !allowed.includes(k))) fail('MIGRATION_INVALID_ARGUMENT')
   if (request.operation === 'context') return { targetRoot, pending: present(guard), targetExists: present(targetRoot), recovery: present(guard) ? describePendingMigration(targetRoot) : null }
+  if (request.operation === 'history') return listMigrationBackups(targetRoot)
+  if (request.operation === 'backup_review') return reviewMigrationBackup(targetRoot, request.archiveId)
+  if (request.operation === 'backup_restore') return rollbackMigrationBackup(targetRoot, request.archiveId, request.fingerprint, { sourceStopped: request.sourceStopped === true })
   if (request.operation === 'plan' || request.operation === 'apply') {
     const input = request.selection
     if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(k => !['sourceRoot', 'sourceKind', 'galleryRoot', 'keepExternalPaths', 'pathMappings'].includes(k))) fail('MIGRATION_INVALID_ARGUMENT')

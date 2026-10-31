@@ -197,7 +197,7 @@ function load(guard, archived = false) {
   const journal = readJson(journalPath(guard)), plan = journal.plan
   validatePlan(plan)
   if (journal.schemaVersion !== 1 || !['copying', 'prepared', 'publishing', 'committed', 'aborting', 'aborted'].includes(journal.phase) || !/^[a-f0-9-]{36}$/.test(journal.id || '')) fail('MIGRATION_UNKNOWN_TRANSACTION')
-  const expected = migrationGuardPath(plan.target) + (archived ? `-committed-${journal.id}` : '')
+  const expected = migrationGuardPath(plan.target) + (archived ? `-${archived === 'aborted' ? 'aborted' : 'committed'}-${journal.id}` : '')
   if (expected !== guard) fail('MIGRATION_UNKNOWN_TRANSACTION')
   return journal
 }
@@ -211,6 +211,55 @@ function move(from, to, allowedRoot, target) {
 export function describePendingMigration(target) {
   const journal = load(migrationGuardPath(safePath(target)))
   return { phase: journal.phase, sourceRoot: journal.plan.source, galleryRoot: journal.plan.gallery, ...summarizePlan(journal.plan) }
+}
+const ARCHIVE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
+function historyPath(target, id, phase = 'committed') {
+  if (typeof id !== 'string' || !ARCHIVE_ID.test(id) || !['committed', 'aborted'].includes(phase)) fail('MIGRATION_UNKNOWN_TRANSACTION')
+  return `${migrationGuardPath(safePath(target))}-${phase}-${id}`
+}
+function historyJournal(target, id, phase = 'committed') {
+  const archive = historyPath(target, id, phase), journal = load(archive, phase)
+  if (journal.plan.target !== safePath(target) || journal.phase !== phase) fail('MIGRATION_UNKNOWN_TRANSACTION')
+  return { archive, journal }
+}
+export function listMigrationBackups(target) {
+  const guard = migrationGuardPath(safePath(target)), parent = path.dirname(guard), prefix = path.basename(guard) + '-'
+  const candidates = fs.readdirSync(parent).filter(name => name.startsWith(prefix)).map(name => {
+    const suffix = name.slice(prefix.length), match = /^(committed|aborted)-(.+)$/.exec(suffix)
+    return match && ARCHIVE_ID.test(match[2]) ? { phase: match[1], id: match[2] } : null
+  }).filter(Boolean)
+  // Bound the reply and do not return unverified filenames or journal contents.
+  const backups = []; let unavailable = 0
+  for (const item of candidates.slice(-50)) {
+    try {
+      const { archive, journal } = historyJournal(target, item.id, item.phase)
+      backups.push({ ...item, recordedAt: fs.statSync(journalPath(archive)).mtime.toISOString(), files: Object.keys(journal.plan.files).length, galleryFiles: Object.keys(journal.plan.galleryFiles).length })
+    } catch { unavailable++ }
+  }
+  backups.sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))
+  return { backups, unavailable, omitted: Math.max(0, candidates.length - 50) }
+}
+export function reviewMigrationBackup(target, id) {
+  const { archive, journal } = historyJournal(target, id), plan = journal.plan
+  const result = { id, archive, sourceRoot: plan.source, targetRoot: plan.target, ...summarizePlan(plan), canRollback: false }
+  try {
+    if (!journal.candidateFiles) fail('MIGRATION_UNKNOWN_TRANSACTION')
+    if (exists(migrationGuardPath(plan.target))) fail('MIGRATION_PENDING')
+    verifyFiles(path.join(archive, 'snapshot/data'), plan.files)
+    if (plan.gallery) verifyFiles(path.join(archive, 'snapshot/gallery'), plan.galleryFiles)
+    if (plan.original) verifyFiles(path.join(archive, 'original'), plan.original)
+    noWriter(plan.target); verifyFiles(plan.target, journal.candidateFiles)
+    result.canRollback = true
+  } catch (error) {
+    result.reason = ['MIGRATION_PENDING', 'MIGRATION_DATA_IN_USE', 'MIGRATION_PENDING_LOGIN', 'MIGRATION_CONTENT_CHANGED', 'MIGRATION_SOURCE_MISSING'].includes(error.code) ? error.code : 'MIGRATION_UNKNOWN_TRANSACTION'
+  }
+  return result
+}
+export function rollbackMigrationBackup(target, id, fingerprint, options) {
+  const review = reviewMigrationBackup(target, id)
+  if (!review.canRollback) fail(review.reason)
+  if (review.fingerprint !== fingerprint) fail('MIGRATION_PLAN_CHANGED')
+  return rollbackMigration(review.archive, options)
 }
 export function prepareMigration(plan, { sourceStopped = false, checkpoint = () => {} } = {}) {
   if (!sourceStopped) fail('MIGRATION_STOP_CONFIRMATION_REQUIRED')

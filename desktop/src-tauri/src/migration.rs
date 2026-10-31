@@ -14,6 +14,15 @@ use std::{
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Context {},
+    History {},
+    BackupReview {
+        #[serde(rename = "archiveId")]
+        archive_id: String,
+    },
+    BackupRestore {
+        #[serde(rename = "sourceStopped")]
+        source_stopped: bool,
+    },
     Plan {
         selection: Value,
     },
@@ -37,7 +46,10 @@ pub enum Request {
 }
 impl Request {
     pub fn is_context(&self) -> bool {
-        matches!(self, Self::Context {})
+        matches!(
+            self,
+            Self::Context {} | Self::History {} | Self::BackupReview { .. }
+        )
     }
 }
 
@@ -57,6 +69,7 @@ pub fn new_install(settings: &Settings) -> bool {
 pub struct Wizard {
     reviewed: Option<(Value, String)>,
     archive: Option<String>,
+    backup: Option<(String, String)>,
 }
 impl Wizard {
     pub fn execute(
@@ -67,6 +80,32 @@ impl Wizard {
     ) -> Result<Value, String> {
         let payload = match request {
             Request::Context {} => json!({"operation":"context"}),
+            Request::History {} => json!({"operation":"history"}),
+            Request::BackupReview { archive_id } => {
+                self.backup = None;
+                let result = invoke(
+                    settings,
+                    &json!({"operation":"backup_review", "archiveId":archive_id}),
+                    cancel,
+                )?;
+                if result["canRollback"] == true {
+                    self.backup = Some((
+                        archive_id,
+                        result["fingerprint"]
+                            .as_str()
+                            .ok_or("MIGRATION_INVALID_REPLY")?
+                            .into(),
+                    ));
+                }
+                return Ok(result);
+            }
+            Request::BackupRestore { source_stopped } => {
+                let (id, fingerprint) = self
+                    .backup
+                    .take()
+                    .ok_or("MIGRATION_BACKUP_REVIEW_REQUIRED")?;
+                json!({"operation":"backup_restore", "archiveId":id, "fingerprint":fingerprint, "sourceStopped":source_stopped})
+            }
             Request::Plan { selection } => {
                 self.reviewed = None;
                 let result = invoke(
@@ -230,6 +269,8 @@ mod tests {
             json!({"operation":"context","targetRoot":"elsewhere"}),
             json!({"operation":"apply","fingerprint":"x","sourceStopped":true,"selection":{}}),
             json!({"operation":"rollback","sourceStopped":true,"archive":"elsewhere"}),
+            json!({"operation":"history","targetRoot":"elsewhere"}),
+            json!({"operation":"backup_restore","archiveId":"unreviewed","sourceStopped":true}),
         ] {
             assert!(serde_json::from_value::<Request>(value).is_err());
         }
@@ -322,10 +363,34 @@ mod tests {
             std::fs::read_to_string(source.join("accounts.json")).unwrap(),
             accounts
         );
+        // A new native owner models reopening the app: no remembered archive path.
+        wizard = Wizard::default();
         assert_eq!(
             wizard
                 .execute(
-                    Request::Rollback {
+                    Request::BackupRestore {
+                        source_stopped: true
+                    },
+                    &settings,
+                    &cancel
+                )
+                .unwrap_err(),
+            "MIGRATION_BACKUP_REVIEW_REQUIRED"
+        );
+        let history = wizard
+            .execute(Request::History {}, &settings, &cancel)
+            .unwrap();
+        let id = history["backups"][0]["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            wizard
+                .execute(Request::BackupReview { archive_id: id }, &settings, &cancel)
+                .unwrap()["canRollback"],
+            true
+        );
+        assert_eq!(
+            wizard
+                .execute(
+                    Request::BackupRestore {
                         source_stopped: true
                     },
                     &settings,

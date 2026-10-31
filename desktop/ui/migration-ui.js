@@ -108,6 +108,11 @@
     run({ operation, sourceStopped: true, ...(operation === 'apply' ? { fingerprint } : {}) }, operation === 'apply' ? '正在备份、核对并迁移…' : '正在核对并处理恢复…')
   }
   window.migrationWizard = {
+    refreshAfterRestore() {
+      completed = false; context = undefined
+      el('result').hidden = el('rollback').hidden = el('start').hidden = true
+      invalidate(); loadContext()
+    },
     update(state) {
       const visible = ['setup', 'migrating', 'migration_complete'].includes(state.phase) || ['DATA_MIGRATION_REQUIRED', 'DATA_MIGRATION_PENDING'].includes(state.code)
       el('panel').hidden = !visible
