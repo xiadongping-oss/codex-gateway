@@ -301,6 +301,19 @@ test('verify-zip：api-keys.json 要被拦住', () => {
   assert.match(r.out, /禁止内容/)
 })
 
+test('verify-zip：两种待保存 OAuth 凭据都不能混入归档', () => {
+  requirePython()
+  for (const name of ['.oauth-browser-pending.json', '.oauth-device-pending.json']) {
+    const zip = makeZip(path.join(tmpdir('oauth-zip'), 'pending.zip'), {
+      [`${NAME}/README.md`]: '# fixture\n',
+      [`${NAME}/gateway/${name}`]: '{"fixture":"pending-credential"}'
+    })
+    const r = run(SCRIPT, ['--verify-zip', `--zip=${zip}`])
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /禁止内容/)
+  }
+})
+
 test('verify-zip：压缩后 .sh 变成 CRLF 要被拦住', () => {
   requirePython()
   const zip = makeZip(path.join(tmpdir('z'), 'crlf-sh.zip'), {
@@ -406,6 +419,8 @@ test('复制阶段：用户数据 / 密钥 / 测试套件不会被带进 staging
       'gateway/data/call-logs.json': '[]',
       'gateway/api-keys.json': '{}',
       'gateway/accounts/acc.json': '{}',
+      'gateway/.oauth-browser-pending.json': '{"fixture":"browser-pending-secret"}',
+      'gateway/.oauth-device-pending.json': '{"fixture":"device-pending-secret"}',
       'gateway/logs/launcher.log': 'x',
       'gateway/tests/audit.mjs': '// attack payload'
     }
@@ -414,7 +429,7 @@ test('复制阶段：用户数据 / 密钥 / 测试套件不会被带进 staging
   assert.equal(r.code, 0, r.out)
 
   const staging = path.join(root, 'release', 'staging', NAME)
-  for (const rel of ['gateway/data', 'gateway/api-keys.json', 'gateway/accounts', 'gateway/logs', 'gateway/tests']) {
+  for (const rel of ['gateway/data', 'gateway/api-keys.json', 'gateway/accounts', 'gateway/.oauth-browser-pending.json', 'gateway/.oauth-device-pending.json', 'gateway/logs', 'gateway/tests']) {
     assert.ok(!fs.existsSync(path.join(staging, rel)), `不应被复制进发布包：${rel}`)
   }
 })

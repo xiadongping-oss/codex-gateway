@@ -6,8 +6,8 @@ const source = fs.readFileSync(new URL('../src/components/SetupModal.vue', impor
 function component(overrides = {}) {
   const intervals = new Map(), emitted = [], unmounted = []
   let id = 0
-  const api = { officialLoginCancel: async () => ({ok:true}), cancelBrowserLoginApi: async () => ({}), getProviders: async () => ({}), ...overrides }
-  const run = new Function('api','ref','computed','watch','nextTick','onMounted','onUnmounted','defineEmits','setInterval','clearInterval','window','PROVIDER_PRESETS','CUSTOM_PROVIDER_ID','writeClipboard','vModalFocus', source + '\nreturn {active,authMode,tempPhase,tempSession,tempError,tempRetryable,tempImporting,error,okMsg,browser,polling,startTempLogin,finishTempLogin,retryTempImport,cancelTempLogin,startAuth,getLocalAccount};')
+  const api = { officialLoginCancel: async () => ({ok:true}), cancelBrowserLoginApi: async () => ({}), cancelDeviceFlowApi: async () => ({}), getProviders: async () => ({}), ...overrides }
+  const run = new Function('api','ref','computed','watch','nextTick','onMounted','onUnmounted','defineEmits','setInterval','clearInterval','window','PROVIDER_PRESETS','CUSTOM_PROVIDER_ID','writeClipboard','vModalFocus', source + '\nreturn {active,authMode,tempPhase,tempSession,tempError,tempRetryable,tempImporting,error,okMsg,browser,device,pendingOAuthImport,polling,continueAuth,startTempLogin,finishTempLogin,retryTempImport,cancelTempLogin,startAuth,getLocalAccount};')
   const state=run(api,ref,computed,watch,nextTick,()=>{},fn=>unmounted.push(fn),()=> (...args)=>emitted.push(args),fn=>{intervals.set(++id,fn);return id},i=>intervals.delete(i),{},[],'custom',()=>{},()=>{})
   return {...state,emitted,intervals,unmount:()=>unmounted.forEach(fn=>fn()),tick:async()=>{for(const fn of [...intervals.values()])await fn()}}
 }
@@ -40,4 +40,17 @@ test('finish HTTP 400 only offers retry when server retains the credentials sess
 })
 test('cancel failure stays visible and does not claim the session was cancelled',async()=>{
  const c=component({officialLoginStart:async()=>({ok:true,sessionId:'session'}),officialLoginCancel:async()=>{throw new Error('正在导入，暂时不能取消')}});await c.startTempLogin();assert.equal(await c.cancelTempLogin(),false);assert.equal(c.tempSession.value.sessionId,'session');assert.equal(c.tempPhase.value,'running');assert.match(c.tempError.value,/不能取消/);c.unmount()
+})
+
+test('recovered browser and device results remain retryable after save failure',async()=>{
+ for(const source of ['browser','device']){let starts=0,polls=0;const c=component({startBrowserLoginApi:async()=>{starts++;return{ok:true,pendingImport:true,loginId:'recovered'}},startDeviceFlowApi:async()=>{starts++;return{ok:true,pendingImport:true,loginId:'recovered'}},pollBrowserLoginApi:async()=>{if(!polls++)throw new Error('保存失败');return{ok:true}},pollDeviceFlowApi:async()=>{if(!polls++)throw new Error('保存失败');return{ok:true}}});c.authMode.value=source;await flush();await c.startAuth();assert.equal(c.pendingOAuthImport.value,true);assert.equal(c.polling.value,false);await c.continueAuth();assert.match(c.error.value,/保存失败/);assert.equal(c.pendingOAuthImport.value,true);await c.continueAuth();assert.equal(c.pendingOAuthImport.value,false);assert.equal(c.emitted.length,1);assert.equal(starts,1);assert.equal(polls,2);c.unmount()}
+})
+test('closing or switching a device authorization cancels only the device source',async()=>{
+ for(const action of ['close','mode','tab']){const cancelled=[];const c=component({startDeviceFlowApi:async()=>({ok:true,pendingImport:true}),cancelBrowserLoginApi:async()=>cancelled.push('browser'),cancelDeviceFlowApi:async()=>cancelled.push('device')});c.authMode.value='device';await flush();await c.startAuth();if(action==='close')c.unmount();else{if(action==='mode')c.authMode.value='browser';else c.active.value='json';await flush();c.unmount()}await flush();assert.deepEqual(cancelled,['device'])}
+})
+test('busy OAuth cancellation keeps the pending save reachable with its error',async()=>{
+ const c=component({startDeviceFlowApi:async()=>({ok:true,pendingImport:true}),cancelDeviceFlowApi:async()=>{throw new Error('授权正在保存，请稍后重试')}});c.authMode.value='device';await flush();await c.startAuth();c.authMode.value='browser';await flush();assert.equal(c.authMode.value,'device');assert.equal(c.pendingOAuthImport.value,true);assert.match(c.error.value,/正在保存/);c.unmount()
+})
+test('late device start after closing is cancelled without publishing its state',async()=>{
+ const d=deferred(),cancelled=[];const c=component({startDeviceFlowApi:()=>d.promise,cancelDeviceFlowApi:async()=>cancelled.push('device')});c.authMode.value='device';await flush();const starting=c.startAuth();c.unmount();d.resolve({ok:true,pendingImport:true});await starting;assert.equal(c.device.value,null);assert.ok(cancelled.length>=1);assert.deepEqual([...new Set(cancelled)],['device']);assert.equal(c.emitted.length,0)
 })

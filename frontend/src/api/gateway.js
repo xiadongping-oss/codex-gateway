@@ -309,6 +309,9 @@ export async function startDeviceFlowApi() {
 export async function pollDeviceFlowApi(payload = {}) {
   return await authRequest('/__gw/auth/device/poll', 'POST', payload)
 }
+export async function cancelDeviceFlowApi() {
+  return await authRequest('/__gw/auth/device/cancel', 'POST', {})
+}
 
 // ---------- 授权：浏览器回调 ----------
 export async function startBrowserLoginApi() {

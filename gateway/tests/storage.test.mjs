@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events'
 import { execFileSync } from 'node:child_process'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 import { resolveStoragePaths, bridgeStorageEnv } from '../storage-paths.mjs'
-import { initializeStorage, validateExternalPath } from '../storage-init.mjs'
+import { initializeStorage, validateExternalPath, assertStorageTree, validateStorageReader } from '../storage-init.mjs'
 
 const GW = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 function fixture(t) {
@@ -21,6 +21,138 @@ function fixture(t) {
   return { temp, root, program, env, paths: resolveStoragePaths(env, path.join(program, 'gateway')) }
 }
 const unprotected = { protect() {} }
+
+function readerFixture(t) {
+  const result = fixture(t)
+  fs.mkdirSync(result.paths.root)
+  fs.writeFileSync(result.paths.layout, '{"schemaVersion":1}\n')
+  return result
+}
+const atomicName = '.api-keys.json.1234.abcdef123456.tmp'
+
+test('reader：枚举后原子临时文件rename消失，完整重扫root与正式目标后通过', t => {
+  const { paths } = readerFixture(t)
+  const temporary = path.join(paths.root, atomicName)
+  const target = path.join(paths.root, 'api-keys.json')
+  fs.writeFileSync(temporary, 'SYNTHETIC')
+  let rootChecks = 0, targetChecks = 0
+  validateStorageReader(paths, { lstatSync(file) {
+    if (file === paths.root) rootChecks++
+    if (file === target) targetChecks++
+    if (file === temporary) fs.renameSync(temporary, target)
+    return fs.lstatSync(file)
+  } })
+  assert.equal(rootChecks, 2)
+  assert.equal(targetChecks, 1, 'newly committed target must be checked in the complete retry')
+  assert.equal(fs.readFileSync(target, 'utf8'), 'SYNTHETIC')
+})
+
+test('reader：连续三次原子临时文件消失仍失败，不无限重试或接受不完整树', t => {
+  const { paths } = readerFixture(t)
+  const temporary = path.join(paths.root, atomicName)
+  let rootChecks = 0, listed = 0
+  assert.throws(() => validateStorageReader(paths, {
+    readdirSync(file, options) {
+      if (file === paths.root) { listed++; fs.writeFileSync(temporary, 'SYNTHETIC') }
+      return fs.readdirSync(file, options)
+    },
+    lstatSync(file) {
+      if (file === paths.root) rootChecks++
+      if (file === temporary) fs.unlinkSync(temporary)
+      return fs.lstatSync(file)
+    }
+  }), { code: 'ENOENT' })
+  assert.equal(rootChecks, 3)
+  assert.equal(listed, 3)
+})
+
+test('reader：普通文件、未知tmp格式或目录消失不重试', t => {
+  for (const [name, directory] of [
+    ['notes.json', false], ['.unrelated.tmp', false], ['.api-keys.json.1234.short.tmp', false],
+    ['.api-keys.json.1234.ABCDEF123456.tmp', false], [atomicName, true]
+  ]) {
+    const { paths } = readerFixture(t)
+    const file = path.join(paths.root, name)
+    if (directory) fs.mkdirSync(file); else fs.writeFileSync(file, 'SYNTHETIC')
+    let rootChecks = 0
+    assert.throws(() => validateStorageReader(paths, { lstatSync(candidate) {
+      if (candidate === paths.root) rootChecks++
+      if (candidate === file) { if (directory) fs.rmdirSync(file); else fs.unlinkSync(file) }
+      return fs.lstatSync(candidate)
+    } }), { code: 'ENOENT' })
+    assert.equal(rootChecks, 1, name)
+  }
+})
+
+test('reader：root消失及原子临时文件权限异常不能当作rename竞争忽略', t => {
+  const first = readerFixture(t)
+  let rootChecks = 0
+  assert.throws(() => validateStorageReader(first.paths, { lstatSync(file) {
+    if (file === first.paths.root) {
+      rootChecks++
+      fs.unlinkSync(first.paths.layout)
+      fs.rmdirSync(first.paths.root)
+    }
+    return fs.lstatSync(file)
+  } }), { code: 'ENOENT' })
+  assert.equal(rootChecks, 1)
+
+  const { paths } = readerFixture(t)
+  const temporary = path.join(paths.root, atomicName)
+  fs.writeFileSync(temporary, 'SYNTHETIC')
+  rootChecks = 0
+  assert.throws(() => validateStorageReader(paths, { lstatSync(file) {
+    if (file === paths.root) rootChecks++
+    if (file === temporary) throw Object.assign(new Error('fixture denied'), { code: 'EACCES' })
+    return fs.lstatSync(file)
+  } }), { code: 'EACCES' })
+  assert.equal(rootChecks, 1)
+  assert.equal(fs.readFileSync(temporary, 'utf8'), 'SYNTHETIC')
+})
+
+test('reader：临时命名的链接和硬链接仍拒绝，重扫也检查新增正式目标', t => {
+  for (const kind of ['junction', 'hardlink']) {
+    const { paths, temp } = readerFixture(t)
+    const outside = path.join(temp, 'outside')
+    if (kind === 'junction') fs.mkdirSync(outside); else fs.writeFileSync(outside, 'SYNTHETIC')
+    const temporary = path.join(paths.root, atomicName)
+    if (kind === 'junction') fs.symlinkSync(outside, temporary, process.platform === 'win32' ? 'junction' : 'dir')
+    else fs.linkSync(outside, temporary)
+    assert.throws(() => validateStorageReader(paths), { code: 'DATA_DIR_INVALID' })
+  }
+  for (const kind of ['junction', 'hardlink']) {
+    const { paths, temp } = readerFixture(t)
+    const temporary = path.join(paths.root, atomicName)
+    const target = path.join(paths.root, 'api-keys.json')
+    const outside = path.join(temp, 'outside')
+    if (kind === 'junction') fs.mkdirSync(outside); else fs.writeFileSync(outside, 'SYNTHETIC')
+    fs.writeFileSync(temporary, 'SYNTHETIC')
+    let rootChecks = 0
+    assert.throws(() => validateStorageReader(paths, { lstatSync(file) {
+      if (file === paths.root) rootChecks++
+      if (file === temporary) {
+        fs.unlinkSync(temporary)
+        if (kind === 'junction') fs.symlinkSync(outside, target, process.platform === 'win32' ? 'junction' : 'dir')
+        else fs.linkSync(outside, target)
+      }
+      return fs.lstatSync(file)
+    } }), { code: 'DATA_DIR_INVALID' })
+    assert.equal(rootChecks, 2)
+  }
+})
+
+test('tree默认writer/init/migration模式保持严格单遍，不重试消失的原子临时文件', t => {
+  const { paths } = readerFixture(t)
+  const temporary = path.join(paths.root, atomicName)
+  fs.writeFileSync(temporary, 'SYNTHETIC')
+  let rootChecks = 0
+  assert.throws(() => assertStorageTree(paths.root, { lstatSync(file) {
+    if (file === paths.root) rootChecks++
+    if (file === temporary) fs.unlinkSync(temporary)
+    return fs.lstatSync(file)
+  } }), { code: 'ENOENT' })
+  assert.equal(rootChecks, 1)
+})
 
 test('路径：Windows/macOS managed、legacy 与空格中文路径', () => {
   for (const [api, root, gateway, home] of [

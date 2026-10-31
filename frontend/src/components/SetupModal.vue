@@ -34,6 +34,8 @@ const pendingId = ref('')
 const authMode = ref('browser')
 const browser = ref(null)
 const device = ref(null)
+const pendingOAuthImport = computed(() => !!(browser.value?.pendingImport || device.value?.pendingImport))
+let startingOAuthSource = ''
 const callbackUrl = ref('')
 const polling = ref(false)
 let pollTimer = null
@@ -296,7 +298,7 @@ onUnmounted(() => {
   cancelTempLogin({ detaching: true })
   stopPoll()
   stopTempPoll()
-  api.cancelBrowserLoginApi().catch(() => {})
+  cancelActiveOAuth().catch(() => {})
   if (window.api?.closeOAuthWindow) window.api.closeOAuthWindow()
 })
 
@@ -364,31 +366,34 @@ async function savePendingCard() {
 // 被 catch 吞成一句「操作失败」—— OAuth 与设备授权两条路一度完全不可用。
 async function startAuth() {
   const generation = actionGeneration
+  const source = authMode.value
+  startingOAuthSource = source
   loading.value = true
   error.value = ''
   try {
-    if (authMode.value === 'device') {
+    if (source === 'device') {
       const r = await api.startDeviceFlowApi()
-      if (!actionCurrent(generation)) return
-      if (r?.ok || r?.verification_uri || r?.user_code) { device.value = r; setOk('设备授权已发起：打开链接并输入用户码') }
+      if (!actionCurrent(generation)) { cancelOAuthSource(source).catch(() => {}); return }
+      if (r?.ok || r?.verification_uri || r?.user_code) { device.value = r; setOk(r.pendingImport ? '' : '设备授权已发起：打开链接并输入用户码') }
       else setError(r)
     } else {
       const r = await api.startBrowserLoginApi()
       if (!actionCurrent(generation)) {
-        api.cancelBrowserLoginApi().catch(() => {})
+        cancelOAuthSource(source).catch(() => {})
         return
       }
       if (r?.ok || r?.hostedUrl) {
         browser.value = r
-        setOk('浏览器授权已发起，请在打开的页面完成登录')
+        setOk(r.pendingImport ? '' : '浏览器授权已发起，请在打开的页面完成登录')
         // 自动检测回调。此前 pollTimer 从未被赋值，界面上「正在等待回调…
         // （每 2 秒检测一次）」是一句假提示 —— 实际没有任何轮询在跑。
-        startPolling()
+        if (!r.pendingImport) startPolling()
       } else setError(r)
     }
   } catch (e) {
     if (actionCurrent(generation)) setError(e)
   } finally {
+    if (startingOAuthSource === source) startingOAuthSource = ''
     loading.value = false
   }
 }
@@ -430,6 +435,13 @@ function stopPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
   polling.value = false
 }
+function cancelOAuthSource(source) {
+  return source === 'device' ? api.cancelDeviceFlowApi() : api.cancelBrowserLoginApi()
+}
+function cancelActiveOAuth() {
+  const source = startingOAuthSource || (device.value ? 'device' : browser.value ? 'browser' : '')
+  return source ? cancelOAuthSource(source) : Promise.resolve()
+}
 async function openBrowserLogin() {
   if (browser.value?.hostedUrl) api.openBrowser(browser.value.hostedUrl)
 }
@@ -444,6 +456,7 @@ async function submitCallback() {
     if (!actionCurrent(generation)) return
     if (r?.ok) {
       stopPoll()
+      browser.value = null
       setOk('授权完成，账号已就绪')
       emit('changed')
     } else setError(r)
@@ -473,7 +486,7 @@ async function continueAuth() {
       setOk('授权完成，账号已就绪')
       emit('changed')
     } else if (r?.pending) {
-      setOk('还没检测到授权完成，完成授权后稍等片刻再点一次')
+      setOk(pendingOAuthImport.value ? '授权正在保存，请稍后重试' : '还没检测到授权完成，完成授权后稍等片刻再点一次')
     } else setError(r)
   } catch (e) {
     if (actionCurrent(generation)) setError(e)
@@ -536,7 +549,7 @@ async function getLocalAccount() {
     const info = await api.inspectCodexLocal()
     if (!actionCurrent(generation)) return
     if (!info || info.error === 'not_found') {
-      return setError('本机未检测到可导入的 Codex 登录。请先在官方客户端或 Codex CLI 中完成登录，或改用 OAuth 授权。')
+      return setError('未找到可导入的本地登录文件。若官方客户端已登录，可改用 OAuth 或 Token / JSON。')
     }
     if (info.error) {
       const text = { parse_error: '本机 auth.json 无法解析（文件损坏）', read_error: '本机 auth.json 无法读取（权限不足）', unsupported: '本机登录缺少续期凭据（refresh_token），请重新 codex login' }[info.error] || info.detail || info.error
@@ -610,22 +623,38 @@ async function switchToBridge() {
 }
 
 // 切到 apikey 标签时刷新已保存供应商
-watch(active, (v, previous) => {
+let revertingTab = false
+watch(active, async (v, previous) => {
+  if (revertingTab) { revertingTab = false; return }
   ++actionGeneration
   if (previous === 'tempLogin' && tempSession.value) cancelTempLogin()
   error.value = ''; okMsg.value = ''; tempError.value = ''
   if (v !== 'oauth') {
     stopPoll()
-    if (browser.value) api.cancelBrowserLoginApi().catch(() => {})
+    if (previous === 'oauth') {
+      loading.value = true
+      try { await cancelActiveOAuth() }
+      catch (e) {
+        if (!disposed) { revertingTab = true; active.value = previous; setError(e) }
+        return
+      } finally { loading.value = false }
+    }
     browser.value = null
     device.value = null
   }
   if (v === 'apikey') loadProviders()
 })
-watch(authMode, () => {
+let revertingAuthMode = false
+watch(authMode, async (_, previous) => {
+  if (revertingAuthMode) { revertingAuthMode = false; return }
   ++actionGeneration
   stopPoll()
-  if (browser.value) api.cancelBrowserLoginApi().catch(() => {})
+  loading.value = true
+  try { await cancelActiveOAuth() }
+  catch (e) {
+    if (!disposed) { revertingAuthMode = true; authMode.value = previous; setError(e) }
+    return
+  } finally { loading.value = false }
   browser.value = null
   device.value = null
   callbackUrl.value = ''
@@ -741,7 +770,8 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
 
           <input v-if="showNote" v-model="note" class="inp" placeholder="备注（选填，便于区分多个账号）" />
 
-          <p class="hint">点击下方按钮，在浏览器中完成 OpenAI 账号 OAuth 授权。</p>
+          <p class="hint">{{ pendingOAuthImport ? '授权已完成，继续保存即可添加账号。' : '点击下方按钮，在浏览器中完成 OpenAI 账号 OAuth 授权。' }}</p>
+          <p v-if="pendingOAuthImport" class="hint live" role="status">上次授权待保存</p>
 
           <div class="seg">
             <button class="seg-item" :disabled="loading" :class="{ on: authMode === 'browser' }" @click="authMode = 'browser'">
@@ -760,7 +790,7 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
           </button>
 
           <!-- 浏览器授权 -->
-          <div v-if="browser" class="auth-box">
+          <div v-if="browser && !browser.pendingImport" class="auth-box">
             <div class="sec-label">授权链接</div>
             <div class="link-row">
               <input type="text" readonly :value="browser.hostedUrl" class="url-input" />
@@ -800,7 +830,7 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
           </div>
 
           <!-- 设备授权 -->
-          <div v-if="device" class="auth-box">
+          <div v-if="device && !device.pendingImport" class="auth-box">
             <div class="sec-label">授权链接</div>
             <div class="link-row">
               <input type="text" readonly :value="device.verification_uri_complete || device.verification_uri" class="url-input" />
@@ -825,9 +855,9 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
             <p class="hint">在浏览器打开上方链接并输入此用户码完成授权。</p>
           </div>
 
-          <button v-if="device || browser" class="btn-outline wide" :disabled="loading || polling" @click="continueAuth">
+          <button v-if="device || browser" :class="pendingOAuthImport ? 'btn-primary wide' : 'btn-outline wide'" :disabled="loading || polling" @click="continueAuth">
             <span v-html="icons.check"></span>
-            我已授权，继续
+            {{ pendingOAuthImport ? '继续保存' : '我已授权，继续' }}
           </button>
 
           <p class="hint dim">
@@ -835,7 +865,7 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
             授权流量走「设置 → 出网代理」里配置的代理；需要弹窗登录时可在设置里临时清空代理。
           </p>
 
-          <p class="warn" v-if="mode !== 'bridge'">当前为 API Key 模式，OAuth 写入后仍会保持 Bridge 模式并重启代理。</p>
+          <p class="hint dim" v-if="mode !== 'bridge'">当前为 API Key 模式；保存账号不会自动切换连接模式。</p>
         </div>
 
         <!-- Token / JSON -->

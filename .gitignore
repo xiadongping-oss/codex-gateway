@@ -17,6 +17,8 @@ gateway/admin-token.json
 # gateway/accounts.json 里是账号 ID、邮箱与登录指纹 —— 全部属于凭据，不可入库。
 gateway/accounts/
 gateway/accounts.json
+gateway/.oauth-browser-pending.json
+gateway/.oauth-device-pending.json
 
 # 网关运行时数据（调用日志 / 配额 / 素材源配置等），由 launcher 按需自建
 gateway/data/
@@ -56,6 +58,7 @@ release/
 
 # Tauri build caches and generated resources (no user data or machine paths in Git)
 desktop/.generated/
+desktop/node_modules/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
 output/desktop-validation/

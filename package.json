@@ -22,7 +22,7 @@
     "test:migration": "node --test --test-timeout=120000 desktop/migration.test.mjs",
     "login": "npx @openai/codex login",
     "test": "node gateway/tests/run-audit.mjs",
-    "test:unit": "node --test --test-timeout=15000 gateway/tests/bridge-pool.test.mjs gateway/tests/bridge-patches.test.mjs gateway/tests/quota.test.mjs gateway/tests/failover.test.mjs gateway/tests/lan-addr.test.mjs gateway/tests/port.test.mjs gateway/tests/tool-call.test.mjs gateway/tests/hardening.test.mjs gateway/tests/vbs-static.test.mjs gateway/tests/token-text.test.mjs gateway/tests/official-login.test.mjs gateway/tests/account-persistence.test.mjs gateway/tests/api-providers.test.mjs",
+    "test:unit": "node --test --test-timeout=15000 gateway/tests/bridge-pool.test.mjs gateway/tests/bridge-patches.test.mjs gateway/tests/quota.test.mjs gateway/tests/failover.test.mjs gateway/tests/lan-addr.test.mjs gateway/tests/port.test.mjs gateway/tests/tool-call.test.mjs gateway/tests/hardening.test.mjs gateway/tests/vbs-static.test.mjs gateway/tests/token-text.test.mjs gateway/tests/official-login.test.mjs gateway/tests/account-persistence.test.mjs gateway/tests/oauth-persistence.test.mjs gateway/tests/api-providers.test.mjs",
     "test:client": "node --test --test-timeout=60000 gateway/tests/setup-client.test.mjs",
     "test:build": "node --test --test-timeout=60000 gateway/tests/build-release.test.mjs",
     "test:mutate": "node gateway/tests/mutate.mjs",

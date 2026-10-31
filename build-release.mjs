@@ -160,6 +160,7 @@ function pickNodeExe() {
 // gateway/ 整目录递归，但剔除用户数据与机密
 const GATEWAY_DENY = new Set([
   'accounts', 'accounts.json', 'api-keys.json', 'api-keys.json.tmp',
+  '.oauth-browser-pending.json', '.oauth-device-pending.json',
   'data', 'logs', 'launcher.log',
   // 管理令牌等同于控制台管理员口令：一旦打进发布包，所有下载者共享同一枚令牌。
   'admin-token.json',
@@ -342,7 +343,7 @@ if (missing.length) {
 }
 
 // 泄漏自检：机密文件绝不能出现在 staging
-const SECRETS = ['accounts.json', 'api-keys.json', '.codex-client-identity', '.gw-config.json', 'admin-token.json', 'api-keys.json.tmp', '.gw-config.json.tmp']
+const SECRETS = ['accounts.json', 'api-keys.json', '.codex-client-identity', '.gw-config.json', 'admin-token.json', 'api-keys.json.tmp', '.gw-config.json.tmp', '.oauth-browser-pending.json', '.oauth-device-pending.json']
 const leaked = []
 function scanSecrets(dir) {
   for (const name of fs.readdirSync(dir)) {
@@ -494,6 +495,8 @@ function verifyZip() {
     '/api-keys.json',
     '/accounts.json',
     '/.gw-config.json',
+    '/.oauth-browser-pending.json',
+    '/.oauth-device-pending.json',
     '/.codex-client-identity'
   ]
   for (const n of names) {

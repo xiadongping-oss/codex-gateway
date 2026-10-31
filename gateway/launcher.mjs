@@ -875,13 +875,14 @@ async function readOptionalBody(req) {
 
 // 应用模式切换：bridge ↔ openai，并相应启停 bridge
 async function applyMode(mode, apiKey, { baseUrl } = {}) {
-  gwConfig.mode = mode === 'openai' ? 'openai' : 'bridge'
+  const next = { ...gwConfig, mode: mode === 'openai' ? 'openai' : 'bridge' }
   if (mode === 'openai') {
-    gwConfig.openaiApiKey = apiKey || gwConfig.openaiApiKey || ''
+    next.openaiApiKey = apiKey || gwConfig.openaiApiKey || ''
     // 上游 baseUrl（API Key 标签页选供应商/自定义中转）。空串=回到官方
-    gwConfig.openaiBaseUrl = String(baseUrl || '').trim()
+    next.openaiBaseUrl = String(baseUrl || '').trim()
   }
-  saveConfig(gwConfig)
+  if (saveConfig(next) !== true) throw new Error('连接配置未能保存，当前模式和凭据保持不变，请检查磁盘权限后重试。')
+  gwConfig = next
   if (gwConfig.mode === 'openai') {
     // 直连模式下一个实例都不需要，全部停掉（否则白占内存与端口）
     const n = bridgePool.stopAll()
@@ -2631,8 +2632,7 @@ async function handleHttpRequest(req, res) {
       const acct = pendingId
         ? await completePendingAccount(pendingId, tokens, { name, provider: 'oauth', mode: 'bridge' })
         : await addAccount({ name, provider: 'oauth', mode: 'bridge', data: tokens })
-      gwConfig.authFilePath = acct.path
-      saveConfig(gwConfig)
+      persistAccountSelection(acct.path)
       pushLog(acct.isExisting
         ? '● OAuth 授权完成，已更新现有账号：' + acct.path
         : '● OAuth 授权完成，已建档：' + acct.path)
@@ -2683,13 +2683,21 @@ async function handleHttpRequest(req, res) {
     if (p === '/__gw/auth/device/poll' && req.method === 'POST') {
       try {
         const body = await readOptionalBody(req)
-        const r = await pollDeviceFlow()
+        const r = await pollDeviceFlow(tokens => finishOAuthLogin(tokens, body))
         if (r.pending) return sendJson(res, 200, { pending: true })
         // 设备流成功 → 落到待授权卡片（若指定）或新建 OAuth 账号，并激活
-        const acct = await finishOAuthLogin(r.tokens, body)
+        const acct = r.persisted
         return sendJson(res, 200, { ok: true, accountId: acct.id, path: acct.path })
       } catch (e) {
         return sendJson(res, 400, { error: 'device_poll_failed', detail: e.message })
+      }
+    }
+    if (p === '/__gw/auth/device/cancel' && req.method === 'POST') {
+      try {
+        if (!clearDeviceFlow()) return sendJson(res, 409, { error: 'device_cancel_busy', detail: '授权正在保存，请稍后重试。' })
+        return sendJson(res, 200, { ok: true })
+      } catch (e) {
+        return sendJson(res, 400, { error: 'device_cancel_failed', detail: e.message })
       }
     }
     // ---- 浏览器回调登录（Authorization Code + PKCE + loopback） ----
@@ -2706,9 +2714,9 @@ async function handleHttpRequest(req, res) {
     if (p === '/__gw/auth/browser/poll' && req.method === 'POST') {
       try {
         const body = await readOptionalBody(req)
-        const r = await pollBrowserLogin()
+        const r = await pollBrowserLogin(tokens => finishOAuthLogin(tokens, body))
         if (r.pending) return sendJson(res, 200, { pending: true, info: getBrowserLoginInfo() })
-        const acct = await finishOAuthLogin(r.tokens, body)
+        const acct = r.persisted
         return sendJson(res, 200, { ok: true, accountId: acct.id, path: acct.path })
       } catch (e) {
         return sendJson(res, 400, { error: 'browser_poll_failed', detail: e.message })
@@ -2717,16 +2725,20 @@ async function handleHttpRequest(req, res) {
     if (p === '/__gw/auth/browser/callback' && req.method === 'POST') {
       try {
         const body = await readBody(req)
-        const r = await submitBrowserCallback(body.callbackUrl)
-        const acct = await finishOAuthLogin(r.tokens, body)
+        const r = await submitBrowserCallback(body.callbackUrl, tokens => finishOAuthLogin(tokens, body))
+        const acct = r.persisted
         return sendJson(res, 200, { ok: true, accountId: acct.id, path: acct.path })
       } catch (e) {
         return sendJson(res, 400, { error: 'browser_callback_failed', detail: e.message })
       }
     }
     if (p === '/__gw/auth/browser/cancel' && req.method === 'POST') {
-      cancelBrowserLogin()
-      return sendJson(res, 200, { ok: true })
+      try {
+        if (!cancelBrowserLogin()) return sendJson(res, 409, { error: 'browser_cancel_busy', detail: '授权正在保存，请稍后重试。' })
+        return sendJson(res, 200, { ok: true })
+      } catch (e) {
+        return sendJson(res, 400, { error: 'browser_cancel_failed', detail: e.message })
+      }
     }
     if (p === '/__gw/auth/mode' && req.method === 'POST') {
       try {
@@ -3303,7 +3315,7 @@ export const gatewayRuntime = {
     for (const t of pendingTimers) clearTimeout(t)
     pendingTimers.clear()
   },
-  cancel() { gatewayWork.cancel(); cancelBrowserLogin(); clearDeviceFlow() },
+  cancel() { gatewayWork.cancel(); cancelBrowserLogin({ force: true, preserveResult: true }); clearDeviceFlow({ force: true, preserveResult: true }) },
   flush() {
     const failures = []
     for (const flush of [flushApiKeys, flushCallLogs]) { try { flush() } catch (error) { failures.push(error) } }
@@ -3311,7 +3323,7 @@ export const gatewayRuntime = {
   },
   async stopChildren(ms) { return (await Promise.all([bridgePool.stopAndWait(ms), officialLogin.stopAndWait(ms)])).every(Boolean) },
   closeHttp(ms) {
-    cancelBrowserLogin(); clearDeviceFlow()
+    cancelBrowserLogin({ force: true, preserveResult: true }); clearDeviceFlow({ force: true, preserveResult: true })
     return new Promise(resolve => {
       if (!server.listening) return resolve(true)
       const timer = setTimeout(() => resolve(false), ms)

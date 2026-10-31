@@ -27,22 +27,39 @@ export function realLocation(file) {
     return path.join(realLocation(parent), path.basename(file))
   }
 }
-export function assertStorageTree(root) {
-  const visit = (file) => {
-    const st = fs.lstatSync(file)
-    if (st.isSymbolicLink() || (!st.isDirectory() && (!st.isFile() || st.nlink > 1))) {
-      throw storageError('DATA_DIR_INVALID', '自有数据目录不允许符号链接、junction、硬链接或特殊文件')
+export function assertStorageTree(root, { reader = false, lstatSync = fs.lstatSync, readdirSync = fs.readdirSync } = {}) {
+  // atomic-write.mjs uses .<target>.<pid>.<12 lowercase hex>.tmp in the
+  // destination directory. A reader can enumerate it just before rename removes
+  // that name. Retry the *whole* tree, including root and the committed target;
+  // never accept an incomplete scan or skip an existing temporary-looking file.
+  const attempts = reader ? 3 : 1
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let vanishedAtomicFile = false
+    const invalid = () => storageError('DATA_DIR_INVALID', '自有数据目录不允许符号链接、junction、硬链接或特殊文件')
+    const visit = (file, entry) => {
+      if (entry?.isSymbolicLink()) throw invalid()
+      let st
+      try { st = lstatSync(file) } catch (error) {
+        vanishedAtomicFile = reader && error.code === 'ENOENT' && entry?.isFile() === true
+          && /^\..+\.[1-9]\d*\.[0-9a-f]{12}\.tmp$/.test(entry.name)
+        throw error
+      }
+      if (st.isSymbolicLink() || (!st.isDirectory() && (!st.isFile() || st.nlink > 1))) throw invalid()
+      if (st.isDirectory()) {
+        for (const child of readdirSync(file, { withFileTypes: true })) visit(path.join(file, child.name), child)
+      }
     }
-    if (st.isDirectory()) for (const name of fs.readdirSync(file)) visit(path.join(file, name))
+    try { visit(root); return } catch (error) {
+      if (!vanishedAtomicFile || attempt === attempts - 1) throw error
+    }
   }
-  visit(root)
 }
 
-export function validateStorageReader(paths) {
+export function validateStorageReader(paths, { lstatSync = fs.lstatSync, readdirSync = fs.readdirSync } = {}) {
   if (!paths?.managed) return
   assertNoMigration(paths.root)
   assertSeparateRoots(realLocation(paths.root), realLocation(paths.resourceRoot))
-  assertStorageTree(paths.root)
+  assertStorageTree(paths.root, { reader: true, lstatSync, readdirSync })
   let layout
   try { layout = JSON.parse(fs.readFileSync(paths.layout, 'utf8')) } catch {}
   if (layout?.schemaVersion !== 1) throw storageError('DATA_VERSION_UNSUPPORTED', '本机 MCP 需要已经初始化的 v1 数据目录')

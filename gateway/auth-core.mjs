@@ -27,6 +27,49 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DATA_ROOT = resolveDataRoot(process.env, __dirname)
 const STORAGE = resolveStoragePaths(process.env, __dirname)
 
+// One bounded, private recovery record per OAuth source. Authorization codes,
+// PKCE verifiers and callback URLs are never persisted here.
+const oauthResultPath = kind => path.join(DATA_ROOT, `.oauth-${kind}-pending.json`)
+function recoverOAuthResult(kind) {
+  const file = oauthResultPath(kind)
+  let saved
+  try { saved = JSON.parse(fs.readFileSync(file, 'utf-8')) } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw new Error('未完成的授权记录无法读取，请检查数据目录后重试')
+  }
+  if (saved.phase === 'discarded') return null
+  if (saved.schemaVersion !== 1 || saved.kind !== kind || typeof saved.loginId !== 'string'
+      || typeof saved.result?.tokens?.access_token !== 'string'
+      || !saved.result.tokens.access_token.trim()) throw new Error('未完成的授权记录无效，已保留原文件')
+  return { loginId: saved.loginId, result: saved.result, recovered: true, snapshotSaved: true }
+}
+function snapshotOAuthResult(kind, session) {
+  if (session.cancelled) throw new Error('本次授权已取消，请重新发起')
+  if (!session.snapshotSaved) {
+    writeJsonAtomic(oauthResultPath(kind), { schemaVersion: 1, kind, loginId: session.loginId, phase: 'ready', result: session.result })
+    session.snapshotSaved = true
+  }
+}
+function discardOAuthResult(kind, session) {
+  const file = oauthResultPath(kind)
+  if (!fs.existsSync(file)) return
+  let saved
+  try { saved = JSON.parse(fs.readFileSync(file, 'utf-8')) }
+  catch { throw new Error('未完成的授权记录无法清理，已保留原文件，请检查数据目录后重试') }
+  if (session && saved.loginId !== session.loginId) return
+  // An unlink failure must not bring consumed/cancelled credentials back later.
+  writeJsonAtomic(file, { schemaVersion: 1, kind, loginId: saved.loginId, phase: 'discarded' })
+  try { fs.unlinkSync(file) } catch {}
+}
+async function persistOAuthResult(kind, session, persist) {
+  snapshotOAuthResult(kind, session)
+  const tokens = structuredClone(session.result)
+  const persisted = persist ? await persist(tokens) : undefined
+  if (session.cancelled) throw new Error('本次授权已取消，登录信息已保留')
+  discardOAuthResult(kind, session)
+  return persist ? { pending: false, persisted } : { pending: false, tokens }
+}
+
 function validateConfigPaths(cfg) {
   if (!STORAGE.managed) return
   if (cfg.authFilePath) validateExternalPath(cfg.authFilePath, STORAGE, '凭据文件')
@@ -371,6 +414,9 @@ let pendingDevice = null // 单会话：{ device_auth_id, user_code, interval, e
 
 export async function startDeviceFlow() {
   if (gatewayWork.draining) throw new Error('gateway_shutting_down')
+  pendingDevice ||= recoverOAuthResult('device')
+  if (pendingDevice?.busy) throw new Error('设备授权正在处理，请稍后重试')
+  if (pendingDevice?.result) return { ok: true, pendingImport: true, loginId: pendingDevice.loginId }
   const res = await fetch(DEVICE_USERCODE_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -387,6 +433,7 @@ export async function startDeviceFlow() {
   // expires_at 是 ISO 字符串；缺失时按 15 分钟兜底
   const expMs = j.expires_at ? Date.parse(j.expires_at) : NaN
   pendingDevice = {
+    loginId: crypto.randomUUID(),
     device_auth_id: j.device_auth_id,
     user_code: j.user_code,
     interval: Number(j.interval) || 5,
@@ -402,55 +449,76 @@ export async function startDeviceFlow() {
   }
 }
 
-export async function pollDeviceFlow() {
+export async function pollDeviceFlow(persist) {
+  pendingDevice ||= recoverOAuthResult('device')
   if (!pendingDevice) throw new Error('没有进行中的设备授权，请先 start')
-  if (Date.now() > pendingDevice.expires_at) {
-    pendingDevice = null
-    throw new Error('设备授权已过期，请重新发起')
-  }
-  const now = Date.now()
-  if (now - pendingDevice.lastPoll < pendingDevice.interval * 1000) {
-    return { pending: true }
-  }
-  pendingDevice.lastPoll = now
-
-  const res = await fetch(DEVICE_TOKEN_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      device_auth_id: pendingDevice.device_auth_id,
-      user_code: pendingDevice.user_code
-    })
-  })
-  const j = await res.json().catch(() => ({}))
-  const errMsg = String((j.error && j.error.message) || j.error || '')
-
-  if (!res.ok) {
-    // 待授权是正常中间态：403 + “Device authorization is pending.”
-    if (/pending/i.test(errMsg)) return { pending: true }
-    if (/slow.?down/i.test(errMsg)) {
-      pendingDevice.interval += 5
+  const session = pendingDevice
+  if (session.busy) return { pending: true }
+  session.busy = true
+  try {
+    if (session.result) {
+      const result = await persistOAuthResult('device', session, persist)
+      if (pendingDevice === session) pendingDevice = null
+      return result
+    }
+    if (Date.now() > session.expires_at) {
+      if (pendingDevice === session) pendingDevice = null
+      throw new Error('设备授权已过期，请重新发起')
+    }
+    const now = Date.now()
+    if (!session.authorization && now - session.lastPoll < session.interval * 1000) {
       return { pending: true }
     }
-    pendingDevice = null
-    throw new Error('设备授权失败：' + (errMsg || JSON.stringify(j).slice(0, 160)))
-  }
+    session.lastPoll = now
 
-  // 成功：拿到 authorization_code + code_verifier，再用 PKCE 换 token
-  pendingDevice = null
-  if (!j.authorization_code || !j.code_verifier) {
-    throw new Error('设备授权响应缺少 authorization_code / code_verifier：' + JSON.stringify(j).slice(0, 200))
-  }
-  const data = await exchangeCodeForToken({
-    code: j.authorization_code,
-    verifier: j.code_verifier,
-    redirectUri: DEVICE_CALLBACK_URI
-  })
-  return { pending: false, tokens: data }
+    if (!session.authorization) {
+      const res = await fetch(DEVICE_TOKEN_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          device_auth_id: session.device_auth_id,
+          user_code: session.user_code
+        })
+      })
+      const j = await res.json().catch(() => ({}))
+      const errMsg = String((j.error && j.error.message) || j.error || '')
+
+      if (!res.ok) {
+        // 待授权是正常中间态：403 + “Device authorization is pending.”
+        if (/pending/i.test(errMsg)) return { pending: true }
+        if (/slow.?down/i.test(errMsg)) {
+          session.interval += 5
+          return { pending: true }
+        }
+        if (pendingDevice === session) pendingDevice = null
+        throw new Error('设备授权失败：' + (errMsg || `HTTP ${res.status}`))
+      }
+
+      // 成功：拿到 authorization_code + code_verifier，再用 PKCE 换 token
+      if (!j.authorization_code || !j.code_verifier) {
+        throw new Error('设备授权响应缺少 authorization_code / code_verifier')
+      }
+      session.authorization = { code: j.authorization_code, verifier: j.code_verifier }
+    }
+    const data = await exchangeCodeForToken({
+      code: session.authorization.code,
+      verifier: session.authorization.verifier,
+      redirectUri: DEVICE_CALLBACK_URI
+    })
+    if (session.cancelled || pendingDevice !== session) throw new Error('本次设备授权已取消')
+    session.result = data
+    const result = await persistOAuthResult('device', session, persist)
+    if (pendingDevice === session) pendingDevice = null
+    return result
+  } finally { session.busy = false }
 }
 
-export function clearDeviceFlow() {
+export function clearDeviceFlow({ force = false, preserveResult = false } = {}) {
+  if (pendingDevice?.busy && !force) return false
+  if (!preserveResult) discardOAuthResult('device', pendingDevice)
+  if (pendingDevice) pendingDevice.cancelled = true
   pendingDevice = null
+  return true
 }
 
 // ===================================================================
@@ -566,7 +634,10 @@ function findAvailablePort(startPort) {
       if (port > startPort + 20) return reject(new Error('找不到可用的本地回调端口'))
       const probe = http.createServer()
       probe.once('error', () => tryPort(port + 1))
-      probe.once('listening', () => probe.close(() => resolve(port)))
+      probe.once('listening', () => {
+        const selectedPort = probe.address().port
+        probe.close(() => resolve(selectedPort))
+      })
       probe.listen(port, '127.0.0.1')
     }
     tryPort(startPort)
@@ -592,7 +663,7 @@ async function exchangeCodeForToken({ code, verifier, redirectUri }) {
   if (!res.ok) {
     throw new Error('Token 交换失败：' + (j.error_description || j.error || `HTTP ${res.status}`))
   }
-  if (!j.access_token) throw new Error('Token 交换响应缺少 access_token')
+  if (typeof j.access_token !== 'string' || !j.access_token.trim()) throw new Error('Token 交换响应缺少 access_token')
   const idToken = j.id_token ?? null
   return {
     auth_mode: 'chatgpt',
@@ -619,10 +690,13 @@ function respondHtml(res, title, body) {
 }
 
 // 发起浏览器登录：起本地回调服务器，返回授权地址（含官方托管登录页地址）
-export async function startBrowserLogin() {
+export async function startBrowserLogin({ callbackPort = OAUTH_CALLBACK_PORT } = {}) {
   if (gatewayWork.draining) throw new Error('gateway_shutting_down')
+  pendingBrowser ||= recoverOAuthResult('browser')
+  if (pendingBrowser?.busy) throw new Error('浏览器授权正在处理，请稍后重试')
+  if (pendingBrowser?.result) return { ok: true, pendingImport: true, loginId: pendingBrowser.loginId }
   if (pendingBrowser) cancelBrowserLogin()
-  const port = await findAvailablePort(OAUTH_CALLBACK_PORT)
+  const port = await findAvailablePort(callbackPort)
   if (gatewayWork.draining) throw new Error('gateway_shutting_down')
   const { verifier, challenge } = generatePkce()
   const state = b64url(crypto.randomBytes(24))
@@ -649,6 +723,8 @@ export async function startBrowserLogin() {
       res.writeHead(404)
       return res.end('not found')
     }
+    if (session.cancelled || pendingBrowser !== session) return respondHtml(res, '授权已结束', '请返回应用重新发起。')
+    if (session.busy || session.result) return respondHtml(res, '授权处理中', '请返回应用继续导入。')
     const oauthErr = u.searchParams.get('error')
     if (oauthErr) {
       session.error = '授权未完成：' + oauthErr
@@ -663,15 +739,18 @@ export async function startBrowserLogin() {
       session.error = 'state 校验失败，已中止此次登录'
       return respondHtml(res, '授权已中止', 'state 不匹配，已中止此次登录。')
     }
+    session.busy = true
     void gatewayWork.track(exchangeCodeForToken({ code, verifier: session.verifier, redirectUri: session.redirectUri })
       .then((tokens) => {
+        if (session.cancelled || pendingBrowser !== session) throw new Error('本次授权已取消')
         session.result = tokens
+        snapshotOAuthResult('browser', session)
         respondHtml(res, '授权成功', '已获取登录态，可关闭此页面并返回应用。')
       })
       .catch((e) => {
-        session.error = e.message
+        if (!session.result) session.error = e.message
         respondHtml(res, '授权失败', e.message)
-      }))
+      }).finally(() => { session.busy = false }))
   })
 
   session.server = server
@@ -681,14 +760,14 @@ export async function startBrowserLogin() {
   })
 
   session.timer = setTimeout(() => {
-    if (pendingBrowser === session && !session.result) {
+    if (pendingBrowser === session && !session.result && !session.busy) {
       session.error = '登录超时（10 分钟），请重新发起'
       cancelBrowserLogin()
     }
   }, OAUTH_TIMEOUT_MS)
 
   pendingBrowser = session
-  browserWorkDone = gatewayWork.begin('background', cancelBrowserLogin)
+  browserWorkDone = gatewayWork.begin('background', () => cancelBrowserLogin({ force: true, preserveResult: true }))
   // 端口漂移风险提示：官方 Codex 桌面端 / CLI 常驻占用 1455，
   // 一旦漂移到其它端口，redirect_uri 与官方客户端的既有约定不一致，
   // 部分账号（尤其 Google 联邦登录）会在授权页直接报 URL / redirect_uri 错误。
@@ -711,18 +790,23 @@ export async function startBrowserLogin() {
 }
 
 // 轮询登录状态：与设备流返回结构保持一致（pending / tokens）
-export async function pollBrowserLogin() {
+export async function pollBrowserLogin(persist) {
+  pendingBrowser ||= recoverOAuthResult('browser')
   const s = pendingBrowser
   if (!s) throw new Error('没有进行中的浏览器登录，请先发起')
+  if (s.busy) return { pending: true }
+  if (s.result) {
+    s.busy = true
+    try {
+      const result = await persistOAuthResult('browser', s, persist)
+      cancelBrowserLogin({ force: true })
+      return result
+    } finally { s.busy = false }
+  }
   if (s.error) {
     const msg = s.error
     cancelBrowserLogin()
     throw new Error(msg)
-  }
-  if (s.result) {
-    const tokens = s.result
-    cancelBrowserLogin()
-    return { pending: false, tokens }
   }
   if (Date.now() > s.expiresAt) {
     cancelBrowserLogin()
@@ -732,9 +816,12 @@ export async function pollBrowserLogin() {
 }
 
 // 手动兜底：本地回调服务器未能接住时，粘贴完整回调地址
-export async function submitBrowserCallback(callbackUrl) {
+export async function submitBrowserCallback(callbackUrl, persist) {
+  pendingBrowser ||= recoverOAuthResult('browser')
   const s = pendingBrowser
   if (!s) throw new Error('没有进行中的浏览器登录，请先发起')
+  if (s.busy) throw new Error('本次授权正在处理，请稍后重试')
+  if (s.result) return pollBrowserLogin(persist)
   const raw = String(callbackUrl || '').trim()
   if (!raw) throw new Error('请粘贴完整的回调地址')
   let u
@@ -747,13 +834,19 @@ export async function submitBrowserCallback(callbackUrl) {
   const st = u.searchParams.get('state')
   if (!code) throw new Error('回调地址中未找到 code 参数')
   if (st && st !== s.state) throw new Error('state 校验失败，已中止此次登录')
-  const tokens = await exchangeCodeForToken({
-    code,
-    verifier: s.verifier,
-    redirectUri: s.redirectUri
-  })
-  cancelBrowserLogin()
-  return { pending: false, tokens }
+  s.busy = true
+  try {
+    const tokens = await exchangeCodeForToken({
+      code,
+      verifier: s.verifier,
+      redirectUri: s.redirectUri
+    })
+    if (s.cancelled || pendingBrowser !== s) throw new Error('本次授权已取消')
+    s.result = tokens
+    const result = await persistOAuthResult('browser', s, persist)
+    cancelBrowserLogin({ force: true })
+    return result
+  } finally { s.busy = false }
 }
 
 export function getBrowserLoginInfo() {
@@ -762,17 +855,21 @@ export function getBrowserLoginInfo() {
   return { loginId: s.loginId, redirectUri: s.redirectUri, port: s.port, expiresAt: s.expiresAt }
 }
 
-export function cancelBrowserLogin() {
+export function cancelBrowserLogin({ force = false, preserveResult = false } = {}) {
+  if (pendingBrowser?.busy && !force) return false
+  if (!preserveResult) discardOAuthResult('browser', pendingBrowser)
   browserWorkDone?.()
   browserWorkDone = null
   const s = pendingBrowser
   pendingBrowser = null
-  if (!s) return
+  if (!s) return true
+  s.cancelled = true
   if (s.timer) clearTimeout(s.timer)
   try {
     s.server?.closeAllConnections?.()
     s.server?.close()
   } catch {}
+  return true
 }
 
 // ===================================================================
@@ -939,13 +1036,20 @@ export function addPendingAccount({ name, email, note, provider = 'oauth' } = {}
     status: 'pending',
     createdAt: new Date().toISOString()
   })
-  saveAccounts(reg)
+  if (!saveAccounts(reg)) throw new Error('待授权账号未能保存，请检查磁盘权限后重试。')
   return { id, reg }
 }
 
 // 补全待授权账号：写入 auth 文件、置为 active 并激活
 // 若该 token 已对应另一个已有账号，则合并到已有账号并删除待授权卡片。
 export async function completePendingAccount(id, data, { name, provider = 'oauth', mode = 'bridge' } = {}) {
+  const before = loadAccounts()
+  if (!before.accounts.some(account => account.id === id)) {
+    // A prior merge may already have committed before the config write failed.
+    // Only the same authenticated identity can resume that retry.
+    if (findAccountByFingerprint(before, data)) return addAccount({ name, provider, mode, data })
+    throw new Error('待授权账号不存在：' + id)
+  }
   // 与 addAccount 同理：先做完唯一的 await，再进纯同步的 load→save 段。
   const prelimPath = accountAuthPath(id)
   await writeAuthFile(prelimPath, data)
@@ -958,7 +1062,7 @@ export async function completePendingAccount(id, data, { name, provider = 'oauth
   if (existing && existing.id !== id) {
     // 待授权卡片的身份与已有账号重复：删除卡片，把 token 更新到已有账号
     const filePath = accountAuthPath(existing.id)
-    try { fs.renameSync(prelimPath, filePath) } catch {}
+    writeTextAtomic(filePath, JSON.stringify(data, null, 2) + '\n')
     existing.provider = provider
     existing.mode = mode
     if (name && name.trim()) existing.name = name.trim().slice(0, 40)
@@ -968,9 +1072,9 @@ export async function completePendingAccount(id, data, { name, provider = 'oauth
     // 移除待授权卡片
     const idx = reg.accounts.findIndex((a) => a.id === id)
     if (idx !== -1) reg.accounts.splice(idx, 1)
-    try { fs.unlinkSync(accountAuthPath(id)) } catch {}
     reg.activeId = existing.id
-    saveAccounts(reg)
+    if (!saveAccounts(reg)) throw new Error('账号凭据已保留，但账号列表未能保存，请检查磁盘权限后重试。')
+    try { fs.unlinkSync(prelimPath) } catch {}
     return { id: existing.id, reg, path: filePath, isExisting: true }
   }
 
@@ -985,7 +1089,7 @@ export async function completePendingAccount(id, data, { name, provider = 'oauth
   pending.email = emailFromIdToken(data?.tokens?.id_token) || pending.email || ''
   pending.updatedAt = new Date().toISOString()
   reg.activeId = id
-  saveAccounts(reg)
+  if (!saveAccounts(reg)) throw new Error('账号凭据已保留，但账号列表未能保存，请检查磁盘权限后重试。')
   return { id, reg, path: filePath, isExisting: false }
 }
 

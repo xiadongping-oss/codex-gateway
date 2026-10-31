@@ -55,6 +55,25 @@ jobs:
         run: npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
       - name: Validate on the actual target architecture
         run: node desktop/verify.mjs --native --expect-target=${{ matrix.target }} --report-dir=output/desktop-ci/${{ matrix.target }}
+      - name: Show failed validation stage
+        if: failure()
+        env:
+          VALIDATION_REPORT_DIR: output/desktop-ci/${{ matrix.target }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs'
+          import path from 'node:path'
+          const dir = process.env.VALIDATION_REPORT_DIR
+          const reportFile = path.join(dir, 'report.json')
+          if (!fs.existsSync(reportFile)) { console.log('Validation did not produce a report'); process.exit(0) }
+          const report = JSON.parse(fs.readFileSync(reportFile, 'utf8'))
+          for (const stage of report.stages.filter(stage => stage.status === 'failed')) {
+            if (!/^[a-z0-9-]+$/.test(stage.name)) continue
+            console.log(`Failed stage: ${stage.name}; exit=${stage.exitCode}; timeout=${stage.timedOut}`)
+            const file = path.join(dir, `${stage.name}.log`)
+            if (fs.existsSync(file)) for (const line of fs.readFileSync(file, 'utf8').slice(-16000).split('\n')) console.log(' | ' + line)
+          }
+          NODE
       - name: Preserve verification evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
