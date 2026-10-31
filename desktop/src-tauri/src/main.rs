@@ -14,6 +14,8 @@ mod process_tree;
 mod protocol;
 mod recovery;
 mod resources;
+#[cfg(debug_assertions)]
+mod soak_check;
 mod supervisor;
 
 use std::sync::{

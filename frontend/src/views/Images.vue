@@ -1,4 +1,5 @@
 <script setup>
+import { vModalFocus } from '../composables/modalFocus'
 import { ref, computed, reactive, onMounted, onBeforeUnmount } from 'vue'
 import * as api from '../api/gateway'
 import { copyText } from '../api/client'
@@ -447,7 +448,7 @@ const emptyText = computed(() => {
     >
       <div class="card" v-for="img in assets" :key="img.name" :class="{ sel: manageMode && isBatchable && selected.has(img.name) }">
         <div class="thumb">
-          <img :src="thumbUrl(img)" :alt="img.name" draggable="true" loading="lazy" @click="onCardImgClick(img)" />
+          <img :src="thumbUrl(img)" :alt="img.name" role="button" tabindex="0" :aria-label="'预览 ' + img.name" draggable="true" loading="lazy" @click="onCardImgClick(img)" @keydown.enter.prevent="onCardImgClick(img)" @keydown.space.prevent="onCardImgClick(img)" />
           <div class="sel-dot" v-if="manageMode && isBatchable" :class="{ on: selected.has(img.name) }">✓</div>
           <div class="overlay" v-if="!manageMode">
             <template v-if="!img.remote">
@@ -507,7 +508,7 @@ const emptyText = computed(() => {
 
     <!-- 添加素材源弹窗 -->
     <div class="modal-mask" v-if="showAdd" @click.self="showAdd = false">
-      <div class="modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="添加素材源" v-modal-focus="() => showAdd = false">
         <div class="card-title">添加素材源</div>
         <div class="type-row">
           <button
@@ -560,7 +561,7 @@ const emptyText = computed(() => {
           <input class="f-input mono" type="password" v-model="form.token" />
         </template>
 
-        <div class="form-err" v-if="formErr">{{ formErr }}</div>
+        <div class="form-err" v-if="formErr" role="alert">{{ formErr }}</div>
         <div :class="testResult?.ok ? 'test-ok' : 'form-err'" v-if="testResult">{{ testResult.ok ? '✓ ' : '✗ ' }}{{ testResult.message }}</div>
         <div class="modal-actions">
           <button class="refresh" @click="showAdd = false">取消</button>
@@ -571,7 +572,7 @@ const emptyText = computed(() => {
     </div>
 
     <!-- 图片查看器（页面内 Lightbox，Esc 关闭 / ←→ 切换；两侧空白点击同样翻页） -->
-    <div class="lightbox" v-if="viewerOpen && viewerImg" @wheel.prevent>
+    <div class="lightbox" v-if="viewerOpen && viewerImg" @wheel.prevent role="dialog" aria-modal="true" aria-label="图片预览" v-modal-focus="closeViewer">
       <button class="lb-close" title="关闭 (Esc)" @click="closeViewer">✕</button>
       <button v-if="assets.length > 1" class="lb-nav prev" title="上一张 (←)" @click="viewerStep(-1)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
@@ -618,6 +619,7 @@ const emptyText = computed(() => {
 </template>
 
 <style scoped>
+img[role="button"]:focus-visible { outline: 3px solid var(--primary); outline-offset: -3px; }
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .live-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--emerald-light); font-family: var(--mono); }
 .live-tag .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald-light); animation: pulse 1.5s infinite; }
@@ -747,7 +749,7 @@ const emptyText = computed(() => {
 .test-ok { margin-top: 10px; font-size: 12px; color: var(--emerald-light); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 .btn-primary {
-  background: var(--emerald); color: #04130d; font-weight: 600; border: none;
+  background: var(--emerald); color: var(--on-accent); font-weight: 600; border: none;
   border-radius: 8px; padding: 8px 18px; font-size: 12.5px; cursor: pointer;
 }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }

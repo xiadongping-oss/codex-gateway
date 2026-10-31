@@ -92,6 +92,7 @@ impl Settings {
             "shell-crash",
             "migration",
             "migration-fresh",
+            "soak",
         ]
         .contains(&smoke_case.as_str())
             || (smoke_case != "normal"
@@ -99,6 +100,9 @@ impl Settings {
                 && !(matches!(smoke_case.as_str(), "tray-menu" | "migration") && isolated))
         {
             return Err("Invalid smoke scenario".into());
+        }
+        if smoke_case == "soak" && !(isolated && smoke) {
+            return Err("Soak checks require explicit debug isolation".into());
         }
         Ok(Self {
             resources,
@@ -540,6 +544,8 @@ fn run(
     let mut crash_count = 0;
     let mut migration = crate::migration::Wizard::default();
     let migration_passed = crate::migration_check::start(&app, &settings);
+    #[cfg(debug_assertions)]
+    let mut soak = crate::soak_check::Check::new(&settings);
     loop {
         let mut action = match commands.try_recv().ok() {
             Some(Work::Action(action)) => Some(action),
@@ -836,6 +842,20 @@ fn run(
                     app.exit(1);
                     return;
                 }
+            }
+        }
+        #[cfg(debug_assertions)]
+        if settings.smoke_case == "soak" {
+            if let Some(check) = soak.as_mut() {
+                if check.tick(
+                    &view.lock().unwrap().phase,
+                    session.as_ref().map(|s| s.child.id()),
+                    console.as_ref(),
+                ) {
+                    action = Some("quit".into());
+                }
+            } else {
+                action = Some("quit".into());
             }
         }
         let auto_quit = settings.smoke

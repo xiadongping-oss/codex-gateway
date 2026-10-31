@@ -373,6 +373,8 @@ onUnmounted(() => {
 
 /* 双列卡片网格：额度 | 连接诊断 */
 .grid2 { display: grid; grid-template-columns: 1.05fr 1fr; gap: 18px; align-items: start; }
+.grid2 > * { min-width: 0; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
 
 /* ---- 账号卡标题行：标题 + 操作按钮同行 ---- */
 .acc-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -428,6 +430,16 @@ onUnmounted(() => {
 .acc-auth.bad { color: var(--amber); }
 .acc-note { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acc-actions { display: flex; gap: 8px; flex: none; }
+@media (max-width: 680px) {
+  .acc-row { flex-wrap: wrap; }
+  .acc-main { flex-basis: calc(100% - 24px); }
+  .acc-actions { margin-left: 21px; flex-wrap: wrap; }
+  .acc-name-row { flex-wrap: wrap; }
+  .acc-name { flex-basis: 100%; }
+  :deep(.q-head) { flex-wrap: wrap; }
+  :deep(.q-head .card-title) { white-space: nowrap; }
+  :deep(.q-head button) { white-space: nowrap; }
+}
 .btn-ghost.sm { padding: 6px 10px; font-size: 11.5px; }
 
 /* 行内编辑：名称 / 备注横排 + 按钮右侧 */

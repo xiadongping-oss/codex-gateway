@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import * as api from '../api/gateway'
 import { PROVIDER_PRESETS, CUSTOM_PROVIDER_ID } from '../api/providerPresets'
 import { copyText as writeClipboard } from '../api/client'
+import { vModalFocus } from '../composables/modalFocus'
 
 const emit = defineEmits(['close', 'changed'])
 const tabs = [
@@ -513,7 +514,7 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
 
 <template>
   <div class="modal-mask" @click.self="tempRunning ? closeTempLogin() : emit('close')">
-    <div class="modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="添加 Codex 账号" v-modal-focus="() => tempRunning ? closeTempLogin() : emit('close')">
       <div class="modal-head">
         <div class="modal-title">添加 Codex 账号</div>
         <button class="x" @click="tempRunning ? closeTempLogin() : emit('close')" aria-label="关闭">×</button>
@@ -816,11 +817,11 @@ at-xxxxxxxxxxxxxxxx
 }
 .modal {
   width: 620px; max-width: 94vw; max-height: 88vh; overflow-y: auto;
-  background: #14161a; border: 1px solid #2a2e36;
+  background: var(--card); border: 1px solid var(--border-strong);
   border-radius: 16px; padding: 24px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
-.modal-title { font-size: 20px; font-weight: 600; color: #f0f1f5; }
+.modal-title { font-size: 20px; font-weight: 600; color: var(--text); }
 .x { background: none; border: none; color: #9ca3af; font-size: 20px; cursor: pointer; line-height: 1; }
 
 .tabs { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import * as api from '../api/gateway'
 import { copyText } from '../api/client'
+import { vModalFocus } from '../composables/modalFocus'
 
 const keys = ref([])
 const accounts = ref([])
@@ -360,13 +361,13 @@ onUnmounted(() => {
 
     <!-- 创建/一次性展示弹窗 -->
     <div v-if="showCreate" class="modal-mask" @click.self="closeCreate">
-      <div class="modal">
+      <div class="modal" role="dialog" aria-modal="true" :aria-label="justCreated ? '已创建 Key' : '新建 API Key'" v-modal-focus="closeCreate">
         <div class="modal-head">
           <div class="modal-title">
             <template v-if="justCreated">已创建 Key</template>
             <template v-else>新建 API Key</template>
           </div>
-          <button class="x" @click="closeCreate">×</button>
+          <button class="x" @click="closeCreate" aria-label="关闭">×</button>
         </div>
 
         <!-- 创建表单 -->
@@ -383,6 +384,8 @@ onUnmounted(() => {
             <div
               class="scope-option"
               :class="{ active: scope === 'all' }"
+              role="radio" :aria-checked="scope === 'all'" tabindex="0"
+              @keydown.enter.prevent="toggleScope('all')" @keydown.space.prevent="toggleScope('all')"
               @click="toggleScope('all')"
             >
               <span class="radio">
@@ -398,6 +401,8 @@ onUnmounted(() => {
             <div
               class="scope-option"
               :class="{ active: scope === 'specific' }"
+              role="radio" :aria-checked="scope === 'specific'" tabindex="0"
+              @keydown.enter.prevent="toggleScope('specific')" @keydown.space.prevent="toggleScope('specific')"
               @click="toggleScope('specific')"
             >
               <span class="radio">
@@ -439,7 +444,7 @@ onUnmounted(() => {
             之后随时可以点列表行的「复制」按钮重新取一次（仅本机可用）。
           </div>
 
-          <div v-if="loadErr" class="msg err" style="margin-top: 8px">{{ loadErr }}</div>
+          <div v-if="loadErr" class="msg err" role="alert" style="margin-top: 8px">{{ loadErr }}</div>
 
           <div class="btn-row">
             <button class="btn-primary" :disabled="creating" @click="submitCreate">
@@ -488,7 +493,7 @@ onUnmounted(() => {
 .card-sub code { font-family: var(--mono); color: var(--emerald-light); padding: 1px 5px; background: rgba(16,185,129,0.10); border-radius: 4px; font-size: 11.5px; }
 
 .btn-primary.sm {
-  background: var(--emerald); color: #0a0b0e; border: none; border-radius: 8px;
+  background: var(--emerald); color: var(--on-accent); border: none; border-radius: 8px;
   padding: 7px 13px; font-size: 12.5px; font-weight: 600; cursor: pointer;
 }
 /* 行内操作按钮：默认安静（灰调、低存在感），hover / 成功态才亮出语义色。
@@ -564,19 +569,20 @@ onUnmounted(() => {
   display: flex; align-items: center; justify-content: center; z-index: 60;
 }
 .modal {
-  width: 580px; max-width: 92vw; background: #14161a; border: 1px solid #2a2e36;
+  width: 580px; max-width: 92vw; background: var(--card); border: 1px solid var(--border-strong);
   border-radius: 16px; padding: 22px; box-shadow: 0 20px 60px rgba(0,0,0,0.5);
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-.modal-title { font-size: 18px; font-weight: 600; color: #f0f1f5; }
+.modal-title { font-size: 18px; font-weight: 600; color: var(--text); }
+.scope-option:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
 .x { background: none; border: none; color: #9ca3af; font-size: 22px; cursor: pointer; line-height: 1; }
 .modal-body { display: flex; flex-direction: column; gap: 14px; }
 
 .form-row { display: flex; flex-direction: column; gap: 6px; }
 .form-row .form-lbl { font-size: 12.5px; color: var(--text-3); }
 .inp {
-  width: 100%; background: #1a1d23; border: 1px solid #272a30; border-radius: 8px;
-  padding: 10px 12px; color: #e7e9ec; font-size: 13.5px; font-family: inherit;
+  width: 100%; background: var(--card-2); border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 10px 12px; color: var(--text); font-size: 13.5px; font-family: inherit;
 }
 .inp:focus { border-color: var(--emerald); outline: none; }
 .hint { font-size: 12.5px; color: var(--text-3); line-height: 1.6; margin: 0; }
@@ -588,10 +594,10 @@ onUnmounted(() => {
 /* 作用域选择 */
 .scope-option {
   display: flex; align-items: flex-start; gap: 10px;
-  background: #1a1d23; border: 1px solid #272a30; border-radius: 8px;
+  background: var(--card-2); border: 1px solid var(--border-strong); border-radius: 8px;
   padding: 12px; cursor: pointer; transition: background .15s, border-color .15s;
 }
-.scope-option:hover { background: #1e2128; }
+.scope-option:hover { background: var(--bg); }
 .scope-option.active { background: rgba(16,185,129,0.08); border-color: var(--emerald); }
 .radio {
   width: 16px; height: 16px; border-radius: 50%; border: 2px solid #6b7280;
@@ -600,20 +606,21 @@ onUnmounted(() => {
 .scope-option.active .radio { border-color: var(--emerald); }
 .radio-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--emerald); }
 .scope-text { display: flex; flex-direction: column; gap: 2px; }
-.scope-title { font-size: 13.5px; font-weight: 500; color: #e7e9ec; }
+.scope-title { font-size: 13.5px; font-weight: 500; color: var(--text); }
 .scope-desc { font-size: 11.5px; color: var(--text-3); }
 
 /* 账号多选 */
 .account-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); gap: 8px;
   margin-top: 4px;
 }
 .account-chip {
   display: flex; align-items: center; gap: 8px;
-  background: #1a1d23; border: 1px solid #272a30; border-radius: 8px;
+  background: var(--card-2); border: 1px solid var(--border-strong); border-radius: 8px;
   padding: 8px 10px; cursor: pointer; transition: background .15s, border-color .15s;
 }
-.account-chip:hover { background: #1e2128; }
+.account-chip:hover { background: var(--bg); }
+.account-chip:focus-within { outline: 3px solid var(--primary); outline-offset: 2px; }
 .account-chip.checked { background: rgba(16,185,129,0.08); border-color: var(--emerald); }
 .account-chip input { position: absolute; opacity: 0; pointer-events: none; }
 .check {
@@ -625,7 +632,7 @@ onUnmounted(() => {
   content: ''; width: 5px; height: 9px; border: solid #0a0b0e; border-width: 0 2px 2px 0;
   transform: rotate(45deg) translate(-1px, -1px);
 }
-.aname { font-size: 12.5px; color: #e7e9ec; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aname { font-size: 12.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .aid { font-size: 10.5px; color: var(--text-3); font-family: var(--mono); margin-left: auto; }
 .account-empty { font-size: 12px; color: var(--text-3); padding: 8px; }
 
@@ -640,18 +647,18 @@ onUnmounted(() => {
 }
 .token-box code.hidden { color: var(--text-3); }
 .btn-ghost.sm {
-  background: #1a1d23; color: #9ca3af; border: 1px solid #272a30; border-radius: 8px;
+  background: var(--card-2); color: var(--text-2); border: 1px solid var(--border-strong); border-radius: 8px;
   padding: 7px 11px; font-size: 12px; cursor: pointer;
 }
 
 .btn-row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
 .btn-primary {
-  background: var(--emerald); color: #0a0b0e; border: none; border-radius: 8px;
+  background: var(--emerald); color: var(--on-accent); border: none; border-radius: 8px;
   height: 40px; padding: 0 16px; font-size: 13px; font-weight: 600; cursor: pointer;
 }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-ghost {
-  background: #1a1d23; color: #9ca3af; border: 1px solid #272a30; border-radius: 8px;
+  background: var(--card-2); color: var(--text-2); border: 1px solid var(--border-strong); border-radius: 8px;
   height: 40px; padding: 0 14px; font-size: 13px; cursor: pointer;
 }
 </style>

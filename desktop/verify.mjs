@@ -25,6 +25,9 @@ try {
   run.save()
   console.log(`验证 ${run.report.host.target}；记录：${run.directory}`)
   if (args.includes('--preflight-only')) { run.finish('preflight_passed'); process.exit(0) }
+  if (process.platform === 'darwin') {
+    await run.step('mac-distribution-probes', process.execPath, ['desktop/mac-distribution-check.mjs', `--report-dir=${path.join(run.directory, 'mac-distribution-probes')}`], { cwd: root })
+  }
   // Frontend dependencies are installed explicitly by the developer/CI; the
   // gateway's versioned dependency tree is read as-is, never npm-installed here.
   await run.step('frontend', process.execPath, [path.join(root, 'frontend/node_modules/vite/bin/vite.js'), 'build'], { cwd: path.join(root, 'frontend') })
@@ -62,6 +65,11 @@ try {
       run.report.acceptance.nativeScenarios[scenario] = 'passed'; run.save()
     }
     run.report.acceptance.nativeUi = 'automated_scenarios_passed'
+  }
+  if (process.platform === 'darwin') {
+    await run.step('mac-release-build', process.execPath, ['desktop/build.mjs', '--release', '--locked', ...offline], { cwd: root, timeout: 25 * 60_000 })
+    await run.step('mac-release-paths', process.execPath, ['desktop/mac-distribution-check.mjs', `--report-dir=${path.join(run.directory, 'mac-distribution-release')}`, '--binary=desktop/src-tauri/target/release/codex-gateway-desktop'], { cwd: root })
+    run.report.acceptance.macReleaseBinaryPaths = 'passed'
   }
   run.finish()
   console.log('PASS: 所选构建与自动化检查完成；真实鼠标操作、系统登录自启动、OAuth/API 和安装签名仍需另行验收。')

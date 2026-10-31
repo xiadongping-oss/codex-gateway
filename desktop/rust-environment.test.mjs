@@ -21,6 +21,9 @@ test('distribution flags preserve encoded arguments and custom Windows tool loca
   assert.equal(relative.CARGO_HOME, '/repo/tools/cargo')
   assert.equal(relative.RUSTUP_HOME, '/repo/tools/rustup')
   assert.ok(relative.CARGO_ENCODED_RUSTFLAGS.split('\x1f').includes('--remap-path-prefix=/repo/tools/cargo=/build/cargo'))
+  const mac = releaseRustEnvironment('/repo', {}, { home: '/Users/example', platform: 'darwin' })
+  assert.equal(mac.CARGO_ENCODED_RUSTFLAGS.split('\x1f').at(-1), '-Cstrip=debuginfo')
+  assert.ok(!env.CARGO_ENCODED_RUSTFLAGS.includes('strip=debuginfo'))
 })
 
 test('a real compiler removes an absolute source path with spaces from file! output', t => {

@@ -23,6 +23,9 @@ export function releaseRustEnvironment(root, inherited = process.env, { home = o
     const variants = platform === 'win32' ? [from, from.replaceAll('\\', '/')] : [from]
     for (const variant of new Set(variants)) flags.push(`--remap-path-prefix=${variant}=${to}`)
   }
+  // Apple linkers can retain OSO entries from precompiled libraries. Remove
+  // debug metadata during linking, before any distribution signing takes place.
+  if (platform === 'darwin') flags.push('-Cstrip=debuginfo')
   // Tauri and Cargo change cwd; resolve custom relative homes once at the
   // repository entry point so tool lookup and remapping use the same directory.
   const env = { ...inherited, CARGO_HOME: cargoHome, RUSTUP_HOME: rustupHome, CARGO_ENCODED_RUSTFLAGS: flags.join('\x1f') }
