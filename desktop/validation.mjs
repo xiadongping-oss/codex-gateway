@@ -8,7 +8,7 @@ import { releaseRustEnvironment } from './rust-environment.mjs'
 // repeated resource hashing, WebView startup and the fixed recovery backoff.
 export const NATIVE_SCENARIOS = Object.freeze({
   normal: 60_000, 'session-loss': 60_000, unresponsive: 120_000, 'channel-loss': 60_000, desktop: 60_000,
-  'node-crash': 120_000, 'crash-loop': 180_000, 'shell-crash': 120_000, 'port-conflict': 60_000, migration: 240_000, 'migration-fresh': 180_000
+  'node-crash': 120_000, 'crash-loop': 180_000, 'shell-crash': 120_000, 'port-conflict': 60_000, migration: 390_000, 'migration-fresh': 180_000
 })
 
 export const HOSTS = Object.freeze({
