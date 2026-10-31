@@ -7,6 +7,7 @@ import { releaseRustEnvironment } from './rust-environment.mjs'
 // Harness deadlines, not production recovery limits. Multi-launch checks include
 // repeated resource hashing, WebView startup and the fixed recovery backoff.
 export const NATIVE_SCENARIOS = Object.freeze({
+  workspace: 120_000,
   normal: 60_000, 'session-loss': 60_000, unresponsive: 120_000, 'channel-loss': 60_000, desktop: 60_000,
   'node-crash': 120_000, 'crash-loop': 180_000, 'shell-crash': 120_000, 'port-conflict': 60_000, migration: 390_000, 'migration-fresh': 180_000
 })

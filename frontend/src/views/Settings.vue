@@ -1,4 +1,5 @@
 <script setup>
+import { isDesktopWorkspace, openDesktopWorkspace } from '../desktopWorkspace'
 import { ref, onMounted, onUnmounted } from 'vue'
 import { BASE, gwRequest, copyText } from '../api/client'
 import { loadAccessConfig, loadAccessConfigWithKey, formatAccessConfig } from '../api/access-config'
@@ -216,6 +217,7 @@ async function copyConfig() {
 
 <template>
   <div class="content">
+    <div class="workspace-tabs" v-if="isDesktopWorkspace()" aria-label="设置分区"><button class="selected" aria-current="page">连接配置</button><button @click="openDesktopWorkspace('desktop')">应用偏好</button></div>
     <!-- 接入配置：最高频动作，顶置 -->
     <div class="card">
       <div class="card-title">
@@ -226,7 +228,7 @@ async function copyConfig() {
         把下方配置填到任意 OpenAI 兼容客户端（WorkBuddy / Codex CLI / Claude Code / n8n 等）即可调用本网关。
       </div>
       <button class="btn-primary" @click="copyConfig">{{ copied ? '已复制 ✓' : '复制接入配置' }}</button>
-      <pre class="code">{{ accessCfgText }}</pre>
+      <details class="help-details"><summary>查看接入配置与客户端说明</summary><pre class="code">{{ accessCfgText }}</pre></details>
       <div v-if="copyErr" class="msg err" style="margin-top: 10px">{{ copyErr }}</div>
       <div class="card-sub hint" style="margin-top: 10px">
         <template v-if="hasKey">API Key 即「API Key」页创建的 cgw- 密钥（仅本机可见；点「复制接入配置」时才会取明文）。严格鉴权开启后，客户端必须携带此 Key。</template>
@@ -302,12 +304,14 @@ async function copyConfig() {
         代理模块不可用（缺少 undici）。在 <code>gateway/</code> 执行 <code>npm i undici</code> 后重启网关。
       </div>
 
-      <div class="card-sub hint">
+<details class="help-details"><summary>代理配置说明</summary>
+<div class="card-sub hint">
         <b>为什么必须在这里配：</b>Node 的 fetch 不读取系统代理环境变量，与浏览器行为不同。<br />
         <b>用 Tailscale exit node 的话：</b>流量已在网卡层转发、对应用透明，此处<b>留空</b>即可。<br />
         常见端口：Clash Verge 默认 <code>7897</code>，Clash for Windows 默认 <code>7890</code>（填「混合端口」）。
         调整代理后调用异常？去「调用日志」页看看，或重启网关。
       </div>
+</details>
     </div>
 
     <div class="card">
@@ -345,13 +349,13 @@ async function copyConfig() {
   display: inline-block; margin-left: 8px; padding: 1px 8px;
   border-radius: 999px; font-size: 10.5px; font-weight: 600; letter-spacing: 0.02em;
 }
-.badge.on  { background: var(--emerald-dim); color: var(--emerald-light); border: 1px solid rgba(16,185,129,0.28); }
+.badge.on  { background: var(--emerald-dim); color: var(--emerald-light); border: 1px solid rgba(139,107,214,0.28); }
 .badge.off { background: rgba(255,255,255,0.05); color: var(--text-3); border: 1px solid var(--border); }
 
 /* ---- 局域网地址行 ---- */
 .lan-line {
   margin-top: 14px; padding: 12px 14px; border-radius: 10px;
-  background: var(--bg); border: 1px dashed rgba(16,185,129,0.35);
+  background: var(--bg); border: 1px dashed rgba(139,107,214,0.35);
 }
 .lan-line-title { font-size: 12.5px; color: var(--text-2); margin-bottom: 6px; }
 .lan-line-row { display: flex; align-items: center; gap: 10px; padding: 3px 0; }
@@ -370,7 +374,7 @@ async function copyConfig() {
   background: var(--bg); border: 1px solid var(--border-strong); border-radius: 7px;
   padding: 4px 10px; cursor: pointer; transition: all 0.15s;
 }
-.preset:hover:not(:disabled) { color: var(--emerald-light); border-color: rgba(16,185,129,0.4); }
+.preset:hover:not(:disabled) { color: var(--emerald-light); border-color: rgba(139,107,214,0.4); }
 .preset:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .proxy-input {
@@ -387,7 +391,7 @@ async function copyConfig() {
   margin-top: 10px; font-size: 12px; padding: 8px 11px;
   border-radius: 8px; border: 1px solid;
 }
-.msg.ok   { background: var(--emerald-dim); border-color: rgba(16,185,129,0.26); color: var(--emerald-light); }
+.msg.ok   { background: var(--emerald-dim); border-color: rgba(139,107,214,0.26); color: var(--emerald-light); }
 .msg.err  { background: rgba(244,63,94,0.10); border-color: rgba(244,63,94,0.26); color: #fda4af; }
 .msg.warn { background: rgba(251,191,36,0.09); border-color: rgba(251,191,36,0.24); color: var(--amber); }
 .msg .mark { margin-right: 6px; font-weight: 700; }

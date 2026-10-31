@@ -339,13 +339,7 @@ onUnmounted(() => {
       <template v-else>
       <!-- 空态：没有任何观测值时不画进度条，画一条就默认「还剩 100%」，那是假信息 -->
       <div v-if="q.source === 'none'" class="q-blank">
-        <div class="q-blank-title">还没有这个账号的额度数据</div>
-        <div class="q-blank-body">
-          ChatGPT 没有公开额度查询接口，网关只能在真实调用拿到上游响应头时顺手记一笔。
-          点右上角「刷新额度」让网关探一次，或者直接用它跑一次对话（WorkBuddy 里发一句话即可），
-          这里就会出现真实的剩余比例。
-        </div>
-        <div class="q-blank-alt">如果要先手填一个大概值，点右上角「编辑」。</div>
+        <div class="q-blank-title">暂无额度数据</div>
       </div>
 
       <!-- 周用量 -->
@@ -384,12 +378,15 @@ onUnmounted(() => {
       </div>
       </template>
 
-      <div class="q-note">
+<details class="help-details"><summary>额度来源与保存说明</summary>
+<div class="q-note">
+        <p>点击「刷新额度」检测，或完成一次实际对话后再查看。若上游未返回额度信息，此处会保持空白；也可通过「编辑」手动记录。</p>
         身份（账号名 / 邮箱 / ID）来自本地登录态。用量优先取该账号自己那个 bridge 观测到的上游限流头
         （<code>source: realtime</code>，每个账号独立缓存，切账号不会串号）；没有观测值时显示你手填的配置
         （<code>manual</code>），两者都没有就留空——不会编数字。手填值保存到当前激活账号名下
         （<code>accounts[账号id]</code>），<code>shared</code> 为共用缺省。
       </div>
+</details>
     </template>
 
     <div v-else-if="loading" class="q-empty">加载中…</div>
@@ -408,7 +405,7 @@ onUnmounted(() => {
 .saving-tag { font-size: 10.5px; color: var(--text-3); }
 .rt-chip {
   font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px;
-  color: #34d399; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.35);
+  color: var(--primary); background: rgba(139,107,214,0.1); border: 1px solid rgba(139,107,214,0.35);
 }
 .sample-chip {
   font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; cursor: help;
@@ -422,7 +419,7 @@ onUnmounted(() => {
   color: #fbbf24; background: rgba(245,158,11,0.1); border: 1px dashed rgba(245,158,11,0.45);
 }
 .scope-tag { font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; }
-.scope-tag.own { color: var(--emerald-light); background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.3); }
+.scope-tag.own { color: var(--emerald-light); background: rgba(139,107,214,0.12); border: 1px solid rgba(139,107,214,0.3); }
 .scope-tag.shared { color: var(--text-2); background: rgba(255,255,255,0.06); border: 1px solid var(--border-strong); }
 .link-btn {
   font-family: inherit; font-size: 11px; color: var(--text-3); background: none;
@@ -452,16 +449,16 @@ onUnmounted(() => {
 .q-id { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .avatar {
   width: 42px; height: 42px; border-radius: 12px; flex-shrink: 0;
-  background: linear-gradient(135deg, #10b981, #0ea5e9);
+  background: linear-gradient(135deg, var(--primary), #0ea5e9);
   display: flex; align-items: center; justify-content: center;
-  font-size: 16px; font-weight: 600; color: #04130d;
+  font-size: 16px; font-weight: 600; color: var(--on-primary);
 }
 .id-main { min-width: 0; }
 .id-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .id-mail { font-size: 11.5px; color: var(--text-3); font-family: var(--mono); margin-top: 2px; }
 .plan-badge {
   font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
-  color: #04130d; background: var(--emerald);
+  color: var(--on-primary); background: var(--emerald);
   border-radius: 6px; padding: 1px 7px;
 }
 .expire-chip {
@@ -505,7 +502,7 @@ onUnmounted(() => {
 }
 .bar.sm { height: 6px; }
 .bar-fill { height: 100%; border-radius: 999px; transition: width 0.4s ease; }
-.bar-fill.emerald { background: linear-gradient(90deg, #10b981, #34d399); }
+.bar-fill.emerald { background: linear-gradient(90deg, var(--primary), var(--primary)); }
 .bar-fill.amber { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
 .bar-fill.rose { background: linear-gradient(90deg, #e11d48, #f43f5e); }
 
@@ -546,7 +543,7 @@ onUnmounted(() => {
 .ed-actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
 .ed-hint { font-size: 11px; color: var(--text-3); font-family: var(--mono); }
 .btn-primary.sm {
-  background: var(--emerald); color: #04130d; border: none; border-radius: 8px;
+  background: var(--emerald); color: var(--on-primary); border: none; border-radius: 8px;
   padding: 7px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
 }
 .btn-primary.sm:disabled { opacity: 0.5; cursor: not-allowed; }

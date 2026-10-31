@@ -19,7 +19,7 @@ const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cgw-d01-wind
 const data = path.join(root, '数据 & # % !')
 const interactive = process.argv.includes('--interactive'), conflict = process.argv.includes('--port-conflict')
 const scenario = process.argv.find(a => a.startsWith('--case='))?.slice(7) || 'normal'
-assert.ok(['normal', 'session-loss', 'unresponsive', 'channel-loss', 'desktop', 'tray-menu', 'node-crash', 'crash-loop', 'shell-crash', 'migration', 'migration-fresh'].includes(scenario), 'unknown smoke case')
+assert.ok(['normal', 'session-loss', 'unresponsive', 'channel-loss', 'desktop', 'tray-menu', 'node-crash', 'crash-loop', 'shell-crash', 'migration', 'migration-fresh', 'workspace'].includes(scenario), 'unknown smoke case')
 assert.ok(scenario !== 'tray-menu' || interactive, 'tray-menu requires --interactive')
 let foreignConnections = 0
 const server = net.createServer(socket => { foreignConnections++; socket.destroy() })
@@ -87,7 +87,7 @@ try {
   if (!interactive && !conflict) {
     if (scenario.startsWith('migration')) assert.match(stderr, /R03_MIGRATION_UI true/, stderr)
     const report = JSON.parse(stderr.split('\n').findLast(line => line.startsWith('D02_CHECK '))?.slice(10) || '{}')
-    for (const key of ['authenticated','mounted','cleanUrl','nativeDenied','coreDenied','cookieHidden','historyClean','navigationSafe']) assert.equal(report[key], true, `native console check: ${key}`)
+    for (const key of ['authenticated','mounted','cleanUrl','nativeDenied','coreDenied','cookieHidden','historyClean','navigationSafe','workspaceDenied']) assert.equal(report[key], true, `native console check: ${key}`)
     assert.ok(report.externalDispatches >= 2)
     if (scenario === 'migration') {
       assert.match(stderr, /R03_MIGRATION_UI true/)
@@ -101,6 +101,7 @@ try {
     if (scenario === 'node-crash') assert.equal((stderr.match(/D04_RECOVERY_SCHEDULED/g) || []).length, 1)
     if (scenario === 'crash-loop') { assert.match(stderr, /D04_RECOVERY_LIMIT true/); assert.equal((stderr.match(/D04_RECOVERY_SCHEDULED/g) || []).length, 3) }
     if (scenario === 'desktop') for (const check of ['AUTOSTART', 'RESIDENT', 'SINGLE_INSTANCE']) assert.ok(stderr.includes(`D03_${check} true`), `desktop check: ${check}`)
+    if (scenario === 'workspace') assert.match(stderr, /W01_WORKSPACE true/)
     console.log(JSON.stringify({ scenario, console: report, recoveryVerified: scenario !== 'normal' }))
   }
   assert.equal(fs.existsSync(path.join(data, 'runtime/owner.lock')), false, 'gateway ownership was not released')

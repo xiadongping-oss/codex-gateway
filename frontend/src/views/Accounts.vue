@@ -5,8 +5,8 @@ import SetupModal from '../components/SetupModal.vue'
 import AccountQuotaCard from '../components/AccountQuotaCard.vue'
 import { useLiveData } from '../composables/useLiveData'
 
-// 网关运行控制（自原「网关控制」页并入）
-const { gw, gwBusy, gwStart, gwStop, gwRestart } = useLiveData()
+// 账号相关的模型代理诊断；启停操作统一在概览页。
+const { gw } = useLiveData()
 const gwUptime = computed(() => {
   const s = gw.value.uptimeSec || 0
   const h = String(Math.floor(s / 3600)).padStart(2, '0')
@@ -208,7 +208,7 @@ onUnmounted(() => {
 
 <template>
   <div class="content">
-    <!-- 顶部双列：账号（状态头+列表） | 网关运行控制 -->
+    <!-- 账号列表与补充诊断 -->
     <div class="grid-top">
     <div class="card">
       <div class="acc-title-row">
@@ -293,28 +293,17 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div class="card">
-      <div class="gw-head">
-        <div class="card-title">
-          网关运行控制
-          <span class="gw-badge" :class="gw.running ? 'on' : 'off'">
-            <span class="gw-dot"></span>{{ gw.running ? '运行中' : '已停止' }}
-          </span>
-        </div>
-        <div class="gw-actions">
-          <button v-if="!gw.running" class="btn-primary" :disabled="gwBusy" @click="gwStart">启动网关</button>
-          <button v-else class="btn-ghost" :disabled="gwBusy" @click="gwStop">停止网关</button>
-          <button class="btn-ghost" :disabled="gwBusy" @click="gwRestart">重启网关</button>
-        </div>
-      </div>
+    <div class="account-proxy-diagnostics">
+      <details class="help-details"><summary>模型代理诊断信息</summary>
       <div class="gw-state">
         <span>PID <b class="mono">{{ gw.pid || '—' }}</b></span>
         <span>运行时长 <b class="mono">{{ gw.running ? gwUptime : '—' }}</b></span>
         <span>健康检查 <b :class="gwHealthOk ? 'ok' : 'bad'">{{ gwHealthOk ? '通过' : (gw.running ? '失败' : '—') }}</b></span>
         <span>Bridge 端口 <b class="mono">{{ gwCfg.bridgePort || '—' }}</b></span>
-        <span>开机自启 <b :class="gwCfg.autoStart ? 'ok' : 'bad'">{{ gwCfg.autoStart ? '是' : '否' }}</b></span>
+        <span>随网关启动模型代理 <b :class="gwCfg.autoStart ? 'ok' : 'bad'">{{ gwCfg.autoStart ? '是' : '否' }}</b></span>
       </div>
-      <div v-if="gwHealthReason" class="gw-health-reason">
+      </details>
+      <div v-if="gwHealthReason" class="gw-health-reason" role="status">
         <div class="reason-text">{{ gwHealthReason.text }}</div>
         <div v-if="gwHealthReason.hint" class="reason-hint">{{ gwHealthReason.hint }}</div>
       </div>
@@ -368,7 +357,7 @@ onUnmounted(() => {
 
 <style scoped>
 /* 顶部双列：账号 | 网关运行控制（分栏比例与下方 .grid2 一致，保证上下两行沟壑对齐） */
-.grid-top { display: grid; grid-template-columns: 1.05fr 1fr; gap: 18px; align-items: stretch; }
+.grid-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-items: stretch; }
 @media (max-width: 1100px) { .grid-top { grid-template-columns: 1fr; } }
 
 /* 双列卡片网格：额度 | 连接诊断 */
@@ -383,9 +372,9 @@ onUnmounted(() => {
 .diag-result {
   display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
   padding: 9px 14px; border-radius: 10px; font-size: 13px;
-  border: 1px solid var(--border); background: var(--card-2, rgba(16,185,129,0.06));
+  border: 1px solid var(--border); background: var(--card-2, rgba(139,107,214,0.06));
 }
-.diag-result.ok { border-color: rgba(16,185,129,0.35); }
+.diag-result.ok { border-color: rgba(139,107,214,0.35); }
 .diag-result.bad { border-color: rgba(244,63,94,0.4); background: rgba(244,63,94,0.07); }
 .diag-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2, var(--text)); }
 .conn-state {
@@ -397,8 +386,8 @@ onUnmounted(() => {
 .cs-name { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .cs-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mode-badge {
-  font-size: 11px; font-weight: 600; color: #34d399; flex-shrink: 0;
-  background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.3);
+  font-size: 11px; font-weight: 600; color: var(--primary); flex-shrink: 0;
+  background: rgba(139,107,214, 0.12); border: 1px solid rgba(139,107,214, 0.3);
   border-radius: 6px; padding: 1px 7px;
 }
 .cs-mail { font-size: 12px; color: var(--text-3); font-family: var(--mono); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -457,11 +446,11 @@ onUnmounted(() => {
   font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 6px; flex-shrink: 0;
   color: #9aa0a8; background: rgba(154, 160, 168, 0.12); border: 1px solid rgba(154, 160, 168, 0.25);
 }
-.prov-oauth { color: #34d399; background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.3); }
+.prov-oauth { color: var(--primary); background: rgba(139,107,214, 0.12); border-color: rgba(139,107,214, 0.3); }
 .prov-apikey { color: #60a5fa; background: rgba(96, 165, 250, 0.12); border-color: rgba(96, 165, 250, 0.3); }
 .cur {
-  font-size: 10.5px; font-weight: 600; color: #34d399; flex-shrink: 0;
-  background: rgba(16, 185, 129, 0.18); border: 1px solid rgba(16, 185, 129, 0.4);
+  font-size: 10.5px; font-weight: 600; color: var(--primary); flex-shrink: 0;
+  background: rgba(139,107,214, 0.18); border: 1px solid rgba(139,107,214, 0.4);
   border-radius: 6px; padding: 1px 6px;
 }
 .btn-del {

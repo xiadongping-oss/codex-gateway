@@ -3,6 +3,8 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import * as api from '../api/gateway'
 import { copyText } from '../api/client'
 import { vModalFocus } from '../composables/modalFocus'
+import { usePagination } from '../composables/usePagination'
+import Pagination from '../components/Pagination.vue'
 
 const keys = ref([])
 const accounts = ref([])
@@ -40,6 +42,7 @@ const topCallKeyId = computed(() => {
   }
   return max > 0 ? best : null
 })
+const {page,pages,visible}=usePagination(displayKeys,20)
 
 // 创建流程状态
 const showCreate = ref(false)
@@ -296,10 +299,10 @@ onUnmounted(() => {
           <span>+ 新建 Key</span>
         </button>
       </div>
-      <div class="card-sub" style="margin-bottom: 14px">
+      <details class="help-details"><summary>API Key 与账号绑定说明</summary><div class="card-sub" style="margin-bottom: 14px">
         给 WorkBuddy 等外部客户端用的「网关层」API Key —— 鉴权走 <code>Authorization: Bearer</code>，
         默认不锁定单一账号；指定账号后请求会被限制在所选账号内。
-      </div>
+      </div></details>
 
       <div v-if="loadErr" class="msg err">{{ loadErr }}</div>
 
@@ -318,7 +321,7 @@ onUnmounted(() => {
         <span class="c-act"></span>
       </div>
 
-      <div v-for="k in displayKeys" :key="k.id" class="k-row">
+      <div v-for="k in visible" :key="k.id" class="k-row">
         <div class="c-name">
           <div class="kn">{{ k.name }}</div>
           <div class="kid">{{ k.id }}</div>
@@ -359,6 +362,7 @@ onUnmounted(() => {
       <div v-if="copyErr" class="msg err">{{ copyErr }}</div>
     </div>
 
+    <Pagination v-model="page" :pages="pages" :total="displayKeys.length" />
     <!-- 创建/一次性展示弹窗 -->
     <div v-if="showCreate" class="modal-mask" @click.self="closeCreate">
       <div class="modal" role="dialog" aria-modal="true" :aria-label="justCreated ? '已创建 Key' : '新建 API Key'" v-modal-focus="closeCreate">
@@ -490,7 +494,7 @@ onUnmounted(() => {
 .card-meta { font-size: 11.5px; color: var(--text-3); margin-left: auto; }
 .card-title { font-size: 14px; font-weight: 600; color: var(--text); }
 .card-sub { font-size: 12.5px; color: var(--text-3); line-height: 1.6; }
-.card-sub code { font-family: var(--mono); color: var(--emerald-light); padding: 1px 5px; background: rgba(16,185,129,0.10); border-radius: 4px; font-size: 11.5px; }
+.card-sub code { font-family: var(--mono); color: var(--emerald-light); padding: 1px 5px; background: rgba(139,107,214,0.10); border-radius: 4px; font-size: 11.5px; }
 
 .btn-primary.sm {
   background: var(--emerald); color: var(--on-accent); border: none; border-radius: 8px;
@@ -504,9 +508,9 @@ onUnmounted(() => {
   border-radius: 8px; padding: 6px 11px; font-size: 11.5px; cursor: pointer;
   transition: all 0.15s; white-space: nowrap;
 }
-.btn-copy.sm:hover { color: var(--emerald-light); border-color: rgba(16,185,129,0.4); background: rgba(16,185,129,0.08); }
+.btn-copy.sm:hover { color: var(--emerald-light); border-color: rgba(139,107,214,0.4); background: rgba(139,107,214,0.08); }
 .btn-copy.sm.copied {
-  color: var(--emerald-light); border-color: rgba(16,185,129,0.45); background: rgba(16,185,129,0.12);
+  color: var(--emerald-light); border-color: rgba(139,107,214,0.45); background: rgba(139,107,214,0.12);
 }
 .btn-del.sm {
   background: transparent; color: var(--text-3); border: 1px solid transparent;
@@ -546,11 +550,11 @@ onUnmounted(() => {
 .c-acc { font-size: 12.5px; color: var(--text-2); }
 .scope-pill {
   display: inline-flex; align-items: center;
-  font-size: 11.5px; color: #e7e9ec;
-  background: rgba(16,185,129,0.10); border: 1px solid rgba(16,185,129,0.25);
+  font-size: 11.5px; color: var(--text);
+  background: rgba(139,107,214,0.10); border: 1px solid rgba(139,107,214,0.25);
   border-radius: 999px; padding: 3px 10px;
 }
-.scope-pill.all { background: rgba(16,185,129,0.10); border-color: rgba(16,185,129,0.25); color: var(--emerald-light); }
+.scope-pill.all { background: rgba(139,107,214,0.10); border-color: rgba(139,107,214,0.25); color: var(--emerald-light); }
 .c-time .t1, .c-time .t2 { font-size: 11.5px; color: var(--text-3); font-family: var(--mono); }
 .c-time .t2 { color: var(--text-2); margin-top: 2px; }
 .c-call { text-align: left; display: flex; flex-direction: column; gap: 4px; }
@@ -560,7 +564,7 @@ onUnmounted(() => {
 .sort-ar.desc, .sort-ar.asc { opacity: 1; }
 .c-call .call-n { font-size: 14px; font-weight: 700; color: var(--text); font-family: var(--mono); }
 .c-call .call-tok { font-size: 10.5px; color: var(--text-3); font-family: var(--mono); }
-.call-tag { font-size: 10px; color: #34d399; background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.3); border-radius: 999px; padding: 1px 7px; align-self: flex-start; }
+.call-tag { font-size: 10px; color: var(--primary); background: rgba(139,107,214,0.12); border: 1px solid rgba(139,107,214,0.3); border-radius: 999px; padding: 1px 7px; align-self: flex-start; }
 .c-act { text-align: right; }
 
 /* 弹窗 */
@@ -586,9 +590,9 @@ onUnmounted(() => {
 }
 .inp:focus { border-color: var(--emerald); outline: none; }
 .hint { font-size: 12.5px; color: var(--text-3); line-height: 1.6; margin: 0; }
-.hint code { font-family: var(--mono); color: var(--emerald-light); padding: 1px 5px; background: rgba(16,185,129,0.10); border-radius: 4px; font-size: 11.5px; }
+.hint code { font-family: var(--mono); color: var(--emerald-light); padding: 1px 5px; background: rgba(139,107,214,0.10); border-radius: 4px; font-size: 11.5px; }
 .hint b { color: var(--text); font-weight: 600; }
-.hint.ok b { color: #34d399; }
+.hint.ok b { color: var(--primary); }
 .hint.warn b { color: #f59e0b; }
 
 /* 作用域选择 */
@@ -598,7 +602,7 @@ onUnmounted(() => {
   padding: 12px; cursor: pointer; transition: background .15s, border-color .15s;
 }
 .scope-option:hover { background: var(--bg); }
-.scope-option.active { background: rgba(16,185,129,0.08); border-color: var(--emerald); }
+.scope-option.active { background: rgba(139,107,214,0.08); border-color: var(--emerald); }
 .radio {
   width: 16px; height: 16px; border-radius: 50%; border: 2px solid #6b7280;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 2px;
@@ -621,7 +625,7 @@ onUnmounted(() => {
 }
 .account-chip:hover { background: var(--bg); }
 .account-chip:focus-within { outline: 3px solid var(--primary); outline-offset: 2px; }
-.account-chip.checked { background: rgba(16,185,129,0.08); border-color: var(--emerald); }
+.account-chip.checked { background: rgba(139,107,214,0.08); border-color: var(--emerald); }
 .account-chip input { position: absolute; opacity: 0; pointer-events: none; }
 .check {
   width: 14px; height: 14px; border-radius: 4px; border: 1px solid #4b5563;
@@ -638,11 +642,11 @@ onUnmounted(() => {
 
 .token-box {
   display: flex; align-items: center; gap: 8px;
-  background: #0a0b0e; border: 1px solid #272a30; border-radius: 10px;
+  background: #0a0b0e; border: 1px solid var(--border-strong); border-radius: 10px;
   padding: 8px 10px;
 }
 .token-box code {
-  flex: 1; font-family: var(--mono); font-size: 13px; color: #34d399;
+  flex: 1; font-family: var(--mono); font-size: 13px; color: var(--primary);
   word-break: break-all; user-select: all;
 }
 .token-box code.hidden { color: var(--text-3); }

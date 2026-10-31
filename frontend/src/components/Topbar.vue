@@ -100,4 +100,6 @@ async function copyConfig() {
 .theme-toggle { border: 1px solid var(--border); background: var(--card); color: var(--text-2); width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; cursor: pointer; }
 .copy-err { color: var(--rose); background: var(--card); }
 @media(max-width:680px) { .topbar { height: auto; min-height: 96px; padding: 18px; flex-wrap: wrap; } .topbar h1 { font-size: 20px; } .subtitle { font-size: 11px; } }
+.topbar{height:78px;min-height:78px;padding:12px 24px;gap:16px}.topbar h1{font-size:19px;font-weight:650;letter-spacing:-.3px}.subtitle{font-size:11px;margin-top:4px}.theme-toggle{width:32px;height:32px;border-radius:8px}.topbar-right .btn-primary{font-size:12px;padding:8px 12px;border-radius:8px}.ver-chip{font-size:10px;vertical-align:2px}
+@media(max-width:680px){.topbar{height:auto;min-height:78px;padding:14px;align-items:flex-start;flex-wrap:wrap;gap:10px}.topbar h1{font-size:17px}.topbar-right{margin-left:auto}.subtitle{max-width:250px}}
 </style>

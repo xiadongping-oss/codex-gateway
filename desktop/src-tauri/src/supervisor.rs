@@ -93,6 +93,7 @@ impl Settings {
             "migration",
             "migration-fresh",
             "soak",
+            "workspace",
         ]
         .contains(&smoke_case.as_str())
             || (smoke_case != "normal"
@@ -196,6 +197,7 @@ fn failure(code: &str, port: u16) -> ViewState {
 type MigrationReply = Result<Value, String>;
 enum Work {
     Action(String),
+    Navigate(String),
     Migration(crate::migration::Request, SyncSender<MigrationReply>),
 }
 pub struct Controller {
@@ -206,6 +208,14 @@ pub struct Controller {
     sender: SyncSender<Work>,
 }
 impl Controller {
+    pub fn navigate(&self, page: &str) -> Result<(), String> {
+        if !crate::desktop::business_page(page) {
+            return Err("页面不可用".into());
+        }
+        self.sender
+            .try_send(Work::Navigate(page.into()))
+            .map_err(|_| "正在处理，请稍后重试".into())
+    }
     pub fn action(&self, action: &str) -> Result<(), String> {
         if ![
             "retry",
@@ -218,6 +228,7 @@ impl Controller {
             "restart",
             "fresh-start",
             "maintenance",
+            "stop",
         ]
         .contains(&action)
         {
@@ -258,6 +269,7 @@ impl Controller {
             ))
             && crate::migration::new_install(&settings);
         if first_run {
+            crate::desktop::set_page(&app, "data");
             *view.lock().unwrap() = ViewState::new(
                 "setup",
                 "准备你的工作空间",
@@ -540,6 +552,12 @@ fn run(
     let mut smoke_stage = 0;
     let mut desktop_check = crate::desktop_check::Check::default();
     let mut desktop_passed = false;
+    #[cfg(debug_assertions)]
+    let mut workspace_check = crate::workspace_check::Check::default();
+    #[cfg(debug_assertions)]
+    let mut workspace_passed = false;
+    #[cfg(not(debug_assertions))]
+    let workspace_passed = false;
     let log = Log::new(&settings.webview_data);
     let mut budget = crate::recovery::Budget::default();
     let mut retry_at = None;
@@ -549,12 +567,18 @@ fn run(
     let mut unresponsive = false;
     let mut crash_count = 0;
     let mut migration = crate::migration::Wizard::default();
+    let mut pending_navigation: Option<String> = None;
     let migration_passed = crate::migration_check::start(&app, &settings);
     #[cfg(debug_assertions)]
     let mut soak = crate::soak_check::Check::new(&settings);
     loop {
         let mut action = match commands.try_recv().ok() {
             Some(Work::Action(action)) => Some(action),
+            Some(Work::Navigate(page)) => {
+                crate::desktop::set_page(&app, &page);
+                pending_navigation = Some(page);
+                Some("show".into())
+            }
             Some(Work::Migration(request, reply)) => {
                 if settings.smoke_case == "migration" {
                     eprintln!("R03_REQUEST_RECEIVED");
@@ -618,7 +642,18 @@ fn run(
         if action.as_deref() == Some("quit") {
             stay_for_backups = false;
         }
-        if action.as_deref() == Some("maintenance") && !exit_requested && !tree_blocked {
+        if matches!(action.as_deref(), Some("maintenance" | "stop"))
+            && !exit_requested
+            && !tree_blocked
+        {
+            crate::desktop::set_page(
+                &app,
+                if action.as_deref() == Some("stop") {
+                    "service"
+                } else {
+                    "data"
+                },
+            );
             retry_at = None;
             if session.is_some() {
                 stay_for_backups = true;
@@ -732,6 +767,7 @@ fn run(
             && !exit_requested
             && !tree_blocked
         {
+            crate::desktop::set_page(&app, pending_navigation.as_deref().unwrap_or("overview"));
             retry_at = None;
             let _ = log.record(Event::Starting);
             cancel.store(false, Ordering::Relaxed);
@@ -851,6 +887,28 @@ fn run(
             }
         }
         #[cfg(debug_assertions)]
+        if settings.smoke
+            && settings.smoke_case == "workspace"
+            && !workspace_passed
+            && !exit_requested
+        {
+            match workspace_check.tick(&app, console.as_ref(), session.as_mut()) {
+                Ok(passed) => workspace_passed = passed,
+                Err(code) => {
+                    eprintln!("W01_FAILED {code}");
+                    if let Some(c) = console.take() {
+                        c.close(&app);
+                    }
+                    if let Some(mut s) = session.take() {
+                        s.cleanup();
+                    }
+                    quitting.store(true, Ordering::Relaxed);
+                    app.exit(1);
+                    return;
+                }
+            }
+        }
+        #[cfg(debug_assertions)]
         if settings.smoke_case == "soak" {
             if let Some(check) = soak.as_mut() {
                 if check.tick(
@@ -874,6 +932,7 @@ fn run(
                 ) && migration_passed.load(Ordering::SeqCst))
                 || (settings.smoke_case == "node-crash" && crash_count == 1 && smoke_stage == 2)
                 || desktop_passed
+                || workspace_passed
                 || (settings.smoke_case == "unresponsive" && smoke_stage == 2)
                 || (settings.smoke_case == "session-loss" && smoke_stage == 2));
         if (action.as_deref() == Some("quit") || auto_quit) && !exit_requested {
@@ -1075,6 +1134,11 @@ fn run(
                 {
                     eprintln!("D02_CHECK {}", c.smoke_report());
                     failed = Some("CONSOLE_TEST_FAILED".into());
+                }
+            }
+            if let (Some(c), Some(page)) = (console.as_ref(), pending_navigation.as_deref()) {
+                if c.navigate(&app, page) {
+                    pending_navigation = None;
                 }
             }
         }

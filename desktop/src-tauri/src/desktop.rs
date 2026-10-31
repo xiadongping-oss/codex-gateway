@@ -15,6 +15,80 @@ pub struct Desktop {
     pub duplicates: AtomicUsize,
     pub isolated: bool,
     pub notice: Mutex<String>,
+    pub page: Mutex<String>,
+}
+
+pub fn business_page(page: &str) -> bool {
+    matches!(
+        page,
+        "overview" | "account" | "images" | "models" | "apikeys" | "logs" | "settings"
+    )
+}
+
+pub fn local_page(page: &str) -> bool {
+    matches!(page, "service" | "data" | "desktop")
+}
+
+pub fn set_page(app: &tauri::AppHandle, page: &str) {
+    if business_page(page) || local_page(page) {
+        *app.state::<Desktop>().page.lock().unwrap() = page.into();
+    }
+}
+
+// Both origins keep their existing permissions. Switching pages transfers the
+// visible workspace instead of displaying two independent application windows.
+pub fn show_only(app: &tauri::AppHandle, label: &str) -> bool {
+    let Some(target) = app.get_webview_window(label) else {
+        return false;
+    };
+    let windows = app.webview_windows();
+    let previous = windows
+        .values()
+        .find(|w| w.label() != label && w.is_visible().unwrap_or(false));
+    if let Some(previous) = previous {
+        if !previous.is_minimized().unwrap_or(false) {
+            if let Ok(position) = previous.outer_position() {
+                let _ = target.set_position(position);
+            }
+            if let Ok(size) = previous.inner_size() {
+                let _ = target.set_size(size);
+            }
+        }
+    }
+    for window in windows.values().filter(|w| w.label() != label) {
+        if window.hide().is_err() {
+            return false;
+        }
+    }
+    if target
+        .unminimize()
+        .and_then(|_| target.show())
+        .and_then(|_| target.set_focus())
+        .is_err()
+    {
+        if let Some(previous) = previous {
+            let _ = previous.show();
+        }
+        return false;
+    }
+    app.state::<Desktop>()
+        .background
+        .store(false, Ordering::SeqCst);
+    true
+}
+
+pub fn open_local(app: &tauri::AppHandle, page: &str) -> bool {
+    if !local_page(page) {
+        return false;
+    }
+    let previous = app.state::<Desktop>().page.lock().unwrap().clone();
+    set_page(app, page);
+    if show_main(app) {
+        true
+    } else {
+        set_page(app, &previous);
+        false
+    }
 }
 pub struct TrayMenu(pub Menu<tauri::Wry>);
 
@@ -55,19 +129,22 @@ pub fn restore(app: &tauri::AppHandle) {
     app.state::<Desktop>()
         .background
         .store(false, Ordering::SeqCst);
-    if let Some(controller) = app.try_state::<Controller>() {
+    let local = local_page(&app.state::<Desktop>().page.lock().unwrap());
+    if local {
+        show_main(app);
+    } else if let Some(controller) = app.try_state::<Controller>() {
         let _ = controller.action("show");
     }
 }
-pub fn show_main(app: &tauri::AppHandle) {
-    app.state::<Desktop>()
-        .background
-        .store(false, Ordering::SeqCst);
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
+pub fn show_main(app: &tauri::AppHandle) -> bool {
+    {
+        let desktop = app.state::<Desktop>();
+        let mut page = desktop.page.lock().unwrap();
+        if !local_page(&page) {
+            *page = "service".into();
+        }
     }
+    show_only(app, "main")
 }
 pub fn hide(app: &tauri::AppHandle) {
     app.state::<Desktop>()
@@ -87,6 +164,13 @@ pub fn set_autostart(app: &tauri::AppHandle, enabled: bool) -> Result<(), String
         "自启动设置未能保存，请检查系统权限后重试。"
     };
     *app.state::<Desktop>().notice.lock().unwrap() = notice.into();
+    if let Some(menu) = app.try_state::<TrayMenu>() {
+        if let Some(item) = menu.0.get("desktop-autostart") {
+            if let Some(item) = item.as_check_menuitem() {
+                let _ = item.set_checked(crate::autostart::enabled(app).unwrap_or(false));
+            }
+        }
+    }
     if verified {
         Ok(())
     } else {
@@ -95,8 +179,8 @@ pub fn set_autostart(app: &tauri::AppHandle, enabled: bool) -> Result<(), String
 }
 
 pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "desktop-open", "打开控制台", true, None::<&str>)?;
-    let manage = MenuItem::with_id(app, "desktop-manage", "桌面管理", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "desktop-open", "打开工作台", true, None::<&str>)?;
+    let manage = MenuItem::with_id(app, "desktop-manage", "设置", true, None::<&str>)?;
     let enabled = crate::autostart::enabled(app);
     let autostart = CheckMenuItem::with_id(
         app,
@@ -127,7 +211,9 @@ pub fn install(app: &tauri::AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id.as_ref() {
             "desktop-open" => restore(app),
-            "desktop-manage" => show_main(app),
+            "desktop-manage" => {
+                open_local(app, "desktop");
+            }
             "desktop-autostart" => {
                 // Read actual OS state, never infer success from the menu's visual toggle.
                 let result = crate::autostart::enabled(app)

@@ -106,7 +106,7 @@ const idleMin = computed(() => {
   background: var(--card-2); border: 1px solid var(--border);
 }
 /* 当前服务中的实例用左侧绿边标出——用户看的第一件事就是「哪个账号在服务」 */
-.inst.active { border-color: rgba(16, 185, 129, 0.35); box-shadow: inset 3px 0 0 var(--emerald); }
+.inst.active { border-color: rgba(139,107,214, 0.35); box-shadow: inset 3px 0 0 var(--emerald); }
 .inst-state {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px; flex: none;
@@ -122,7 +122,7 @@ const idleMin = computed(() => {
 }
 .inst-cur {
   font-size: 10px; font-weight: 700; margin-left: 6px; padding: 1px 6px; border-radius: 5px;
-  color: #04130d; background: var(--emerald);
+  color: var(--on-primary); background: var(--emerald);
 }
 .inst-cell { font-size: 11.5px; color: var(--text-2); flex: none; min-width: 74px; }
 .mono { font-family: var(--mono); }

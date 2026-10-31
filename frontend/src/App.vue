@@ -12,6 +12,12 @@ import Settings from './views/Settings.vue'
 import { useLiveData } from './composables/useLiveData'
 
 const activePage = ref('overview')
+function workspaceNavigate(event) {
+  const page = event?.detail?.page
+  if (['overview','account','images','models','apikeys','logs','settings'].includes(page)) activePage.value = page
+}
+onMounted(() => window.addEventListener('cgw:navigate', workspaceNavigate))
+onUnmounted(() => window.removeEventListener('cgw:navigate', workspaceNavigate))
 const { gw, gwConnected } = useLiveData()
 
 // 侧栏折叠状态（记忆到 localStorage）
@@ -53,7 +59,7 @@ function onToggleSidebar() {
 
 const titles = {
   overview: { title: '网关概览', subtitle: '本地 Codex 网关 · 运行状态与用量' },
-  account: { title: '账号管理', subtitle: '多账号 · 登录态 · 网关运行控制' },
+  account: { title: '账号管理', subtitle: '多账号 · 登录授权 · 连接诊断' },
   images: { title: '图片素材', subtitle: '生成图库 · 本地与云端素材统一管理' },
   models: { title: '模型能力', subtitle: '模型 · 视觉理解 · OpenAI 兼容接口' },
   apikeys: { title: 'API Key 管理', subtitle: '给外部客户端用的网关层 Token' },
@@ -66,7 +72,7 @@ const titles = {
   <div class="app">
     <Sidebar :active="activePage" :gw-running="gw.running" :connected="gwConnected === true" :collapsed="effectiveCollapsed" @navigate="activePage = $event" @toggle="onToggleSidebar" />
 
-    <main class="main">
+    <main class="main" :data-workspace-current="activePage">
       <Topbar :title="titles[activePage].title" :subtitle="titles[activePage].subtitle" :running="gw.running" />
 
       <Overview v-if="activePage === 'overview'" @navigate="activePage = $event" />

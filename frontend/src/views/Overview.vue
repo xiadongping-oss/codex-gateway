@@ -57,20 +57,20 @@ const authOk = computed(() => account.value?.loggedIn !== false)
     <div v-if="gwConnected === false || lastError" class="connection-note" role="status">无法同步网关状态，请检查服务与控制台登录状态。正在自动重试。</div>
     <div v-if="gwActionError" class="connection-note" role="alert">{{ gwActionError }}</div>
     <div class="hero-grid">
-      <section class="gateway-hero" aria-label="网关运行控制">
+      <section class="gateway-hero" aria-label="模型代理运行控制">
         <div class="hero-copy">
-          <span class="eyebrow">LOCAL GATEWAY <span class="hero-status" :class="{ stopped: !gw.running }"><i></i>{{ !gwConnected ? '等待连接' : gw.running ? '运行中' : '已停止' }}</span></span>
+          <span class="eyebrow">MODEL PROXY <span class="hero-status" :class="{ stopped: !gw.running }"><i></i>{{ !gwConnected ? '等待连接' : gw.running ? '运行中' : '已停止' }}</span></span>
           <h2>{{ !gwConnected ? '连接你的 AI 工作站' : gw.running ? '让 AI 随时就绪' : '从这里，连接 AI' }}</h2>
-          <p>{{ !gwConnected ? '正在等待本地网关返回运行状态。' : gw.running ? '本地服务已启动，统一连接你的 AI 客户端。' : '启动本地服务，开始使用你的模型与工具。' }}</p>
+          <p>{{ !gwConnected ? '正在等待本地网关返回运行状态。' : gw.running ? '模型代理已启动，可以处理 AI 客户端请求。' : '启动模型代理，开始使用你的模型与工具。' }}</p>
           <div class="hero-facts">
             <div><span>运行时长</span><strong>{{ gw.running ? fmtUptime(gw.uptimeSec || 0) : '—' }}</strong></div>
             <div><span>服务端口</span><strong>{{ status.port }}</strong></div>
             <div><span>访问地址</span><strong class="host-value">{{ status.host }}</strong></div>
           </div>
-          <button class="restart-link" :disabled="gwBusy || !gw.running || !gwConnected" @click="gwRestart">↻ 重启服务</button>
+          <button class="restart-link" :disabled="gwBusy || !gw.running || !gwConnected" @click="gwRestart">↻ 重启模型代理</button>
         </div>
         <div class="power-area">
-          <button class="power-button" :class="{ running: gw.running }" :disabled="gwBusy || !gwConnected" @click="gw.running ? gwStop() : gwStart()" :aria-label="gw.running ? '停止网关' : '启动网关'">
+          <button class="power-button" :class="{ running: gw.running }" :disabled="gwBusy || !gwConnected" @click="gw.running ? gwStop() : gwStart()" :aria-label="gw.running ? '停止模型代理' : '启动模型代理'">
             <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"><path d="M24 7v18M14 12a17 17 0 1020 0"/></svg>
           </button>
           <span>{{ !gwConnected ? '等待连接' : gwBusy ? '处理中…' : gw.running ? '点击停止' : '点击启动' }}</span>
@@ -184,4 +184,6 @@ summary { padding: 16px 20px; cursor: pointer; font-size: 12px; }summary span + 
   .detail-content :deep(.metric) { padding: 0; border: 0; flex-basis: 100%; }
   .stat-card strong { font-size: 25px; overflow-wrap: anywhere; }
 }
+.overview{padding:4px 24px 24px;gap:16px}.gateway-hero{border-radius:14px;padding:24px;min-height:190px}.account-summary,.stat-card,.quick-card{border-radius:12px}.stat-card{padding:18px}.power-button{border-radius:24px}.quick-card{padding:16px}
+@media(max-width:760px){.overview{padding:4px 14px 18px}.gateway-hero{min-height:180px;padding:20px}}
 </style>

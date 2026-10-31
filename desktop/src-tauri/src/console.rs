@@ -78,6 +78,26 @@ pub struct Policy {
     pub external_count: AtomicUsize,
 }
 impl Policy {
+    fn workspace_page(&self, url: &Url) -> Option<&'static str> {
+        if !self.active.load(Ordering::SeqCst)
+            || !self.alive.load(Ordering::SeqCst)
+            || url.scheme() != "cgw-workspace"
+            || url.host_str() != Some("open")
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return None;
+        }
+        match url.path() {
+            "/service" => Some("service"),
+            "/data" => Some("data"),
+            "/desktop" => Some("desktop"),
+            _ => None,
+        }
+    }
     fn new(port: u16, bootstrap: &Url, alive: Arc<AtomicBool>) -> Self {
         Self {
             active: AtomicBool::new(true),
@@ -85,6 +105,37 @@ impl Policy {
             port,
             initial: Mutex::new(Some(bootstrap.as_str().into())),
             external_count: AtomicUsize::new(0),
+        }
+    }
+    fn open_workspace(self: &Arc<Self>, app: &tauri::AppHandle, label: &str, page: &'static str) {
+        let Some(source) = app.get_webview_window(label) else {
+            return;
+        };
+        let handle = app.clone();
+        let policy = self.clone();
+        if source
+            .eval_with_callback(
+                "JSON.stringify({theme:document.documentElement.dataset.theme || 'light',collapsed:localStorage.getItem('gw.sidebar.collapsed')==='1'})",
+                move |raw| {
+                    if !policy.active.load(Ordering::SeqCst) || !policy.alive.load(Ordering::SeqCst)
+                    {
+                        return;
+                    }
+                    let presentation = match serde_json::from_str::<Value>(&raw).ok() {
+                        Some(Value::String(text)) => serde_json::from_str::<Value>(&text).ok(),
+                        value => value,
+                    }.unwrap_or(Value::Null);
+                    let theme = if presentation["theme"] == "dark" { "dark" } else { "light" };
+                    let collapsed = presentation["collapsed"] == true;
+                    if let Some(main) = handle.get_webview_window("main") {
+                        let _ = main.eval(format!("window.applyWorkspaceTheme?.('{}'); window.applyWorkspaceCollapsed?.({})", theme, collapsed));
+                    }
+                    crate::desktop::open_local(&handle, page);
+                },
+            )
+            .is_err()
+        {
+            crate::desktop::open_local(app, page);
         }
     }
     pub fn internal(&self, url: &Url) -> bool {
@@ -162,12 +213,13 @@ impl Console {
         let nav_app = app.clone();
         let popup_app = app.clone();
         let label = format!("console-{launch_id}-{}", uuid::Uuid::new_v4());
+        let nav_label = label.clone();
         let popup_label = label.clone();
         let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
             .title(if cfg!(debug_assertions) && isolated {
                 "Codex Gateway · 隔离测试（非真实账号环境）"
             } else {
-                "Codex Gateway · 控制台"
+                "Codex Gateway · 工作台"
             })
             .inner_size(1200., 820.)
             .min_inner_size(760., 600.)
@@ -176,7 +228,10 @@ impl Console {
             .data_directory(webview_data.to_path_buf())
             .initialization_script(include_str!("../scripts/session.js").replace("/*__CGW_ORIGIN__*/null",&serde_json::to_string(&format!("http://127.0.0.1:{port}")).unwrap()))
             .on_navigation(move |url| {
-                if nav.navigate(url) {
+                if let Some(page) = nav.workspace_page(url) {
+                    nav.open_workspace(&nav_app, &nav_label, page);
+                    false
+                } else if nav.navigate(url) {
                     true
                 } else {
                     nav.open_external(&nav_app, url.clone(), isolated);
@@ -261,6 +316,9 @@ impl Console {
                 .state::<crate::desktop::Desktop>()
                 .background
                 .load(Ordering::SeqCst)
+                && !crate::desktop::local_page(
+                    &app.state::<crate::desktop::Desktop>().page.lock().unwrap(),
+                )
             {
                 self.restore(app);
             }
@@ -281,6 +339,7 @@ impl Console {
             && v["cookieHidden"] == true
             && v["historyClean"] == true
             && v["navigationSafe"] == true
+            && v["workspaceDenied"] == true
             && self.policy.external_count.load(Ordering::Relaxed) >= 2
     }
     pub fn restore(&self, app: &tauri::AppHandle) -> bool {
@@ -290,29 +349,32 @@ impl Console {
         {
             return false;
         }
-        app.state::<crate::desktop::Desktop>()
-            .background
-            .store(false, Ordering::SeqCst);
-        if self
-            .window
-            .unminimize()
-            .and_then(|_| self.window.show())
-            .and_then(|_| self.window.set_focus())
-            .is_err()
+        crate::desktop::show_only(app, self.window.label())
+    }
+    pub fn navigate(&self, app: &tauri::AppHandle, page: &str) -> bool {
+        if !crate::desktop::business_page(page)
+            || !self.shown
+            || !self.policy.active.load(Ordering::SeqCst)
+            || !self.policy.alive.load(Ordering::SeqCst)
         {
             return false;
         }
-        if let Some(main) = app.get_webview_window("main") {
-            let _ = main.hide();
+        let script = format!(
+            "window.dispatchEvent(new CustomEvent('cgw:navigate', {{ detail: {{ page: {} }} }}))",
+            serde_json::to_string(page).unwrap()
+        );
+        if self.window.eval(script).is_err() {
+            return false;
         }
-        true
+        crate::desktop::set_page(app, page);
+        self.restore(app)
     }
     pub fn smoke_report(&self) -> Value {
         let v = self.evidence.lock().unwrap();
         serde_json::json!({"authenticated":v["authenticated"]==true,"mounted":v["mounted"]==true,
           "cleanUrl":v["cleanUrl"]==true,"nativeDenied":v["nativeDenied"]==true,"coreDenied":v["coreDenied"]==true,
           "cookieHidden":v["cookieHidden"]==true,"historyClean":v["historyClean"]==true,
-          "navigationSafe":v["navigationSafe"]==true,"externalDispatches":self.policy.external_count.load(Ordering::Relaxed)})
+          "navigationSafe":v["navigationSafe"]==true,"workspaceDenied":v["workspaceDenied"]==true,"externalDispatches":self.policy.external_count.load(Ordering::Relaxed)})
     }
     pub fn expire_test_session(&self) -> Result<(), String> {
         if !self.isolated {
@@ -360,6 +422,39 @@ impl Console {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workspace_navigation_is_fixed_and_revoked_with_its_session() {
+        let (frame, id) = bootstrap();
+        let url = validate_bootstrap(&frame, &id, 4173).unwrap();
+        let p = Policy::new(4173, &url, Arc::new(AtomicBool::new(true)));
+        for page in ["service", "data", "desktop"] {
+            let url: Url = format!("cgw-workspace://open/{page}").parse().unwrap();
+            assert_eq!(p.workspace_page(&url), Some(page));
+            assert!(!p.navigate(&url));
+            assert!(!p.external(&url));
+        }
+        for url in [
+            "cgw-workspace://open/quit",
+            "cgw-workspace://open/retry",
+            "cgw-workspace://open/service?x=1",
+            "cgw-workspace://open/data#x",
+            "cgw-workspace://user@open/data",
+            "cgw-workspace://open:123/data",
+            "cgw-workspace://other/data",
+            "cgw-workspace://open/data/",
+            "cgw-workspace://open/%64ata",
+            "http://open/data",
+            "cgw-workspace://open/desktop?token=cgwadm-secret",
+        ] {
+            assert_eq!(p.workspace_page(&url.parse().unwrap()), None, "{url}");
+        }
+        let url = "cgw-workspace://open/data".parse().unwrap();
+        p.alive.store(false, Ordering::SeqCst);
+        assert_eq!(p.workspace_page(&url), None);
+        p.alive.store(true, Ordering::SeqCst);
+        p.active.store(false, Ordering::SeqCst);
+        assert_eq!(p.workspace_page(&url), None);
+    }
     #[test]
     #[ignore = "opens the system browser; run explicitly during native desktop acceptance"]
     fn system_browser_dispatch() {

@@ -2,25 +2,49 @@
 <html lang="zh-CN">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Gateway</title><link rel="stylesheet" href="style.css"></head>
 <body><div class="layout">
-  <aside><div class="brand"><span class="mark">C</span><strong>Codex Gateway</strong></div><div class="nav active"><span>◉</span> 网关</div><div class="aside-bottom"><span class="dot"></span> 本机管理</div></aside>
+  <aside class="sidebar" aria-label="工作台导航">
+    <div class="brand"><svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><rect x="1" y="1" width="38" height="38" rx="12" fill="currentColor" opacity=".12"/><path d="M15 12 7 20l8 8M25 12l8 8-8 8m-3-18-5 20" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="30" cy="10" r="4" fill="currentColor"/><circle cx="30" cy="10" r="1.2" fill="var(--card)"/></svg><span><strong>Codex 网关</strong><small>AI WORKSPACE</small></span></div>
+    <nav>
+      <div class="nav-group"><p class="nav-heading">工作区</p>
+        <button class="nav-item" data-page="overview" title="概览"><span data-icon="overview"></span><span>概览</span></button>
+        <button class="nav-item" data-page="account" title="账号管理"><span data-icon="account"></span><span>账号管理</span></button>
+        <button class="nav-item" data-page="images" title="图片素材"><span data-icon="images"></span><span>图片素材</span></button>
+        <button class="nav-item" data-page="models" title="模型能力"><span data-icon="models"></span><span>模型能力</span></button>
+      </div>
+      <div class="nav-group"><p class="nav-heading">开发接入</p>
+        <button class="nav-item" data-page="apikeys" title="API Key"><span data-icon="apikeys"></span><span>API Key</span></button>
+        <button class="nav-item" data-page="logs" title="调用日志"><span data-icon="logs"></span><span>调用日志</span></button>
+      </div>
+      <div class="nav-group"><p class="nav-heading">管理</p>
+        <button class="nav-item active" data-page="service" title="服务与诊断" aria-current="page"><span data-icon="service"></span><span>服务与诊断</span></button>
+        <button class="nav-item" data-page="data" title="数据与备份"><span data-icon="data"></span><span>数据与备份</span></button>
+        <button class="nav-item" data-page="desktop" title="设置"><span data-icon="settings"></span><span>设置</span></button>
+      </div>
+    </nav>
+    <div class="aside-bottom"><span class="status-dot" aria-hidden="true"></span><span id="sidebar-state">本机服务</span></div>
+  </aside>
   <main>
-    <header><span class="eyebrow">工作空间</span><span class="version">桌面预览版</span></header>
-    <section class="intro"><h1>连接你的 AI 工作流</h1><p>管理本机网关，让应用与创作工具保持连接。</p></section>
-    <section class="card">
-      <div class="card-top"><span class="gateway-icon">↗</span><span id="badge" class="badge">正在准备</span></div>
+    <header class="workspace-header"><div><h1 id="page-title">服务与诊断</h1><div class="subtitle" id="page-subtitle">管理本机服务与运行状态</div></div><span class="version">桌面预览版</span></header>
+    <div class="page-content">
+    <section data-local-page="service" aria-label="服务与诊断">
+    <section class="card service-card">
+      <div class="card-top"><span class="section-label"><span data-icon="service"></span>本机网关</span><span id="badge" class="badge">正在准备</span></div>
       <h2 id="title">正在启动网关</h2><p id="message" aria-live="polite">正在准备本机服务，请稍候。</p>
       <div class="details"><div><span>服务地址</span><strong id="address">等待连接</strong></div><div><span>当前任务</span><strong id="tasks">—</strong></div></div>
       <div class="actions">
-        <button id="reopen" hidden>打开控制台</button><button id="retry" hidden>启动网关</button><button id="fresh-start" hidden>建立全新工作空间</button>
-        <button id="continue" hidden>继续等待</button><button id="force" class="secondary" hidden>结束任务并退出</button><button id="restart" hidden>结束并重启</button>
-        <button id="logs" class="secondary">打开诊断日志</button><button id="quit" class="secondary">退出应用</button>
-        <button id="maintenance" class="secondary" hidden>停止网关并管理备份</button>
+        <button id="reopen" hidden>打开概览</button><button id="retry" hidden>启动网关</button><button id="service-stop" class="secondary" hidden>停止服务</button>
+        <button id="continue" hidden>继续等待</button><button id="force" class="danger" hidden>结束任务并退出</button><button id="restart" class="danger" hidden>结束并重启</button>
       </div>
     </section>
+    <section class="card compact-card"><div><h2>诊断与退出</h2><p>查看运行日志，或结束本机服务。</p></div><div class="actions"><button id="logs" class="secondary">诊断日志</button><button id="quit" class="secondary">退出应用</button></div></section>
+    <details class="help"><summary>后台运行说明</summary><p>关闭窗口后，服务继续在托盘运行。退出应用会停止网关；进行中的任务会先请求正常结束。</p></details>
+    </section>
+    <section data-local-page="data" aria-label="数据与备份" hidden>
+      <section class="card compact-card"><div><h2>工作空间数据</h2><p id="data-state">账号、配置与图片保存在本机。</p></div><div class="actions"><button id="maintenance" class="secondary" hidden>停止服务并管理</button><button id="fresh-start" hidden>建立全新工作空间</button></div></section>
     <section id="migration-panel" class="card migration-card" aria-labelledby="migration-title" hidden>
       <div class="card-top"><span class="eyebrow">数据迁移</span><span id="migration-step" class="badge">1 · 检查旧数据</span></div>
-      <h2 id="migration-title">延续你的工作空间</h2>
-      <p>保留原账号、配置和图片归属，先备份再迁移。仅适用于这台电脑上的同一用户。</p>
+      <h2 id="migration-title">迁移旧数据</h2>
+      <details class="help"><summary>迁移说明</summary><p>保留原账号、配置和图片归属，先备份再迁移。仅适用于这台电脑上的同一用户。</p></details>
       <div class="destination"><span>桌面版数据位置</span><code id="migration-target">正在读取…</code></div>
       <form id="migration-form">
         <label for="migration-kind">旧版数据类型</label>
@@ -49,13 +73,26 @@
     </section>
     <section id="backup-panel" class="card migration-card" hidden aria-labelledby="backup-title">
       <div class="card-top"><span class="eyebrow">备份与恢复</span><button id="backup-refresh" class="secondary">刷新列表</button></div>
-      <h2 id="backup-title">历史迁移备份</h2><p>仅查看当前工作空间的备份，不会自动删除备份或覆盖新增数据。</p>
+      <h2 id="backup-title">历史备份</h2><details class="help"><summary>恢复说明</summary><p>仅查看当前工作空间的迁移备份，不会自动删除备份或覆盖新增数据。</p></details>
       <p id="backup-status" role="status"></p><div id="backup-list"></div>
       <div id="backup-review" class="migration-review" hidden><h3>回退检查</h3><p id="backup-summary"></p><code id="backup-location"></code><p id="backup-decision"></p>
         <label class="check"><input id="backup-stopped" type="checkbox"><span>我已退出其他使用这些数据的程序，并确认回退到迁移前状态</span></label>
         <button id="backup-restore" class="secondary" disabled>回退所选迁移</button>
       </div><p id="backup-error" role="alert"></p>
     </section>
-    <p class="footnote">关闭窗口后仍在托盘运行 · 从托盘菜单可恢复窗口、设置自启动或退出</p><p id="desktop-notice" role="status"></p><p id="action-error" role="alert"></p>
+    </section>
+    <section data-local-page="desktop" aria-label="设置" hidden>
+      <div class="settings-tabs" aria-label="设置分类"><button class="tab" data-page="settings">连接配置</button><button class="tab active" data-page="desktop" aria-current="page">应用偏好</button></div>
+      <section class="card preferences-card">
+        <div class="preference-row"><div><h2>开机启动</h2><p>登录系统时启动网关。</p><p id="autostart-status" role="status" hidden>暂时无法读取系统设置，请稍候。</p></div><label class="switch"><input id="desktop-autostart" type="checkbox" role="switch" aria-label="开机启动" aria-describedby="autostart-status" disabled><span aria-hidden="true"></span></label></div>
+        <div class="preference-row"><div><h2>外观</h2><p>与工作台的外观设置保持一致。</p></div><span id="desktop-theme-label" class="preference-value">浅色</span></div>
+        <div class="preference-row"><div><h2>关闭窗口</h2><p>保留服务，在托盘继续运行。</p></div><span class="preference-value">后台运行</span></div>
+      </section>
+      <details class="help"><summary>关于开机启动</summary><p>此设置仅影响当前用户。修改失败时会保留系统中的原设置，并显示提示。</p></details>
+    </section>
+    <div class="workspace-notices"><p id="desktop-notice" role="status"></p><p id="action-error" role="alert"></p></div>
+    </div>
   </main>
-</div><script src="migration-ui.js"></script><script src="backup-ui.js"></script><script src="app.js"></script></body></html>
+</div>
+<dialog id="confirm-action" aria-labelledby="confirm-title"><h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p><div class="actions dialog-actions"><button id="confirm-cancel" class="secondary">取消</button><button id="confirm-submit" class="danger">确认</button></div></dialog>
+<script src="migration-ui.js"></script><script src="backup-ui.js"></script><script src="app.js"></script></body></html>

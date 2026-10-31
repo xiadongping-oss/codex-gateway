@@ -192,7 +192,8 @@ watch(() => models.value.length, () => {
         <span class="card-meta">{{ models.length }} 个</span>
         <button class="btn-ghost sm" @click="refreshAll(true)" :disabled="loading">{{ loading ? '刷新中…' : '刷新' }}</button>
       </div>
-      <div class="card-sub" style="margin-bottom: 12px">
+<details class="help-details"><summary>模型目录说明</summary>
+<div class="card-sub" style="margin-bottom: 12px">
         来自 <code>GET /v1/models</code>＝上游真实列表 ∪ 本地主力模型目录（上游不可达时仍可配置）。
         列表只下发<b>当前主力</b>：文本 3 个（<code>gpt-6.1-sol</code> / <code>gpt-6-astra</code> / <code>gpt-6.1-terra</code>）
         + 图片 2 档（<code>gpt-image-2.5-sunburst</code> / <code>gpt-image-2.5-flare</code>）。
@@ -202,6 +203,7 @@ watch(() => models.value.length, () => {
           <br />已隐藏 {{ hiddenCount }} 个旧世代 / 下线模型。
         </template>
       </div>
+</details>
       <div v-if="!upstreamOk" class="degraded">
         <span class="warn-dot">!</span>
         上游模型列表暂不可用（{{ upstreamErr || '未知原因' }}），当前展示本地目录兜底模型。
@@ -228,7 +230,8 @@ watch(() => models.value.length, () => {
         {{ loadErr || '暂无可用模型。请确认 bridge 已启动且授权有效。' }}
       </div>
 
-      <div class="image-note" v-if="imageModel">
+<details class="help-details" v-if="imageModel"><summary>图片模型与实际渲染说明</summary>
+<div class="image-note" v-if="imageModel">
         <div class="image-note-title">图片模型说明</div>
         <div class="image-note-body">
           ChatGPT 订阅通道<b>没有独立的图片模型</b>。列表里的
@@ -242,6 +245,7 @@ watch(() => models.value.length, () => {
           网关会在响应中回写真实模型（<code>model</code> 字段与 <code>x-cgw-image-model</code> 响应头），并把调用方填写的占位名记在 <code>cgw_requested_model</code> 里，便于核对。
         </div>
       </div>
+</details>
     </div>
 
     <div class="card">
@@ -306,7 +310,8 @@ watch(() => models.value.length, () => {
         <pre class="code-block">{{ configText }}</pre>
 
         <!-- WorkBuddy 添加模型对照：用户实测每次都要想怎么勾，直接给出结论 -->
-        <div class="wb-guide">
+<details class="help-details"><summary>WorkBuddy 配置说明</summary>
+<div class="wb-guide">
           <div class="wb-guide-title">填到 WorkBuddy「添加模型」：</div>
           <div class="wb-guide-body">
             <b>基础三项：</b>接口地址 <code>{{ baseUrl }}/v1</code> · API Key 上面选的 cgw- 密钥 · 模型名称 <code>{{ configObj.model }}</code>
@@ -316,6 +321,7 @@ watch(() => models.value.length, () => {
             <br /><b>自定义协议：不要勾</b>——勾了 WorkBuddy 不再自动补全 <code>/chat/completions</code> 路径，请求会打到网关没有的路由上直接 404
           </div>
         </div>
+</details>
 
         <p class="hint" v-if="!useManual && !selectedKeyId">
           <span class="warn-dot">!</span>
@@ -336,7 +342,7 @@ watch(() => models.value.length, () => {
 
       <div v-if="!lan.enabled" class="lan-off">
         <div class="lan-off-title">当前仅本机可访问（监听 127.0.0.1）</div>
-        <div class="lan-off-body">
+        <details class="help-details"><summary>开启局域网接入</summary><div class="lan-off-body">
           局域网内的其他电脑无法访问本网关。需要开放时，用环境变量启动网关：
           <div class="lan-cmd">
             <code>GW_LAN=1 node gateway/launcher.mjs</code>
@@ -351,7 +357,7 @@ watch(() => models.value.length, () => {
             <li>bridge 子进程仍只监听 127.0.0.1，不直接对外暴露</li>
             <li>Windows 防火墙需放行 <code>{{ lan.port }}</code> 端口（首次启动会弹窗询问）</li>
           </ul>
-        </div>
+        </div></details>
       </div>
 
       <div v-else class="lan-on">
@@ -452,7 +458,7 @@ watch(() => models.value.length, () => {
   padding: 8px 11px; cursor: pointer; transition: all 0.12s ease;
   font: inherit; color: inherit;
 }
-.model-chip:hover { border-color: rgba(16, 185, 129, 0.4); }
+.model-chip:hover { border-color: rgba(139,107,214, 0.4); }
 .model-chip.selected { border-color: var(--emerald); background: var(--emerald-dim); }
 .mid { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
 .tag { font-size: 11px; padding: 2px 8px; border-radius: 6px; }
@@ -462,11 +468,11 @@ watch(() => models.value.length, () => {
 .tier { font-size: 10.5px; padding: 2px 7px; border-radius: 6px; background: rgba(255,255,255,0.06); color: var(--text-2); }
 .core {
   font-size: 10.5px; font-weight: 600; padding: 2px 7px; border-radius: 6px;
-  background: rgba(16,185,129,0.16); color: var(--emerald-light); border: 1px solid rgba(16,185,129,0.35);
+  background: rgba(139,107,214,0.16); color: var(--emerald-light); border: 1px solid rgba(139,107,214,0.35);
 }
 .inline-core {
   font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 5px;
-  background: rgba(16,185,129,0.16); color: var(--emerald-light); border: 1px solid rgba(16,185,129,0.35);
+  background: rgba(139,107,214,0.16); color: var(--emerald-light); border: 1px solid rgba(139,107,214,0.35);
 }
 .degraded {
   display: flex; align-items: flex-start; gap: 7px; font-size: 12px; color: var(--amber);
@@ -560,7 +566,7 @@ code.hl {
   background: var(--emerald); color: var(--on-accent); border: none; border-radius: 8px;
   padding: 8px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer;
 }
-.btn-primary.sm.alt { background: rgba(16,185,129,0.18); color: var(--emerald-light); border: 1px solid rgba(16,185,129,0.4); }
+.btn-primary.sm.alt { background: rgba(139,107,214,0.18); color: var(--emerald-light); border: 1px solid rgba(139,107,214,0.4); }
 .btn-primary.sm:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-ghost.sm { padding: 6px 10px; font-size: 12px; background: var(--card-2); color: var(--text-2); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
 .btn-ghost.sm:hover:not(:disabled) { color: var(--text); }
@@ -595,7 +601,7 @@ code.hl {
   font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
   margin-left: 8px; vertical-align: middle;
 }
-.lan-badge.on  { background: var(--emerald-dim); color: var(--emerald-light); border: 1px solid rgba(16,185,129,0.28); }
+.lan-badge.on  { background: var(--emerald-dim); color: var(--emerald-light); border: 1px solid rgba(139,107,214,0.28); }
 .lan-badge.off { background: rgba(255,255,255,0.05); color: var(--text-3); border: 1px solid var(--border); }
 
 .lan-off {
@@ -617,14 +623,14 @@ code.hl {
 }
 
 .lan-on {
-  background: var(--card-2); border: 1px solid rgba(16,185,129,0.22);
+  background: var(--card-2); border: 1px solid rgba(139,107,214,0.22);
   border-radius: 10px; padding: 14px 16px;
 }
 .lan-on-head { font-size: 12.5px; color: var(--text-2); display: flex; align-items: center; gap: 8px; }
 .lan-on-head code { font-family: var(--mono); color: var(--emerald-light); font-size: 12px; }
 .lan-dot {
   width: 8px; height: 8px; border-radius: 50%; background: var(--emerald);
-  box-shadow: 0 0 0 3px rgba(16,185,129,0.18); flex: none;
+  box-shadow: 0 0 0 3px rgba(139,107,214,0.18); flex: none;
 }
 .lan-addrs { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 0; }
 .lan-addr {
@@ -639,9 +645,9 @@ code.hl {
   color: var(--text-3); background: rgba(255,255,255,0.05); border: 1px solid var(--border);
   white-space: nowrap;
 }
-.lan-kind.lan { color: #34d399; background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.3); }
+.lan-kind.lan { color: var(--primary); background: rgba(139,107,214,0.1); border-color: rgba(139,107,214,0.3); }
 .lan-kind.tailscale { color: #a5b4fc; background: rgba(129,140,248,0.12); border-color: rgba(129,140,248,0.35); }
-.lan-pick { font-size: 10.5px; font-weight: 600; color: #34d399; flex: none; cursor: help; }
+.lan-pick { font-size: 10.5px; font-weight: 600; color: var(--primary); flex: none; cursor: help; }
 .lan-hint { font-size: 11.5px; color: var(--text-3); line-height: 1.6; }
 .lan-form { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 .lan-form-title { font-size: 12.5px; color: var(--text-2); }

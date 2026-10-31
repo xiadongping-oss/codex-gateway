@@ -17,6 +17,8 @@ mod resources;
 #[cfg(debug_assertions)]
 mod soak_check;
 mod supervisor;
+#[cfg(debug_assertions)]
+mod workspace_check;
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -72,6 +74,47 @@ fn desktop_notice(
     local(&window)?;
     Ok(state.notice.lock().unwrap().clone())
 }
+
+#[tauri::command]
+fn workspace_state(
+    window: WebviewWindow,
+    state: tauri::State<desktop::Desktop>,
+    app: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    local(&window)?;
+    Ok(
+        serde_json::json!({ "page": state.page.lock().unwrap().clone(), "autostart": autostart::enabled(&app).ok(), "notice": state.notice.lock().unwrap().clone() }),
+    )
+}
+
+#[tauri::command]
+fn workspace_navigate(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<Controller>,
+    page: String,
+) -> Result<(), String> {
+    local(&window)?;
+    if desktop::local_page(&page) {
+        if desktop::open_local(&app, &page) {
+            Ok(())
+        } else {
+            Err("暂时无法打开此页面，请重试".into())
+        }
+    } else {
+        state.navigate(&page)
+    }
+}
+
+#[tauri::command]
+fn workspace_autostart(
+    window: WebviewWindow,
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    local(&window)?;
+    desktop::set_autostart(&app, enabled)
+}
 #[tauri::command]
 async fn migration_request(
     window: WebviewWindow,
@@ -124,6 +167,7 @@ fn main() {
             duplicates: std::sync::atomic::AtomicUsize::new(0),
             isolated,
             notice: std::sync::Mutex::new(String::new()),
+            page: std::sync::Mutex::new("overview".into()),
         })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // Only restore the existing instance; never execute forwarded args or URLs.
@@ -150,6 +194,9 @@ fn main() {
             gateway_action,
             ui_rendered,
             desktop_notice,
+            workspace_state,
+            workspace_navigate,
+            workspace_autostart,
             migration_request
         ])
         .setup(|app| {
@@ -162,10 +209,10 @@ fn main() {
                     .title(if cfg!(debug_assertions) && settings.isolated {
                         "Codex Gateway · 隔离测试（非真实账号环境）"
                     } else {
-                        "Codex Gateway"
+                        "Codex Gateway · 工作台"
                     })
-                    .inner_size(1040., 720.)
-                    .min_inner_size(680., 580.)
+                    .inner_size(1200., 820.)
+                    .min_inner_size(760., 600.)
                     .visible(
                         !app.state::<desktop::Desktop>()
                             .background

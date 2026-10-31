@@ -1,5 +1,6 @@
 (() => {
   if (window.top !== window || location.origin !== /*__CGW_ORIGIN__*/null) return;
+  Object.defineProperty(window, '__CGW_DESKTOP__', { value: true });
   const state = { authenticated: false, mounted: false, cleanUrl: false, lost: false };
   Object.defineProperty(window, '__cgwDesktopSession', { value: state });
   async function check() {
