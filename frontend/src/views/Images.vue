@@ -75,12 +75,20 @@ async function copyImg(img) {
   try {
     await api.copyImageToClipboardImg(active.value, img.name)
     copiedName.value = img.name
+    if (/\.gif$/i.test(img.name)) flashTip('GIF 首帧已复制；保留动画请下载原文件。')
+    else if (/\.svg$/i.test(img.name)) flashTip('SVG 已复制为 PNG 图片；保留矢量格式请下载原文件。')
     setTimeout(() => { if (copiedName.value === img.name) copiedName.value = '' }, 1800)
   } catch (e) {
     tip.value = '复制失败：' + (e?.message || '剪贴板不可用')
   } finally {
     busyCopy.value = ''
   }
+}
+
+function copyLabel(img) {
+  if (/\.gif$/i.test(img.name)) return '复制首帧'
+  if (/\.svg$/i.test(img.name)) return '复制为图片'
+  return '复制图片'
 }
 
 async function copyLink(url) {
@@ -443,8 +451,8 @@ const emptyText = computed(() => {
           <div class="sel-dot" v-if="manageMode && isBatchable" :class="{ on: selected.has(img.name) }">✓</div>
           <div class="overlay" v-if="!manageMode">
             <template v-if="!img.remote">
-              <button class="act primary" :class="{ done: copiedName === img.name }" @click="copyImg(img)" :disabled="busyCopy === img.name">
-                {{ busyCopy === img.name ? '复制中…' : copiedName === img.name ? '✓ 已复制' : '复制图片' }}
+              <button class="act primary" :class="{ done: copiedName === img.name }" @click="copyImg(img)" :disabled="busyCopy === img.name" title="复制为静态图片；保留原始格式和元数据请下载原文件">
+                {{ busyCopy === img.name ? '复制中…' : copiedName === img.name ? '✓ 已复制' : copyLabel(img) }}
               </button>
               <a class="act" :href="thumbUrl(img)" :download="img.name" @click.stop>下载</a>
               <button
@@ -578,8 +586,8 @@ const emptyText = computed(() => {
           </div>
           <div class="lb-actions">
             <template v-if="!viewerImg.remote">
-              <button class="act primary" :class="{ done: copiedName === viewerImg.name }" @click="copyImg(viewerImg)" :disabled="busyCopy === viewerImg.name">
-                {{ busyCopy === viewerImg.name ? '复制中…' : copiedName === viewerImg.name ? '✓ 已复制' : '复制图片' }}
+              <button class="act primary" :class="{ done: copiedName === viewerImg.name }" @click="copyImg(viewerImg)" :disabled="busyCopy === viewerImg.name" title="复制为静态图片；保留原始格式和元数据请下载原文件">
+                {{ busyCopy === viewerImg.name ? '复制中…' : copiedName === viewerImg.name ? '✓ 已复制' : copyLabel(viewerImg) }}
               </button>
               <a class="act" :href="thumbUrl(viewerImg)" :download="viewerImg.name">下载</a>
               <button

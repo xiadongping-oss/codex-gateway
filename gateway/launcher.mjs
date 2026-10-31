@@ -29,6 +29,7 @@
 //   DISABLE_AUTOSTART=1  不自动启动 bridge
 
 import { gatewayWork } from './work-tracker.mjs'
+import { imageSizeInfo } from './image-size.mjs'
 import { createShutdownManager } from './shutdown-manager.mjs'
 import { storagePaths, storageLease } from './storage-bootstrap.mjs'
 import { bridgeStorageEnv } from './storage-paths.mjs'
@@ -1379,8 +1380,9 @@ function checkReferencePathsIn(bodyBuf) {
 function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
   const t0 = Date.now()
   let model = null
+  let requestedSize = 'auto'
   let body = bodyBuf
-  // 网关最高质量策略：调用方缺省时注入 quality=high + size=auto（按内容选比例，上游给到该比例的原生最大分辨率）
+  // 调用方缺省时注入 quality=high + size=auto；实际像素尺寸以返回文件为准。
   try {
     const j = JSON.parse(bodyBuf.toString('utf8'))
     if (j && typeof j === 'object') {
@@ -1388,6 +1390,7 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
       let injected = false
       if (!j.quality) { j.quality = 'high'; injected = true }
       if (!j.size) { j.size = 'auto'; injected = true }
+      requestedSize = j.size
       if (injected) {
         body = Buffer.from(JSON.stringify(j), 'utf8')
         pushLog('🖼 生图参数补全：quality=high size=auto（最高质量策略）')
@@ -1442,16 +1445,19 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
         const j = JSON.parse(buf)
         const b64 = j?.data?.[0]?.b64_json
         if (j?.data?.[0] && typeof b64 === 'string' && b64.length > 0) {
+          j.data[0].cgw_image_size = imageSizeInfo(b64, requestedSize)
+          if (j.data[0].cgw_image_size.matchesRequested === false) pushLog('🖼 ' + j.data[0].cgw_image_size.message)
           const name = saveGenImageB64(b64, owner || (keyId ? { keyId } : null))
           if (name) {
             // url 跟随请求的 Host：本机调用=127.0.0.1:4173（行为不变）；
             // 局域网调用=http://<局域网IP>:4173/...，客户端浏览器可直接打开取图
             const hostHeader = req.headers.host || `127.0.0.1:${LAUNCHER_PORT}`
             j.data[0].url = `http://${hostHeader}/__gw/gen-images/${name}`
+            if (keyId) j.data[0].download_url = `http://${hostHeader}/v1/gen-images/${name}`
             j.data[0].local_path = path.join(genImagesDir(), name)
             pushLog('🖼 生成图片已落盘：' + name)
-            buf = JSON.stringify(j)
           }
+          buf = JSON.stringify(j)
         }
       } catch {}
       // 回写真实渲染模型：bridge 忽略请求体的 model 字段，一律用 IMAGE_MODEL 渲染。
@@ -1975,13 +1981,13 @@ const MCP_HTTP_TOOLS = [
     name: 'generate_image',
     description:
       '用 Codex 网关生成图片（OpenAI 图像模型，gpt-image 系）。' +
-      '适用于用户要求「画/生成/绘制图片」的任务。返回图片的 http url（浏览器可直接打开）与网关主机侧路径 local_path：' +
-      '局域网客户端请用 url（或下载后用 Read 做视觉理解）；在网关主机本机可用 Read 直接查看 local_path。',
+      '适用于用户要求「画/生成/绘制图片」的任务。返回图片的 http 下载链接（携带当前 API Key 的 Bearer 请求头）与网关主机侧路径 local_path：' +
+      '局域网客户端请携带 Key 下载，或在素材站输入 Key 查看；在网关主机本机可用 Read 直接查看 local_path。',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: '图像描述（建议具体：主体/风格/构图/色调）' },
-        size: { type: 'string', enum: ['1024x1024', '1024x1536', '1536x1024', 'auto'], description: '尺寸，缺省 auto（按内容选比例，上游给原生最大分辨率；该通道实测上限 1536，4K 会被上游降级）' },
+        size: { type: 'string', enum: ['1024x1024', '1024x1536', '1536x1024', 'auto'], description: '请求尺寸，缺省 auto（由上游选择）。实际像素尺寸可能与请求不同，以返回原图及结果说明为准；网关不会自动缩放。' },
         quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], description: '质量，缺省 high（网关最高质量策略）' },
         reference_paths: {
           type: 'array', items: { type: 'string' },
@@ -1993,7 +1999,7 @@ const MCP_HTTP_TOOLS = [
   },
   {
     name: 'list_generated_images',
-    description: '列出你在网关生成图库中的图片（新→旧，仅你自己用当前 Key 生成的；宿主机控制台可见全部），附可直接打开的链接与网页版素材站入口。远程客户端可用（由网关主机代读）。',
+    description: '列出你在网关生成图库中的图片（新→旧，仅你自己用当前 Key 生成的；宿主机控制台可见全部），附携带当前 Key 下载的链接与网页版素材站入口。远程客户端可用（由网关主机代读）。',
     inputSchema: { type: 'object', properties: { limit: { type: 'number', description: '返回条数，默认 20' } } }
   },
   {
@@ -2028,7 +2034,7 @@ function mcpSse(res, obj, headers = {}) {
 }
 
 // 生图：内部走 /v1/images/generations，完整复用鉴权 / 按 key 账号热切 / b64 落盘 / 调用日志。
-// 唯一补充：把响应里的 127.0.0.1 链接改写成调用方 Host，局域网客户端拿到可直接打开的地址。
+// 唯一补充：把响应里的 127.0.0.1 链接改写成调用方 Host，局域网客户端拿到可携带当前 Key 下载的地址。
 async function mcpGenerateImage(args, req) {
   const prompt = String(args?.prompt || '').trim()
   if (!prompt) return { ok: false, error: 'prompt 不能为空' }
@@ -2056,14 +2062,17 @@ async function mcpGenerateImage(args, req) {
     return { ok: false, error: '生图失败：' + detail }
   }
   const item = j.data[0]
+  if (item.download_url) item.url = item.download_url
   const hostHeader = req.headers.host || `127.0.0.1:${LAUNCHER_PORT}`
   if (item.url) item.url = String(item.url).replace(/^http:\/\/127\.0\.0\.1(:\d+)?/, 'http://' + hostHeader)
   const loopback = isLoopbackReq(req)
   const lines = [
     '✓ 图片已生成',
+    item.cgw_image_size?.message || '实际尺寸请以下载的原图为准。',
+    item.url ? `下载：${item.url}（${item.download_url ? '请求需携带当前 API Key 的 Bearer 请求头；也可在素材站输入 Key 查看' : '访问权限取决于网关配置，本机可在控制台查看'}）` : null,
     loopback
       ? (item.local_path ? `文件：${item.local_path}（用 Read 工具查看可做视觉理解）` : null)
-      : (item.url ? `链接：${item.url}（浏览器打开查看/下载，或下载后用 Read 做视觉理解）` : null),
+      : (item.url ? `链接：${item.url}（按上述权限说明下载后可做视觉理解）` : null),
     !loopback && item.local_path ? `主机路径：${item.local_path}（仅网关主机可读）` : null,
     !loopback && Array.isArray(args?.reference_paths) && args.reference_paths.length
       ? '⚠️ 参考图按「网关主机」磁盘路径解析：你传的客户端本机路径主机读不到，参考图效果可能未生效。' : null,
@@ -2095,11 +2104,11 @@ function mcpListImages(args, req, caller) {
     const kb = i.size >= 1024 * 1024 ? (i.size / 1024 / 1024).toFixed(1) + ' MB' : Math.max(1, Math.round(i.size / 1024)) + ' KB'
     const d = new Date(i.mtime)
     const p2 = (x) => String(x).padStart(2, '0')
-    return `${i.name}  ${kb}  ${d.getMonth() + 1}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}  http://${hostHeader}/__gw/gen-images/${i.name}`
+    return `${i.name}  ${kb}  ${d.getMonth() + 1}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}  http://${hostHeader}/${caller?.keyId ? 'v1' : '__gw'}/gen-images/${i.name}`
   })
   return {
     ok: true,
-    text: `你的生成图库共 ${all.length} 张（前 ${rows.length}，链接局域网内可直接打开；可用 delete_generated_image 删除自己的图）：\n` + rows.join('\n') +
+    text: `你的生成图库共 ${all.length} 张（前 ${rows.length}；下载链接需携带当前 API Key 的 Bearer 请求头，无 Key 的本机调用使用控制台会话；可用 delete_generated_image 删除自己的图）：\n` + rows.join('\n') +
       `\n网页素材站：http://${hostHeader}/gallery（侧边浏览器打开，输入你的 cgw- Key 管理全部图片）`
   }
 }
@@ -3136,9 +3145,22 @@ async function handleHttpRequest(req, res) {
       const images = all.slice(0, limit).map((i) => ({
         ...i,
         url: `http://${hostHeader}/__gw/gen-images/${i.name}`,
+        download_url: `http://${hostHeader}/v1/gen-images/${i.name}`,
         local_path: path.join(genImagesDir(), i.name)
       }))
       return sendJson(res, 200, { ok: true, total: all.length, images, gallery: `http://${hostHeader}/gallery` })
+    }
+    if (p.startsWith('/v1/gen-images/') && req.method === 'GET') {
+      if (!authKeyId) return sendJson(res, 401, { error: 'api_key_required' })
+      const name = safeDecodeName(p.slice('/v1/gen-images/'.length))
+      if (!name || !GEN_IMAGE_RE.test(name)) return sendJson(res, 400, { error: 'bad_name' })
+      // Authorize before reading bytes. Unknown and other users' images look identical.
+      if (!scopedGenImages(authKeyId).some(image => image.name === name)) return sendJson(res, 404, { error: 'not_found' })
+      try {
+        const bytes = fs.readFileSync(path.join(genImagesDir(), name))
+        res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': bytes.length, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' })
+        return res.end(bytes)
+      } catch { return sendJson(res, 404, { error: 'not_found' }) }
     }
     if (p.startsWith('/v1/gen-images/') && req.method === 'DELETE') {
       const name = safeDecodeName(p.slice('/v1/gen-images/'.length))

@@ -12,7 +12,7 @@ export const GATEWAY_FILES = Object.freeze([
   'account-quota.mjs', 'admin-auth.mjs', 'api-providers.mjs', 'apikeys.mjs', 'assets.mjs', 'atomic-write.mjs',
   'auth-core.mjs', 'bridge-patches.mjs', 'bridge-pool.mjs', 'call-logs.mjs', 'chat-tools.mjs', 'codex-official-login.mjs',
   'data-root.mjs', 'desktop-entry.mjs', 'desktop-protocol.mjs', 'desktop-ticket.mjs', 'failover.mjs', 'gallery.html',
-  'lan-addr.mjs', 'launcher.mjs', 'mcp-server.mjs', 'model-catalog.mjs', 'package.json', 'port-util.mjs',
+  'image-size.mjs', 'lan-addr.mjs', 'launcher.mjs', 'mcp-server.mjs', 'model-catalog.mjs', 'package.json', 'port-util.mjs',
   'proxy-preload.mjs', 'proxy.mjs', 'ref-roots.mjs', 'secret-perms.mjs', 'setup.html', 'shutdown-manager.mjs',
   'storage-bootstrap.mjs', 'storage-init.mjs', 'storage-paths.mjs', 'work-tracker.mjs'
 ])

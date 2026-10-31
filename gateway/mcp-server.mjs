@@ -49,12 +49,12 @@ const TOOLS = [
     description:
       '用本地 Codex 网关生成图片（OpenAI 图像模型，gpt-image 系）。' +
       '适用于用户要求「画/生成/绘制图片」的任务。返回图片的 http url 与网关主机侧路径 local_path：' +
-      '本机模式下可用 Read 工具查看 local_path 做视觉理解；局域网模式下请用 url（浏览器打开/curl 下载），local_path 在网关主机上不可读。',
+      '本机模式下可用 Read 工具查看 local_path 做视觉理解；局域网模式下请携带 Key 下载，或在素材站输入 Key 查看，local_path 在网关主机上不可读。',
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: '图像描述（建议具体：主体/风格/构图/色调）' },
-        size: { type: 'string', enum: ['1024x1024', '1024x1536', '1536x1024', 'auto'], description: '尺寸，缺省 auto（按内容选比例，上游给原生最大分辨率；该通道实测上限 1536，4K 会被上游降级）' },
+        size: { type: 'string', enum: ['1024x1024', '1024x1536', '1536x1024', 'auto'], description: '请求尺寸，缺省 auto（由上游选择）。实际像素尺寸可能与请求不同，以返回原图及结果说明为准；网关不会自动缩放。' },
         quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], description: '质量，缺省 high（网关最高质量策略）' },
         reference_paths: {
           type: 'array', items: { type: 'string' },
@@ -101,11 +101,14 @@ async function generateImage(args) {
     return { ok: false, error: '生图失败：' + detail }
   }
   const item = j.data[0]
+  if (item.download_url) item.url = item.download_url
   const lines = [
     '✓ 图片已生成',
+    item.cgw_image_size?.message || '实际尺寸请以下载的原图为准。',
+    item.url ? `下载：${item.url}（${item.download_url ? '请求需携带当前 API Key 的 Bearer 请求头；也可在素材站输入 Key 查看' : '访问权限取决于网关配置，本机可在控制台查看'}）` : null,
     IS_LOCAL
       ? (item.local_path ? `文件：${item.local_path}（用 Read 工具查看可做视觉理解）` : null)
-      : (item.url ? `链接：${item.url}（浏览器打开查看/下载，或 curl -o 保存后用 Read 查看做视觉理解）` : null),
+      : (item.url ? `链接：${item.url}（按上述权限说明下载后可做视觉理解）` : null),
     !IS_LOCAL && item.local_path ? `主机路径：${item.local_path}（仅网关主机可读）` : null,
     !IS_LOCAL && Array.isArray(args?.reference_paths) && args.reference_paths.length
       ? '⚠️ 参考图按「网关主机」磁盘路径解析：你传的客户端本机路径主机读不到，参考图效果可能未生效。' : null,
@@ -176,7 +179,7 @@ async function dispatch(id, method, params, res) {
 
 function main() {
   const rl = readline.createInterface({ input: process.stdin, terminal: false })
-  const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\n')
+  const send = (obj) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...obj }) + '\n')
   rl.on('line', (line) => {
     const s = line.trim()
     if (!s) return

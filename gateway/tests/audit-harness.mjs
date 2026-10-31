@@ -103,5 +103,5 @@ export async function createAuditHarness() {
     for (const child of children) await stop(child)
     fs.rmSync(root, { recursive: true, force: true }) // own mkdtemp root only
   }
-  return { sandbox, reset, start, stop, audit, close }
+  return { sandbox, base, env, generated, reset, start, stop, audit, close }
 }

@@ -126,3 +126,9 @@ JS 侧的判定统一在 **`lib/health.mjs`**（`isReady` 用于启动探测，`
 ## 沙盒与真实环境的边界
 
 沙盒在 `gateway/tests/sandbox/`（已 gitignore），拥有独立的数据目录、端口和 HOME。变异测试只改沙盒副本，**绝不触碰 `gateway/` 下的真实源码**。`audit-report.html` 含漏洞细节，同样不入库（仓库为 public）。
+
+生图尺寸回归：`npm run test:image-size` 使用本地固定 PNG、真实网关与 bridge 生图引擎，检查参数透传、原图字节、HTTP/两种 stdio MCP 尺寸提示、未知/损坏 PNG 头。无真实账号或外部请求；也已纳入桌面统一验证入口。
+
+MCP 图库回归：`npm run test:mcp-gallery` 用空账号 managed 桌面进程、两枚临时 Key 和固定图片检查 HTTP MCP 协议、列表/下载/删除隔离、宿主机 stdio 数据目录及正常退出重开。设置 `CGW_MCP_TEST_RESOURCES` 为已准备资源的绝对路径，可用该资源内的 Node/网关重跑；不使用真实账号或外部服务。
+
+MCP 客户端兼容：`npm run test:mcp-client` 使用已随依赖锁定的官方 `@modelcontextprotocol/sdk` 客户端，验证 HTTP、managed stdio 与 lan-kit stdio 的握手、工具发现、调用及错误回复。可同样设置 `CGW_MCP_TEST_RESOURCES` 以验证准备资源内的两份服务；仅使用固定图片与空账号。

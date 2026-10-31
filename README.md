@@ -94,9 +94,11 @@ flowchart LR
     C --> E["素材站 /gallery<br/>预览 · 复制 · 下载 · 删除"]
 ```
 
-- **API 方式**：`POST /v1/images/generations`（标准 images 协议），`size` / `quality` 参数正常生效；未指定时自动使用最高质量档。
-- **MCP 方式**：网关提供 `generate_image` / `list_generated_images` / `delete_generated_image` 三个 MCP 工具，本机（stdio）与局域网（HTTP）两种接入方式可并存，列表/删除按调用 Key 隔离。
+- **API 方式**：`POST /v1/images/generations`（标准 images 协议），`size` / `quality` 原样传给上游，未指定时使用 `size=auto`、`quality=high`。实际尺寸可能与请求不同；bridge 模式响应的 `data[0].cgw_image_size` 提供请求尺寸、从 PNG 文件头读取的实际尺寸和是否匹配，MCP 结果同步提示。无法识别时明确标为未知；网关保留原图，不自动缩放。
+- **MCP 方式**：HTTP MCP 提供 `generate_image` / `list_generated_images` / `delete_generated_image` 三个工具，列表、鉴权下载和删除按调用 Key 隔离。本机 stdio 提供生图与图库列表，列表读取宿主机完整图库；两种接入方式可并存。
 - 生成结果自动落盘并进入素材站，响应附带可直接打开的 `url` 与本机 `local_path`。
+
+带 Key 生图及图库列表会额外返回 `download_url`：请求此地址时携带同一个 `Authorization: Bearer <API Key>`，无需管理控制台会话。MCP 使用该下载地址；浏览器用户可在 `/gallery` 输入 Key 预览和下载。原有 `url` 字段保留兼容，访问规则不变。
 
 > 说明：图片能力由对话模型 + 内置图像工具渲染，`gpt-image-2.5-*` 仅为客户端填写的入口名称；响应中的 `model` 字段会回写真实渲染模型。
 

@@ -101,6 +101,7 @@
   var KEY_STORE = 'cgw_gallery_key'
   var $ = function (id) { return document.getElementById(id) }
   var key = localStorage.getItem(KEY_STORE) || ''
+  var generation = 0, imageUrls = [], observer = null, requests = new AbortController()
   $('hostInfo').textContent = location.host
 
   function toast(msg) {
@@ -124,51 +125,84 @@
     return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes())
   }
   function authHeaders() { return { 'Authorization': 'Bearer ' + key } }
+  function resetImages() {
+    generation++
+    requests.abort(); requests = new AbortController()
+    if (observer) { observer.disconnect(); observer = null }
+    $('viewer').close(); $('viewerImg').removeAttribute('src'); $('viewerImg')._url = ''
+    imageUrls.forEach(function (url) { URL.revokeObjectURL(url) }); imageUrls = []
+    $('grid').innerHTML = ''
+  }
 
   function showGate(err) {
+    resetImages()
     $('gate').hidden = false; $('app').hidden = true
     $('gateErr').textContent = err || ''
-    if (key) $('keyInput').value = key
+    $('userChip').hidden = true
+    $('keyInput').value = key || ''
     setTimeout(function () { $('keyInput').focus() }, 50)
   }
   function showApp() { $('gate').hidden = true; $('app').hidden = false }
 
   function load() {
     if (!key) return showGate()
-    fetchMe()
-    fetch('/v1/gen-images/list?limit=200', { headers: authHeaders() })
+    resetImages()
+    var current = generation
+    fetchMe(current)
+    fetch('/v1/gen-images/list?limit=200', { headers: authHeaders(), signal: requests.signal })
       .then(function (r) {
+        if (current !== generation) return null
         if (r.status === 401) { localStorage.removeItem(KEY_STORE); key = ''; throw new Error('Key 无效或已被禁用，请重新输入') }
         if (!r.ok) throw new Error('HTTP ' + r.status)
         return r.json()
       })
-      .then(render)
-      .catch(function (e) { showGate(e.message) })
+      .then(function (data) { if (data && current === generation) render(data, current) })
+      .catch(function (e) { if (current === generation) showGate(e.message) })
   }
 
-  function fetchMe() {
-    fetch('/v1/gen-images/me', { headers: authHeaders() })
+  function fetchMe(current) {
+    fetch('/v1/gen-images/me', { headers: authHeaders(), signal: requests.signal })
       .then(function (r) { return r.ok ? r.json() : null })
       .then(function (me) {
+        if (current !== generation) return
         var chip = $('userChip')
         if (!me || !me.ok) { chip.hidden = true; return }
         var kb = me.bytes >= 1048576 ? (me.bytes / 1048576).toFixed(1) + ' MB' : Math.max(0, Math.round(me.bytes / 1024)) + ' KB'
         chip.textContent = '👤 ' + (me.keyName || '未命名') + ' · ' + me.images + ' 张 · ' + kb
         chip.hidden = false
       })
-      .catch(function () { $('userChip').hidden = true })
+      .catch(function () { if (current === generation) $('userChip').hidden = true })
   }
 
-  function render(data) {
+  function render(data, current) {
     showApp()
     var imgs = data.images || []
     $('count').textContent = '共 ' + (data.total != null ? data.total : imgs.length) + ' 张'
     var grid = $('grid'); grid.innerHTML = ''
     $('empty').hidden = imgs.length > 0
+    if (window.IntersectionObserver) observer = new IntersectionObserver(function (entries, activeObserver) {
+      if (current !== generation) return
+      entries.forEach(function (entry) { if (entry.isIntersecting) { activeObserver.unobserve(entry.target); entry.target._load() } })
+    }, { rootMargin: '200px' })
     imgs.forEach(function (it) {
       var card = document.createElement('div'); card.className = 'card'
       var thumb = document.createElement('div'); thumb.className = 'thumb'
-      var img = document.createElement('img'); img.loading = 'lazy'; img.src = it.url; img.alt = it.name
+      var img = document.createElement('img'); img.loading = 'lazy'; img.alt = it.name
+      var imagePromise = null
+      function loadImage() {
+        if (imagePromise) return imagePromise
+        var url = new URL(it.download_url || it.url, location.href)
+        if (url.origin !== location.origin) return Promise.reject(new Error('图片下载地址与素材站不一致'))
+        imagePromise = fetch(url.href, { headers: authHeaders(), signal: requests.signal })
+          .then(function (r) { if (!r.ok) throw new Error('图片读取失败：HTTP ' + r.status); return r.blob() })
+          .then(function (blob) {
+            if (current !== generation) throw new Error('图片列表已刷新')
+            var localUrl = URL.createObjectURL(blob); imageUrls.push(localUrl); img.src = localUrl; return localUrl
+          })
+          .catch(function (e) { imagePromise = null; throw e })
+        return imagePromise
+      }
+      thumb._load = function () { loadImage().catch(function (e) { if (current === generation) img.alt = e.message }) }
       thumb.appendChild(img)
       var meta = document.createElement('div'); meta.className = 'meta'
       meta.innerHTML = '<div class="name"></div><div class="info"></div>'
@@ -183,8 +217,11 @@
         copyText(it.url).then(function () { toast('链接已复制，局域网内可直接打开') }, function () { toast('复制失败，请手动选择地址栏') })
       }))
       acts.appendChild(mkBtn('下载', function () {
-        var a = document.createElement('a'); a.href = it.url; a.download = it.name
-        document.body.appendChild(a); a.click(); document.body.removeChild(a)
+        loadImage().then(function (url) {
+          if (current !== generation) return
+          var a = document.createElement('a'); a.href = url; a.download = it.name
+          document.body.appendChild(a); a.click(); document.body.removeChild(a)
+        }).catch(function (e) { if (current === generation) toast('下载失败：' + e.message) })
       }))
       acts.appendChild(mkBtn('删除', function () {
         if (!confirm('确定删除 ' + it.name + ' ？删除后不可恢复。')) return
@@ -197,10 +234,14 @@
           .catch(function () { toast('删除失败：网络错误') })
       }, 'danger'))
       thumb.addEventListener('click', function () {
-        $('viewerImg').src = it.url; $('viewerImg')._url = it.url; $('viewer').showModal()
+        loadImage().then(function (url) {
+          if (current !== generation) return
+          $('viewerImg').src = url; $('viewerImg')._url = it.url; $('viewer').showModal()
+        }).catch(function (e) { if (current === generation) toast(e.message) })
       })
       card.appendChild(thumb); card.appendChild(meta); card.appendChild(acts)
       grid.appendChild(card)
+      if (observer) observer.observe(thumb); else thumb._load()
     })
   }
 

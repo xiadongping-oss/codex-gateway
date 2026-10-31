@@ -28,8 +28,9 @@ try {
   // Frontend dependencies are installed explicitly by the developer/CI; the
   // gateway's versioned dependency tree is read as-is, never npm-installed here.
   await run.step('frontend', process.execPath, [path.join(root, 'frontend/node_modules/vite/bin/vite.js'), 'build'], { cwd: path.join(root, 'frontend') })
+  await run.step('frontend-tests', process.execPath, ['--test', 'frontend/tests/image-clipboard.test.mjs'], { cwd: root })
   await run.step('validation-tests', process.execPath, ['--test', 'desktop/validation.test.mjs'], { cwd: root })
-  await run.step('gateway-core', process.execPath, ['--test', '--test-timeout=60000', 'gateway/tests/storage.test.mjs', 'gateway/tests/storage-integration.test.mjs', 'gateway/tests/desktop.test.mjs', 'gateway/tests/desktop-integration.test.mjs'], { cwd: root })
+  await run.step('gateway-core', process.execPath, ['--test', '--test-timeout=60000', 'gateway/tests/storage.test.mjs', 'gateway/tests/storage-integration.test.mjs', 'gateway/tests/desktop.test.mjs', 'gateway/tests/desktop-integration.test.mjs', 'gateway/tests/image-size.test.mjs', 'gateway/tests/mcp-gallery.test.mjs', 'gateway/tests/mcp-client.test.mjs'], { cwd: root })
   await run.step('rust-tests', process.execPath, ['desktop/build.mjs', '--test', '--locked', ...offline], { cwd: root, timeout: 25 * 60_000, env: { ...process.env, ...(process.platform === 'darwin' ? { MACOSX_DEPLOYMENT_TARGET: '13.0' } : {}) } })
   if (process.platform === 'darwin') { run.report.acceptance.macLockRecovery = 'core_scenarios_passed'; run.save() }
   const build = JSON.parse(fs.readFileSync(path.join(root, 'desktop/.generated/last-build.json')))
@@ -41,6 +42,9 @@ try {
   await run.step('rust-lint', 'cargo', ['clippy', ...common, '--all-targets', '--', '-D', 'warnings'], { cwd: root, env })
   await run.step('rust-build', 'cargo', ['build', ...common], { cwd: root, env })
   await run.step('bundled-gateway', process.execPath, ['gateway/tests/prepared-resources-smoke.mjs', `--resources=${env.CGW_BUILD_RESOURCES}`], { cwd: root, env })
+  await run.step('bundled-mcp', path.join(env.CGW_BUILD_RESOURCES, manifest.node), ['--test', '--test-timeout=60000', 'gateway/tests/mcp-client.test.mjs', 'gateway/tests/mcp-gallery.test.mjs'], {
+    cwd: root, env: { ...env, CGW_MCP_TEST_RESOURCES: env.CGW_BUILD_RESOURCES }
+  })
   if (args.includes('--native')) {
     run.report.acceptance.nativeUi = 'running'
     run.report.acceptance.nativeScenarios = Object.fromEntries(Object.keys(NATIVE_SCENARIOS).map(scenario => [scenario, 'not_run']))

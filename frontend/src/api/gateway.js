@@ -37,6 +37,7 @@
 //   DELETE /__gw/apikeys                按 id 删除 API Key
 
 import { request, gwRequest, parseBase, BASE, timeoutSignal } from './client'
+import { copyImageUrl } from './image-clipboard'
 
 // 上传 / 导入要传整个文件的二进制，超时给得比控制面宽得多：
 // 大图 + 慢网时 30 秒不够，但没有上限又会让按钮永久转圈。
@@ -291,14 +292,8 @@ export async function deleteAssets(src, names, all = false) {
   return await gwRequest('/__gw/assets/files', 'DELETE', { src, names, all }).catch(() => null)
 }
 // 复制图片到系统剪贴板（blob → ClipboardItem；src 缺省 = 生成图库）
-export async function copyImageToClipboardImg(src, name) {
-  const res = await fetch(assetFileUrl(src, name))
-  if (!res.ok) throw new Error('HTTP ' + res.status)
-  const blob = await res.blob()
-  if (!navigator.clipboard || typeof window.ClipboardItem === 'undefined') {
-    throw new Error('当前浏览器不支持图片剪贴板写入')
-  }
-  await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })])
+export function copyImageToClipboardImg(src, name) {
+  return copyImageUrl(assetFileUrl(src, name))
 }
 
 // ---------- 授权：设备流 ----------
