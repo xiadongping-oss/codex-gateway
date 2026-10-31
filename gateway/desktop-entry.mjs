@@ -22,7 +22,8 @@ const messages = {
   INVALID_ARGUMENT: '启动参数无效', INTERNAL_ERROR: '网关无法完成操作',
   DATA_DIR_INVALID: '数据目录配置无效', DATA_DIR_UNWRITABLE: '数据目录不可写',
   DATA_IN_USE: '数据目录已有所有权记录', DATA_VERSION_UNSUPPORTED: '数据目录版本不兼容',
-  DATA_MIGRATION_REQUIRED: '旧数据目录需要显式迁移'
+  DATA_MIGRATION_REQUIRED: '旧数据目录需要显式迁移',
+  DATA_MIGRATION_PENDING: '数据迁移尚未完成，请先恢复或取消迁移'
 }
 const errorInfo = code => ({ code, message: messages[code] || '网关操作失败', retryable: false })
 // Windows process.stdout pipe writes are synchronous: a non-reading shell would

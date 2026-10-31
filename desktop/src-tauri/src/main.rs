@@ -8,6 +8,8 @@ mod desktop_check;
 mod diagnostics;
 #[cfg(target_os = "macos")]
 mod mac_recovery;
+mod migration;
+mod migration_check;
 mod process_tree;
 mod protocol;
 mod recovery;
@@ -67,6 +69,22 @@ fn desktop_notice(
 ) -> Result<String, String> {
     local(&window)?;
     Ok(state.notice.lock().unwrap().clone())
+}
+#[tauri::command]
+async fn migration_request(
+    window: WebviewWindow,
+    state: tauri::State<'_, Controller>,
+    request: migration::Request,
+) -> Result<serde_json::Value, String> {
+    local(&window)?;
+    let response = state.migration(request)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        response
+            .recv()
+            .map_err(|_| "MIGRATION_UNAVAILABLE".to_string())?
+    })
+    .await
+    .map_err(|_| "MIGRATION_UNAVAILABLE".to_string())?
 }
 fn main() {
     process_tree::guardian_entry();
@@ -129,7 +147,8 @@ fn main() {
             gateway_status,
             gateway_action,
             ui_rendered,
-            desktop_notice
+            desktop_notice,
+            migration_request
         ])
         .setup(|app| {
             let settings = Settings::resolve(app.handle())?;

@@ -18,6 +18,8 @@
     "test:image-size": "node --test --test-timeout=60000 gateway/tests/image-size.test.mjs",
     "test:bridge-patches": "node --test --test-timeout=15000 gateway/tests/bridge-patches.test.mjs",
     "test:storage": "node --test --test-timeout=60000 gateway/tests/storage.test.mjs gateway/tests/storage-integration.test.mjs",
+    "desktop:migrate": "node desktop/migrate.mjs",
+    "test:migration": "node --test --test-timeout=120000 desktop/migration.test.mjs",
     "login": "npx @openai/codex login",
     "test": "node gateway/tests/run-audit.mjs",
     "test:unit": "node --test --test-timeout=15000 gateway/tests/bridge-pool.test.mjs gateway/tests/bridge-patches.test.mjs gateway/tests/quota.test.mjs gateway/tests/failover.test.mjs gateway/tests/lan-addr.test.mjs gateway/tests/port.test.mjs gateway/tests/tool-call.test.mjs gateway/tests/hardening.test.mjs gateway/tests/vbs-static.test.mjs gateway/tests/token-text.test.mjs gateway/tests/official-login.test.mjs gateway/tests/api-providers.test.mjs",

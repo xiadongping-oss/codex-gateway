@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { TARGETS, sha256, executableTarget, selectRuntime, verifyRuntimeBytes } from '../../runtime-lock.mjs'
 import { readArchiveMembers } from '../../runtime-archive.mjs'
 import { prepareRuntime, verifyPreparedRuntime } from '../../prepare-runtime.mjs'
-import { GATEWAY_FILES, prepareDesktop, verifyDesktop } from '../../prepare-desktop.mjs'
+import { GATEWAY_FILES, DESKTOP_TOOLS, prepareDesktop, verifyDesktop } from '../../prepare-desktop.mjs'
 
 test('committed three-target lock agrees with the archived official checksums', () => {
   const root = fileURLToPath(new URL('../..', import.meta.url))
@@ -145,6 +145,7 @@ test('archive tar: wanted symlink and PAX path override rejected', () => {
 function resources(f) {
   const put = (name, bytes) => { const file = path.join(f.root, name); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, bytes) }
   for (const file of GATEWAY_FILES) put('gateway/' + file, file.endsWith('.json') ? '{}' : '// fixture\r\n')
+  for (const file of DESKTOP_TOOLS) put('desktop/' + file, '// fixture\r\n')
   put('package.json', '{"name":"codex-gateway","version":"1.0.0"}')
   put('frontend/dist/index.html', '<html>fixture</html>\r\n')
   put('docs/lan-kit/INSTALL.md', 'fixture\r\n')

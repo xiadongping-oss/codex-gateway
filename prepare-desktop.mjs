@@ -8,6 +8,7 @@ import { verifyBridgePatched } from './gateway/bridge-patches.mjs'
 import { TARGETS, sha256, runtimeError, readRuntimeLock, selectRuntime } from './runtime-lock.mjs'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
+export const DESKTOP_TOOLS = Object.freeze(['migration.mjs', 'migration-service.mjs'])
 export const GATEWAY_FILES = Object.freeze([
   'account-quota.mjs', 'admin-auth.mjs', 'api-providers.mjs', 'apikeys.mjs', 'assets.mjs', 'atomic-write.mjs',
   'auth-core.mjs', 'bridge-patches.mjs', 'bridge-pool.mjs', 'call-logs.mjs', 'chat-tools.mjs', 'codex-official-login.mjs',
@@ -77,6 +78,7 @@ export async function prepareDesktop({ target, outDir, root = ROOT, cacheDir = p
   try {
     const runtime = await prepareRuntime({ target, outDir: path.join(destination, 'runtime'), lockPath, cacheDir, artifactPath, offline })
     for (const file of GATEWAY_FILES) copyFile(path.join(root, 'gateway', file), path.join(destination, 'gateway', file))
+    for (const file of DESKTOP_TOOLS) copyFile(path.join(root, 'desktop', file), path.join(destination, 'desktop', file))
     copyTree(path.join(root, 'gateway/node_modules'), path.join(destination, 'gateway/node_modules'))
     const bridge = prepareBridge(path.join(destination, 'gateway'), path.join(root, 'gateway')).manifest
     copyTree(path.join(root, 'frontend/dist'), path.join(destination, 'frontend/dist'))

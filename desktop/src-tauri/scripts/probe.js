@@ -7,6 +7,8 @@
   s.historyClean = !location.href.includes('_cgw_bootstrap') && !document.referrer.includes('_cgw_bootstrap');
   try { await window.__TAURI__.core.invoke('gateway_status'); s.nativeDenied = false; }
   catch { s.nativeDenied = true; }
+  try { await window.__TAURI__.core.invoke('migration_request', { request: { operation: 'context' } }); s.nativeDenied = false; }
+  catch { /* Both native management entry points must remain inaccessible. */ }
   try { await window.__TAURI__.core.invoke('plugin:window|is_visible', { label: null }); s.coreDenied = false; }
   catch { s.coreDenied = true; }
   const before = location.origin;

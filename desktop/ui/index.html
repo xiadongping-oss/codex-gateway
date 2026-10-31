@@ -1,3 +1,51 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Gateway</title><link rel="stylesheet" href="style.css"></head>
-<body><div class="layout"><aside><div class="brand"><span class="mark">C</span><strong>Codex Gateway</strong></div><div class="nav active"><span>◉</span> 网关</div><div class="aside-bottom"><span class="dot"></span> 本机管理</div></aside><main><header><span class="eyebrow">工作空间</span><span class="version">桌面预览版</span></header><section class="intro"><h1>连接你的 AI 工作流</h1><p>管理本机网关，让应用与创作工具保持连接。</p></section><section class="card"><div class="card-top"><span class="gateway-icon">↗</span><span id="badge" class="badge">正在准备</span></div><h2 id="title">正在启动网关</h2><p id="message" aria-live="polite">正在准备本机服务，请稍候。</p><div class="details"><div><span>服务地址</span><strong id="address">等待连接</strong></div><div><span>当前任务</span><strong id="tasks">—</strong></div></div><div class="actions"><button id="reopen" hidden>打开控制台</button><button id="retry" hidden>重新启动</button><button id="continue" hidden>继续等待</button><button id="force" class="secondary" hidden>结束任务并退出</button><button id="restart" hidden>结束并重启</button><button id="logs" class="secondary">打开诊断日志</button><button id="quit" class="secondary">退出应用</button></div></section><p class="footnote">关闭窗口后仍在托盘运行 · 从托盘菜单可恢复窗口、设置自启动或退出</p><p id="desktop-notice" role="status"></p><p id="action-error" role="alert"></p></main></div><script src="app.js"></script></body></html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Gateway</title><link rel="stylesheet" href="style.css"></head>
+<body><div class="layout">
+  <aside><div class="brand"><span class="mark">C</span><strong>Codex Gateway</strong></div><div class="nav active"><span>◉</span> 网关</div><div class="aside-bottom"><span class="dot"></span> 本机管理</div></aside>
+  <main>
+    <header><span class="eyebrow">工作空间</span><span class="version">桌面预览版</span></header>
+    <section class="intro"><h1>连接你的 AI 工作流</h1><p>管理本机网关，让应用与创作工具保持连接。</p></section>
+    <section class="card">
+      <div class="card-top"><span class="gateway-icon">↗</span><span id="badge" class="badge">正在准备</span></div>
+      <h2 id="title">正在启动网关</h2><p id="message" aria-live="polite">正在准备本机服务，请稍候。</p>
+      <div class="details"><div><span>服务地址</span><strong id="address">等待连接</strong></div><div><span>当前任务</span><strong id="tasks">—</strong></div></div>
+      <div class="actions">
+        <button id="reopen" hidden>打开控制台</button><button id="retry" hidden>启动网关</button><button id="fresh-start" hidden>建立全新工作空间</button>
+        <button id="continue" hidden>继续等待</button><button id="force" class="secondary" hidden>结束任务并退出</button><button id="restart" hidden>结束并重启</button>
+        <button id="logs" class="secondary">打开诊断日志</button><button id="quit" class="secondary">退出应用</button>
+      </div>
+    </section>
+    <section id="migration-panel" class="card migration-card" aria-labelledby="migration-title" hidden>
+      <div class="card-top"><span class="eyebrow">数据迁移</span><span id="migration-step" class="badge">1 · 检查旧数据</span></div>
+      <h2 id="migration-title">延续你的工作空间</h2>
+      <p>保留原账号、配置和图片归属，先备份再迁移。仅适用于这台电脑上的同一用户。</p>
+      <div class="destination"><span>桌面版数据位置</span><code id="migration-target">正在读取…</code></div>
+      <form id="migration-form">
+        <label for="migration-kind">旧版数据类型</label>
+        <select id="migration-kind"><option value="data">安装版的独立数据目录</option><option value="gateway">便携版的 gateway 目录</option></select>
+        <label for="migration-source">旧数据目录</label><input id="migration-source" type="text" required spellcheck="false" autocomplete="off" placeholder="粘贴完整目录路径">
+        <label for="migration-gallery-choice">旧图库</label>
+        <select id="migration-gallery-choice" required><option value="">请选择图库处理方式</option><option value="import">复制图片和归属索引，保留原图库</option><option value="skip">本次不导入图片</option></select>
+        <div id="migration-gallery-field" hidden><label for="migration-gallery">图库目录</label><input id="migration-gallery" type="text" spellcheck="false" autocomplete="off" placeholder="旧版通常位于用户目录的 .chatgpt-bridge/gen-images"></div>
+        <details class="migration-advanced"><summary>外部文件位置</summary>
+          <p>只有原来的绝对路径仍正确时才保留。外部文件不会自动复制或纳入备份。</p>
+          <label class="check"><input id="migration-external" type="checkbox"><span>保留已配置的外部绝对路径</span></label>
+          <label for="migration-auth-map">重新指定凭据文件（可留空）</label><input id="migration-auth-map" type="text" spellcheck="false" placeholder="完整文件路径">
+          <label for="migration-reference-map">重新指定参考图目录（可留空）</label><input id="migration-reference-map" type="text" spellcheck="false" placeholder="完整目录路径">
+        </details>
+        <button id="migration-plan" type="submit" class="secondary">检查迁移内容</button>
+      </form>
+      <div id="migration-review" class="migration-review" hidden><h3>待迁移内容</h3><p id="migration-summary"></p><p id="migration-path-changes"></p><p>源数据变化后需要重新检查。账号凭据不会显示在这里。</p></div>
+      <div id="migration-recovery" class="migration-review" hidden><h3>上次迁移尚未完成</h3><p id="migration-recovery-summary">继续会核对上次的备份和候选数据；取消会保留备份并恢复旧目录。复制尚未完成时，请先取消再重新检查。</p></div>
+      <div id="migration-result" class="migration-review" role="status" hidden><h3 id="migration-result-title">迁移已完成</h3><p>备份保留在以下位置，请勿删除或分享其中的账号文件。</p><code id="migration-archive"></code><p>启动后若产生新数据，直接回退将被拒绝，以免覆盖新内容。</p></div>
+      <div id="migration-confirm" hidden><label class="check"><input id="migration-stopped" type="checkbox"><span>我已退出旧网关及其他写入这些数据或图库的程序</span></label></div>
+      <div class="actions">
+        <button id="migration-apply" hidden disabled>备份并迁移</button><button id="migration-resume" hidden disabled>继续上次迁移</button>
+        <button id="migration-abort" class="secondary" hidden disabled>取消并恢复旧数据</button><button id="migration-rollback" class="secondary" hidden disabled>回退本次迁移</button><button id="migration-start" hidden>启动网关</button>
+      </div>
+      <p id="migration-progress" role="status" aria-live="polite"></p><p id="migration-error" role="alert"></p>
+    </section>
+    <p class="footnote">关闭窗口后仍在托盘运行 · 从托盘菜单可恢复窗口、设置自启动或退出</p><p id="desktop-notice" role="status"></p><p id="action-error" role="alert"></p>
+  </main>
+</div><script src="migration-ui.js"></script><script src="app.js"></script></body></html>

@@ -25,6 +25,7 @@ pub struct Resources {
     pub root: PathBuf,
     pub node: PathBuf,
     pub entry: PathBuf,
+    pub migration: PathBuf,
     pub version: String,
 }
 pub fn target() -> &'static str {
@@ -58,6 +59,8 @@ impl Resources {
             || manifest.app_version != env!("CARGO_PKG_VERSION")
             || manifest.entry != "gateway/desktop-entry.mjs"
             || manifest.node != node
+            || !manifest.files.contains_key("desktop/migration-service.mjs")
+            || !manifest.files.contains_key("desktop/migration.mjs")
         {
             return Err("RESOURCES_INVALID".into());
         }
@@ -87,6 +90,7 @@ impl Resources {
         Ok(Self {
             node: root.join(node),
             entry: root.join(&manifest.entry),
+            migration: root.join("desktop/migration-service.mjs"),
             version: manifest.app_version,
             root,
         })

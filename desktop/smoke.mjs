@@ -15,11 +15,11 @@ const target = `${process.platform}-${process.arch}`
 const executable = path.join(desktop, 'src-tauri/target/debug', process.platform === 'win32' ? 'codex-gateway-desktop.exe' : 'codex-gateway-desktop')
 const resources = path.join(path.dirname(executable), 'gateway-resources')
 verifyDesktop({ target, outDir: resources })
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cgw-d01-window-'))
+const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cgw-d01-window-')))
 const data = path.join(root, '数据 & # % !')
 const interactive = process.argv.includes('--interactive'), conflict = process.argv.includes('--port-conflict')
 const scenario = process.argv.find(a => a.startsWith('--case='))?.slice(7) || 'normal'
-assert.ok(['normal', 'session-loss', 'unresponsive', 'channel-loss', 'desktop', 'tray-menu', 'node-crash', 'crash-loop', 'shell-crash'].includes(scenario), 'unknown smoke case')
+assert.ok(['normal', 'session-loss', 'unresponsive', 'channel-loss', 'desktop', 'tray-menu', 'node-crash', 'crash-loop', 'shell-crash', 'migration', 'migration-fresh'].includes(scenario), 'unknown smoke case')
 assert.ok(scenario !== 'tray-menu' || interactive, 'tray-menu requires --interactive')
 let foreignConnections = 0
 const server = net.createServer(socket => { foreignConnections++; socket.destroy() })
@@ -28,7 +28,14 @@ const port = server.address().port
 if (!conflict) await new Promise(resolve => server.close(resolve))
 else if (interactive) setTimeout(() => server.close(), 12_000).unref()
 const isolatedArgs = [`--data-dir=${data}`, `--resources=${resources}`, `--port=${port}`, '--isolated']
-let child = spawn(executable, [...isolatedArgs, ...(scenario === 'desktop' ? ['--from-autostart'] : []), ...(!interactive ? ['--smoke', `--smoke-case=${scenario}`] : scenario === 'tray-menu' ? ['--smoke-case=tray-menu'] : [])], { cwd: os.tmpdir(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+if (scenario === 'migration') {
+  fs.mkdirSync(path.join(root, 'legacy')); fs.mkdirSync(path.join(root, 'legacy-gallery'))
+  fs.writeFileSync(path.join(root, 'legacy/accounts.json'), '{"activeId":null,"accounts":[]}')
+  fs.writeFileSync(path.join(root, 'legacy/.gw-config.json'), '{"autoStart":false}')
+  fs.writeFileSync(path.join(root, 'legacy-gallery/index.json'), '{}')
+  fs.writeFileSync(path.join(root, 'legacy-gallery/kept.png'), 'fixture image bytes')
+}
+let child = spawn(executable, [...isolatedArgs, ...(scenario === 'desktop' ? ['--from-autostart'] : []), ...(!interactive ? ['--smoke', `--smoke-case=${scenario}`] : ['tray-menu', 'migration'].includes(scenario) ? [`--smoke-case=${scenario}`] : [])], { cwd: os.tmpdir(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
 child.stdout.on('data', () => {})
 let stderr = ''; child.stderr.on('data', b => { stderr = (stderr + b).slice(-3000) })
 let crashedNode = null
@@ -78,9 +85,16 @@ try {
     assert.equal(log.includes('recovery_scheduled'), false)
   }
   if (!interactive && !conflict) {
+    if (scenario.startsWith('migration')) assert.match(stderr, /R03_MIGRATION_UI true/, stderr)
     const report = JSON.parse(stderr.split('\n').findLast(line => line.startsWith('D02_CHECK '))?.slice(10) || '{}')
     for (const key of ['authenticated','mounted','cleanUrl','nativeDenied','coreDenied','cookieHidden','historyClean','navigationSafe']) assert.equal(report[key], true, `native console check: ${key}`)
     assert.ok(report.externalDispatches >= 2)
+    if (scenario === 'migration') {
+      assert.match(stderr, /R03_MIGRATION_UI true/)
+      assert.equal(fs.readFileSync(path.join(root, 'legacy/accounts.json'), 'utf8'), '{"activeId":null,"accounts":[]}')
+      assert.equal(fs.readFileSync(path.join(data, 'gen-images/kept.png'), 'utf8'), 'fixture image bytes')
+      assert.equal(fs.readFileSync(path.join(root, 'legacy-gallery/kept.png'), 'utf8'), 'fixture image bytes')
+    }
     if (scenario === 'session-loss') assert.match(stderr, /D02_SESSION_RETURN true/)
     if (scenario === 'unresponsive') assert.match(stderr, /D05_RESPONSE_RETURN true/)
     if (scenario === 'channel-loss') assert.match(stderr, /D02_CHANNEL_RETURN true/)

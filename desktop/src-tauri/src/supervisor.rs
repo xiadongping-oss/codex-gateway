@@ -90,9 +90,13 @@ impl Settings {
             "node-crash",
             "crash-loop",
             "shell-crash",
+            "migration",
+            "migration-fresh",
         ]
         .contains(&smoke_case.as_str())
-            || (smoke_case != "normal" && !smoke && !(smoke_case == "tray-menu" && isolated))
+            || (smoke_case != "normal"
+                && !smoke
+                && !(matches!(smoke_case.as_str(), "tray-menu" | "migration") && isolated))
         {
             return Err("Invalid smoke scenario".into());
         }
@@ -126,6 +130,7 @@ pub struct ViewState {
     pub active: u64,
     pub background: u64,
     pub waiting: bool,
+    pub code: String,
 }
 impl ViewState {
     fn new(phase: &str, title: &str, message: &str, badge: &str, port: u16) -> Self {
@@ -138,6 +143,7 @@ impl ViewState {
             active: 0,
             background: 0,
             waiting: false,
+            code: String::new(),
         }
     }
 }
@@ -149,6 +155,9 @@ fn failure(code: &str, port: u16) -> ViewState {
         }
         "DATA_MIGRATION_REQUIRED" => {
             "检测到旧版数据。请完成数据迁移后再启动桌面版，原有数据已保留。"
+        }
+        "DATA_MIGRATION_PENDING" => {
+            "数据迁移尚未完成。请先恢复或取消迁移，再启动桌面版；迁移备份已保留。"
         }
         "DATA_VERSION_UNSUPPORTED" => "数据版本不兼容，请使用匹配版本的应用。",
         "DATA_DIR_INVALID" | "DATA_DIR_UNWRITABLE" => {
@@ -167,19 +176,34 @@ fn failure(code: &str, port: u16) -> ViewState {
         "TREE_STOP_FAILED" => "仍有本次启动的进程未确认退出。已阻止重新启动，请退出应用后检查。",
         _ => "网关连接已中断，本次服务已停止。请检查应用与数据目录后重试。",
     };
-    ViewState::new("failed", "网关未能运行", message, "需要处理", port)
+    let mut view = ViewState::new("failed", "网关未能运行", message, "需要处理", port);
+    view.code = code.into();
+    view
+}
+type MigrationReply = Result<Value, String>;
+enum Work {
+    Action(String),
+    Migration(crate::migration::Request, SyncSender<MigrationReply>),
 }
 pub struct Controller {
     pub view: Arc<Mutex<ViewState>>,
     pub quitting: Arc<AtomicBool>,
     pub rendered: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
-    sender: SyncSender<String>,
+    sender: SyncSender<Work>,
 }
 impl Controller {
     pub fn action(&self, action: &str) -> Result<(), String> {
         if ![
-            "retry", "reopen", "show", "quit", "continue", "force", "logs", "restart",
+            "retry",
+            "reopen",
+            "show",
+            "quit",
+            "continue",
+            "force",
+            "logs",
+            "restart",
+            "fresh-start",
         ]
         .contains(&action)
         {
@@ -189,8 +213,18 @@ impl Controller {
             self.cancel.store(true, Ordering::Relaxed);
         }
         self.sender
-            .try_send(action.into())
+            .try_send(Work::Action(action.into()))
             .map_err(|_| "正在处理，请稍后重试".into())
+    }
+    pub fn migration(
+        &self,
+        request: crate::migration::Request,
+    ) -> Result<Receiver<MigrationReply>, String> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .try_send(Work::Migration(request, sender))
+            .map_err(|_| "MIGRATION_BUSY")?;
+        Ok(receiver)
     }
     pub fn start(app: tauri::AppHandle, settings: Settings, quitting: Arc<AtomicBool>) -> Self {
         let view = Arc::new(Mutex::new(ViewState::new(
@@ -203,7 +237,23 @@ impl Controller {
         let rendered = Arc::new(AtomicBool::new(false));
         let cancel = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::sync_channel(8);
-        sender.send("retry".into()).unwrap();
+        let first_run = ((!settings.smoke && !settings.isolated)
+            || matches!(
+                settings.smoke_case.as_str(),
+                "migration" | "migration-fresh"
+            ))
+            && crate::migration::new_install(&settings);
+        if first_run {
+            *view.lock().unwrap() = ViewState::new(
+                "setup",
+                "准备你的工作空间",
+                "可以导入旧版账号、配置和图库，也可以建立全新的本机工作空间。",
+                "首次使用",
+                settings.port,
+            );
+        } else {
+            sender.send(Work::Action("retry".into())).unwrap();
+        }
         let (v, q, r, c) = (
             view.clone(),
             quitting.clone(),
@@ -455,7 +505,7 @@ fn verify_startup_page(app: &tauri::AppHandle, title: &str) -> bool {
 fn run(
     app: tauri::AppHandle,
     settings: Settings,
-    commands: Receiver<String>,
+    commands: Receiver<Work>,
     view: Arc<Mutex<ViewState>>,
     quitting: Arc<AtomicBool>,
     rendered: Arc<AtomicBool>,
@@ -477,8 +527,78 @@ fn run(
     let mut last_tick = Instant::now();
     let mut unresponsive = false;
     let mut crash_count = 0;
+    let mut migration = crate::migration::Wizard::default();
+    let migration_passed = crate::migration_check::start(&app, &settings);
     loop {
-        let mut action = commands.try_recv().ok();
+        let mut action = match commands.try_recv().ok() {
+            Some(Work::Action(action)) => Some(action),
+            Some(Work::Migration(request, reply)) => {
+                if settings.smoke_case == "migration" {
+                    eprintln!("R03_REQUEST_RECEIVED");
+                }
+                if session.is_some()
+                    || exit_requested
+                    || tree_blocked
+                    || retry_at.is_some()
+                    || cancel.load(Ordering::Relaxed)
+                {
+                    let _ = reply.send(Err("MIGRATION_GATEWAY_ACTIVE".into()));
+                } else {
+                    let previous = view.lock().unwrap().clone();
+                    if !request.is_context() {
+                        *view.lock().unwrap() = ViewState::new("migrating", "正在处理迁移", "正在核对文件并保留备份，请等待完成。退出会中断本次操作，恢复记录将保留。", "处理中", settings.port);
+                    }
+                    let result = migration.execute(request, &settings, &cancel);
+                    if settings.smoke_case == "migration" {
+                        eprintln!("R03_REQUEST_FINISHED {}", result.is_ok());
+                    }
+                    *view.lock().unwrap() =
+                        if result.as_ref().is_ok_and(|r| r["phase"] == "committed") {
+                            ViewState::new(
+                                "migration_complete",
+                                "旧数据已迁移",
+                                "备份已保留。可以启动网关；启动写入新数据后，将不能直接回退覆盖。",
+                                "迁移完成",
+                                settings.port,
+                            )
+                        } else if result.as_ref().is_ok_and(|r| r["phase"] == "aborted") {
+                            if crate::migration::new_install(&settings) {
+                                ViewState::new(
+                                    "setup",
+                                    "迁移已取消",
+                                    "原数据与备份均已保留，可重新检查或建立新的工作空间。",
+                                    "已恢复",
+                                    settings.port,
+                                )
+                            } else {
+                                failure("DATA_MIGRATION_REQUIRED", settings.port)
+                            }
+                        } else if std::fs::symlink_metadata(crate::migration::guard(&settings.data))
+                            .is_ok()
+                        {
+                            failure("DATA_MIGRATION_PENDING", settings.port)
+                        } else {
+                            previous
+                        };
+                    if result
+                        .as_ref()
+                        .is_err_and(|e| e == "MIGRATION_WORKER_UNCONFIRMED")
+                    {
+                        tree_blocked = true;
+                    }
+                    let _ = reply.send(result);
+                }
+                None
+            }
+            None => None,
+        };
+        if action.as_deref() == Some("fresh-start") {
+            action = if session.is_none() && crate::migration::new_install(&settings) {
+                Some("retry".into())
+            } else {
+                None
+            };
+        }
         if last_tick.elapsed() > Duration::from_secs(5) {
             last_reply = Instant::now();
         }
@@ -697,6 +817,10 @@ fn run(
             && rendered.load(Ordering::Relaxed)
             && console.as_ref().is_some_and(|c| c.smoke_passed())
             && (settings.smoke_case == "normal"
+                || (matches!(
+                    settings.smoke_case.as_str(),
+                    "migration" | "migration-fresh"
+                ) && migration_passed.load(Ordering::SeqCst))
                 || (settings.smoke_case == "node-crash" && crash_count == 1 && smoke_stage == 2)
                 || desktop_passed
                 || (settings.smoke_case == "unresponsive" && smoke_stage == 2)

@@ -2,7 +2,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { assertSeparateRoots, storageError, managedExternalPath } from './storage-paths.mjs'
+import { assertSeparateRoots, storageError, managedExternalPath, migrationGuardPath } from './storage-paths.mjs'
+
+export function assertNoMigration(root) {
+  try { fs.lstatSync(migrationGuardPath(root)) } catch (error) {
+    if (error.code === 'ENOENT') return
+    throw error
+  }
+  throw storageError('DATA_MIGRATION_PENDING', '数据迁移尚未完成；请先恢复或取消迁移，未启动网关')
+}
 
 export function validateExternalPath(value, paths, label) {
   managedExternalPath(value, paths, label)
@@ -32,6 +40,7 @@ export function assertStorageTree(root) {
 
 export function validateStorageReader(paths) {
   if (!paths?.managed) return
+  assertNoMigration(paths.root)
   assertSeparateRoots(realLocation(paths.root), realLocation(paths.resourceRoot))
   assertStorageTree(paths.root)
   let layout
@@ -81,6 +90,7 @@ foreach ($item in $items) {
 
 export function initializeStorage(paths, { protect = protectStorageTree } = {}) {
   if (!paths.managed) return null
+  assertNoMigration(paths.root)
   let fd
   let guardFd
   let owner
@@ -152,6 +162,7 @@ export function initializeStorage(paths, { protect = protectStorageTree } = {}) 
     owner = { ownerId: crypto.randomUUID(), pid: process.pid, processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString() }
     fs.writeFileSync(fd, JSON.stringify(owner) + '\n')
     fs.fsyncSync(fd)
+    assertNoMigration(paths.root)
     assertStorageTree(paths.root)
     const existing = fs.readdirSync(paths.root).filter(name => name !== 'runtime')
     existing.push(...fs.readdirSync(paths.runtime).filter(name => name !== 'owner.lock' && !(guardFd !== undefined && name === 'owner.guard')))

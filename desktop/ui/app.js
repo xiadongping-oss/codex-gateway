@@ -15,6 +15,7 @@ $('continue').onclick = () => action('continue')
 $('force').onclick = () => action('force')
 $('restart').onclick = () => action('restart')
 $('logs').onclick = () => action('logs')
+$('fresh-start').onclick = () => action('fresh-start')
 async function refresh() {
   try {
     const s = await invoke('gateway_status')
@@ -22,7 +23,11 @@ async function refresh() {
     $('badge').textContent = s.badge; $('badge').className = `badge ${s.phase}`
     $('address').textContent = s.port ? `127.0.0.1:${s.port}` : '等待连接'
     $('tasks').textContent = s.active + s.background ? `${s.active + s.background} 项进行中` : '暂无任务'
-    $('retry').hidden = s.phase !== 'failed'
+    const migration = ['DATA_MIGRATION_REQUIRED', 'DATA_MIGRATION_PENDING'].includes(s.code)
+    $('retry').hidden = !(s.phase === 'migration_complete' || (s.phase === 'failed' && !migration))
+    $('retry').textContent = s.phase === 'migration_complete' ? '启动网关' : '重新启动'
+    $('fresh-start').hidden = s.phase !== 'setup'
+    window.migrationWizard.update(s)
     $('restart').hidden = s.phase !== 'unresponsive'
     $('reopen').hidden = s.phase !== 'ready'
     $('continue').hidden = $('force').hidden = !s.waiting

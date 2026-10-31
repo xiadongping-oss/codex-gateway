@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 export const GATEWAY_DIR = path.dirname(fileURLToPath(import.meta.url))
 export const loginTempRoot = (root, api = path) => api.join(root, 'tmp', 'codex-temp-login')
+export const migrationGuardPath = (root, api = path) => api.join(api.dirname(root), `.${api.basename(root)}.migration`)
 export function storageError(code, message) {
   return Object.assign(new Error(message), { code })
 }
