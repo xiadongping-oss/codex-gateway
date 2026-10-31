@@ -71,7 +71,7 @@ try {
   fs.copyFileSync(binary, path.join(portable, path.basename(binary)), fs.constants.COPYFILE_EXCL)
   fs.copyFileSync(path.join(desktop, 'src-tauri/installer/TAURI-LICENSE-MIT.txt'), path.join(portable, 'TAURI-LICENSE-MIT.txt'), fs.constants.COPYFILE_EXCL)
   fs.cpSync(builtResources, path.join(portable, 'gateway-resources'), { recursive: true, errorOnExist: true, force: false })
-  fs.writeFileSync(path.join(portable, '使用说明.txt'), '\uFEFFCodex Gateway 桌面内部预览版（未签名）\r\n\r\n解压整个目录后运行 codex-gateway-desktop.exe；无需安装 Node。\r\n需要 Windows x64 和 Microsoft Edge WebView2 运行时；缺少运行时请使用 Setup 安装包联网安装。\r\n账号、配置和图片默认位于 %LOCALAPPDATA%\\CodexGateway。\r\n窗口缓存和桌面日志位于 %LOCALAPPDATA%\\CodexGatewayDesktop。\r\n本 ZIP 免安装，但不是数据随身模式；移动或删除程序目录不会删除账号。\r\n关闭窗口会继续后台运行；在桌面管理页或托盘菜单选择退出应用。\r\n升级、移动、卸载前请先退出应用；当前版本尚未完成正式发行验收。\r\n')
+  fs.writeFileSync(path.join(portable, '使用说明.txt'), '\uFEFFCodex Gateway 桌面内部预览版（未签名）\r\n\r\n解压整个目录后运行 codex-gateway-desktop.exe；无需安装 Node。\r\n需要 Windows x64 和 Microsoft Edge WebView2 运行时；缺少运行时请使用 Setup 安装包联网安装。\r\n账号、配置和图片默认位于 %LOCALAPPDATA%\\CodexGateway。\r\n窗口缓存和桌面日志位于 %LOCALAPPDATA%\\CodexGatewayDesktop。\r\n本 ZIP 免安装，但不是数据随身模式；移动或删除程序目录不会删除账号。\r\n关闭窗口会继续后台运行；在工作台的“服务与诊断”页或托盘菜单选择“退出应用”。\r\n升级、移动、卸载前请先退出应用；当前版本尚未完成正式发行验收。\r\n')
   verifyDesktop({ target, outDir: path.join(portable, 'gateway-resources') })
   const zip = path.join(destination, `${stem}.zip`)
   await runCommand('zip-verify', 'powershell.exe', ['-NoProfile', '-NonInteractive', '-File', path.join(desktop, 'archive-windows.ps1'), '-Source', portable, '-Destination', zip], root)

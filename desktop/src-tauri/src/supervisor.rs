@@ -156,8 +156,8 @@ fn backup_view(port: u16) -> ViewState {
     ViewState::new(
         "maintenance",
         "网关已停止",
-        "可以检查历史迁移备份。已有新增数据时不会直接覆盖；完成后可重新启动网关。",
-        "备份与恢复",
+        "本机服务已停止。",
+        "已停止",
         port,
     )
 }

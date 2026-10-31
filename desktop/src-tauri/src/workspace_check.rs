@@ -133,12 +133,13 @@ impl Check {
         if let Some(error) = self.callback_error.lock().unwrap().clone() {
             return Err(error);
         }
-        let visible = app
-            .webview_windows()
-            .values()
-            .filter(|window| window.is_visible().unwrap_or(false))
-            .count();
+        let snapshot = crate::desktop::window_snapshot(app)?;
+        let visible = snapshot.visible_count();
         if visible > 1 {
+            eprintln!(
+                "W01_VISIBILITY_FAILURE {}",
+                serde_json::to_string(&snapshot).unwrap()
+            );
             return Err("WORKSPACE_MULTIPLE_VISIBLE_WINDOWS".into());
         }
         let Some(session) = session else {
@@ -168,19 +169,23 @@ impl Check {
             .get_webview_window("main")
             .ok_or("WORKSPACE_MAIN_MISSING")?;
         if self.stage == 0 {
-            if !console.smoke_passed() || !console.visible() || visible != 1 {
+            if !console.smoke_passed() || visible != 1 {
                 return Ok(false);
             }
             let window = app
                 .webview_windows()
                 .into_values()
                 .find(|window| {
-                    window.label().starts_with("console-") && window.is_visible().unwrap_or(false)
+                    window.label().starts_with("console-") && snapshot.visible(window.label())
                 })
                 .ok_or("WORKSPACE_CONSOLE_MISSING")?;
             self.node_pid = Some(session.child.id());
             self.console_label = Some(window.label().into());
             self.cleanup_app = Some(app.clone());
+            eprintln!(
+                "W01_VISIBILITY {}",
+                serde_json::to_string(&snapshot).unwrap()
+            );
             if !Self::autostart_matches(app, false)? {
                 return Err("WORKSPACE_TEST_AUTOSTART_ALREADY_ENABLED".into());
             }
@@ -208,8 +213,8 @@ impl Check {
             _ => return Err("WORKSPACE_STAGE_INVALID".into()),
         };
         if visible != 1
-            || main.is_visible().map_err(|_| "WORKSPACE_MAIN_MISSING")? != local
-            || console.visible() == local
+            || snapshot.visible("main") != local
+            || snapshot.visible(remote.label()) == local
             || page != expected
             || value["domPage"] != expected
             || (local && value["state"]["page"] != expected)
@@ -248,6 +253,10 @@ impl Check {
                     if !Self::autostart_matches(app, false)? {
                         return Err("WORKSPACE_AUTOSTART_NOT_CLEARED".into());
                     }
+                    eprintln!(
+                        "W01_VISIBILITY {}",
+                        serde_json::to_string(&snapshot).unwrap()
+                    );
                     eprintln!("W01_WORKSPACE true");
                     return Ok(true);
                 }
@@ -256,6 +265,10 @@ impl Check {
             7 => self.click(&main, "button.nav-item[data-page='overview']")?,
             _ => unreachable!(),
         }
+        eprintln!(
+            "W01_VISIBILITY {}",
+            serde_json::to_string(&snapshot).unwrap()
+        );
         self.advance();
         Ok(false)
     }

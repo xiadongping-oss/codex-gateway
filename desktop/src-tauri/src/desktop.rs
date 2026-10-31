@@ -1,8 +1,8 @@
 use crate::supervisor::Controller;
 use sha2::{Digest, Sha256};
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
-    Mutex,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    mpsc, Mutex,
 };
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
@@ -35,9 +35,78 @@ pub fn set_page(app: &tauri::AppHandle, page: &str) {
     }
 }
 
+static WINDOW_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+// Wry executes run_on_main_thread inline when already on the native thread.
+// Native callbacks and the supervisor can await this result without scheduling
+// a task behind themselves. Switching and sampling share this serial domain.
+fn on_native_thread<T: Send + 'static>(
+    app: &tauri::AppHandle,
+    operation: impl FnOnce(&tauri::AppHandle) -> T + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = mpsc::channel();
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.send(operation(&handle));
+    })
+    .map_err(|_| "WORKSPACE_NATIVE_DISPATCH")?;
+    rx.recv().map_err(|_| "WORKSPACE_NATIVE_RESULT".into())
+}
+
+#[cfg(debug_assertions)]
+#[derive(Debug, serde::Serialize)]
+pub struct WindowSnapshot {
+    pub epoch: u64,
+    pub windows: Vec<(String, bool)>,
+}
+
+#[cfg(debug_assertions)]
+impl WindowSnapshot {
+    pub fn visible_count(&self) -> usize {
+        self.windows.iter().filter(|(_, visible)| *visible).count()
+    }
+
+    pub fn visible(&self, label: &str) -> bool {
+        self.windows
+            .iter()
+            .any(|(name, visible)| name == label && *visible)
+    }
+}
+
+#[cfg(debug_assertions)]
+pub fn window_snapshot(app: &tauri::AppHandle) -> Result<WindowSnapshot, String> {
+    on_native_thread(app, |app| {
+        let mut windows = app
+            .webview_windows()
+            .into_values()
+            .map(|window| {
+                window
+                    .is_visible()
+                    .map(|visible| (window.label().to_owned(), visible))
+                    .map_err(|_| "WORKSPACE_VISIBILITY_QUERY".to_owned())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        windows.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(WindowSnapshot {
+            epoch: WINDOW_EPOCH.load(Ordering::SeqCst),
+            windows,
+        })
+    })?
+}
+
 // Both origins keep their existing permissions. Switching pages transfers the
 // visible workspace instead of displaying two independent application windows.
 pub fn show_only(app: &tauri::AppHandle, label: &str) -> bool {
+    let label = label.to_owned();
+    on_native_thread(app, move |app| {
+        let result = show_only_on_native_thread(app, &label);
+        WINDOW_EPOCH.fetch_add(1, Ordering::SeqCst);
+        result
+    })
+    .unwrap_or(false)
+}
+
+fn show_only_on_native_thread(app: &tauri::AppHandle, label: &str) -> bool {
     let Some(target) = app.get_webview_window(label) else {
         return false;
     };
@@ -66,6 +135,11 @@ pub fn show_only(app: &tauri::AppHandle, label: &str) -> bool {
         .and_then(|_| target.set_focus())
         .is_err()
     {
+        // show() may have succeeded before focus failed. Hide it before restoring
+        // the previous window to preserve the invariant on the error path too.
+        if target.hide().is_err() {
+            return false;
+        }
         if let Some(previous) = previous {
             let _ = previous.show();
         }
