@@ -11,7 +11,7 @@
 //   B) 直连 bridge：VITE_API_BASE=http://127.0.0.1:10531，前端单独 dev 时手动起 bridge。
 
 // 留空 = 同源相对路径（经启动器）。设了绝对地址则直连该地址。
-export const BASE = import.meta.env.VITE_API_BASE || ''
+export const BASE = import.meta.env?.VITE_API_BASE || ''
 export const MOCK = false // mock 数据已下线；fetch 失败抛错，由上层渲染空态
 
 // 启动器默认端口。经启动器托管时对外地址 = 页面自身 origin（4173），
@@ -48,6 +48,14 @@ export function endpointText(host = parseBase().host, port = parseBase().port) {
 // 又能避免「网关假死 → 前端无限 pending → 按钮永远转圈」。
 const DEFAULT_TIMEOUT_MS = 30000
 
+function safeDetail(value) {
+  if (typeof value !== 'string') return ''
+  return value.replace(/[\u0000-\u001f]/g, ' ').replace(/Bearer\s+\S+/gi, 'Bearer [已隐藏]').replace(/\b(?:sk-|cgw-|eyJ)[A-Za-z0-9_.-]{12,}/g, '[已隐藏]').slice(0, 400)
+}
+function gatewayError(message, status, code, detail = '') {
+  return Object.assign(new Error(message), { status, code, detail })
+}
+
 // bridge 端点（/v1, /health）。失败抛错，由上层显示空态/重试。
 export async function request(path, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const url = BASE ? BASE + path : path
@@ -64,7 +72,7 @@ export async function request(path, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
 //   - 不传   → 抛错（保持原有语义）
 // 之前该形参缺失，调用方传了 fallback 却被静默忽略，
 // 导致「保存代理」失败时按钮永久卡在「应用中…」。
-export async function gwRequest(path, method = 'GET', body = null, fallback = undefined, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+export async function gwRequest(path, method = 'GET', body = null, fallback = undefined, { timeoutMs = DEFAULT_TIMEOUT_MS, strictJson = false } = {}) {
   const useFallback = fallback !== undefined && fallback !== null
   const fb = () => (typeof fallback === 'function' ? fallback() : fallback)
   let res
@@ -77,13 +85,23 @@ export async function gwRequest(path, method = 'GET', body = null, fallback = un
     })
   } catch (e) {
     if (useFallback) return fb()
-    throw e
+    const timedOut = e?.name === 'TimeoutError' || e?.name === 'AbortError'
+    throw gatewayError(timedOut ? '请求超时，请检查网关后重试。' : '无法连接本机网关，请检查服务后重试。', 0, timedOut ? 'timeout' : 'network_error')
   }
   if (!res.ok) {
     if (useFallback) return fb()
-    throw new Error('gw HTTP ' + res.status + ' ' + path)
+    const data = await res.json().catch(() => null)
+    const detail = safeDetail(data?.detail || data?.error?.message || data?.message)
+    const rawCode = data?.code || (typeof data?.error === 'string' ? data.error : data?.error?.code)
+    const code = typeof rawCode === 'string' && /^[\w-]{1,80}$/.test(rawCode) ? rawCode : 'http_error'
+    const label = res.status === 401 ? '控制台登录已失效，请重新打开控制台。' : res.status === 403 ? '当前操作没有权限，请检查控制台访问权限。' : '请求失败（HTTP ' + res.status + '）'
+    throw gatewayError(detail ? label + ' ' + detail : label, res.status, code, detail)
   }
-  return await res.json().catch(() => ({}))
+  try { return await res.json() } catch {
+    if (!strictJson) return {}
+    if (useFallback) return fb()
+    throw gatewayError('网关返回了无法读取的响应，请重试。', res.status, 'invalid_json')
+  }
 }
 
 // 超时控制器：Node/浏览器都支持 AbortSignal.timeout，优先用它。

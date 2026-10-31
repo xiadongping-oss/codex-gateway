@@ -66,6 +66,8 @@ const tempDoneSteps = ref(0) // 已完成的步骤数（0-6）
 const tempHint = ref('')
 const tempRunning = computed(() => tempPhase.value === 'running')
 let tempTimer = null
+let tempGeneration = 0
+let tempPolling = false
 
 function tempStepState(i) {
   // i: 0-5；已完成 = index < tempDoneSteps；当前活跃 = index === tempDoneSteps && running
@@ -75,6 +77,7 @@ function tempStepState(i) {
 }
 
 async function startTempLogin() {
+  const generation = ++tempGeneration
   error.value = ''
   okMsg.value = ''
   tempError.value = ''
@@ -83,12 +86,18 @@ async function startTempLogin() {
   loading.value = true
   try {
     const r = await api.officialLoginStart()
+    if (generation !== tempGeneration) {
+      if (r?.sessionId) api.officialLoginCancel(r.sessionId).catch(() => {})
+      return
+    }
     if (!r?.ok) return setError(r?.detail || '启动失败')
     tempSession.value = r
     tempPhase.value = 'running'
     tempDoneSteps.value = 2 // preparing + launching 已由后端完成
     tempHint.value = '已发出启动命令：请在打开的官方客户端里完成 OpenAI 登录（若客户端已在后台运行，直接切换到那个窗口登录即可）。'
     pollTempLogin()
+  } catch (e) {
+    if (generation === tempGeneration) setError(e)
   } finally {
     loading.value = false
   }
@@ -97,15 +106,21 @@ async function startTempLogin() {
 function pollTempLogin() {
   stopTempPoll()
   tempTimer = setInterval(async () => {
+    if (tempPolling) return
     if (!tempSession.value?.sessionId) return stopTempPoll()
+    const generation = tempGeneration
+    tempPolling = true
+    try {
     const st = await api.officialLoginStatus(tempSession.value.sessionId)
+    if (generation !== tempGeneration) return
+    tempError.value = ''
     if (!st) return // 网络抖动，下轮再看
     if (st.phase === 'waiting-login') {
       tempDoneSteps.value = 2
       // 桌面版是常驻单实例：新进程交接退出后，登录发生在已打开的客户端里，
       // 凭据写进默认 profile —— 提示用户去那个窗口操作，而不是干等
       tempHint.value = st.watchDefaultProfile
-        ? `官方客户端已在后台运行（${st.elapsedSec || 0}s）。请切换到已打开的 Codex/ChatGPT 客户端完成登录；凭据变化后这里会自动读取。`
+        ? `官方客户端已在后台运行（${st.elapsedSec || 0}s）。请切换到已打开的 Codex 客户端完成登录；凭据变化后这里会自动读取。`
         : `等待登录中…（${st.elapsedSec || 0}s）在打开的官方客户端里完成 OpenAI 登录。`
     } else if (st.phase === 'logged-in') {
       tempDoneSteps.value = 3
@@ -120,6 +135,11 @@ function pollTempLogin() {
       tempPhase.value = 'failed'
       tempError.value = st.error || '登录流程失败'
     }
+    } catch (e) {
+      if (generation !== tempGeneration) return
+      tempError.value = e?.message || '无法获取登录进度，请检查网关。'
+      if (e?.status === 401 || e?.status === 403) stopTempPoll()
+    } finally { tempPolling = false }
   }, 2000)
 }
 function stopTempPoll() {
@@ -153,6 +173,7 @@ async function retryTempImport() {
   await finishTempLogin()
 }
 async function cancelTempLogin() {
+  ++tempGeneration
   stopTempPoll()
   if (tempSession.value?.sessionId) {
     await api.officialLoginCancel(tempSession.value.sessionId).catch(() => {})
@@ -216,6 +237,7 @@ onMounted(() => {
   }
 })
 onUnmounted(() => {
+  ++tempGeneration
   stopPoll()
   stopTempPoll()
   api.cancelBrowserLoginApi().catch(() => {})
@@ -314,6 +336,7 @@ function startPolling() {
     if (loading.value || !polling.value) return
     try {
       const r = await api.pollBrowserLoginApi(currentPayload())
+      if (!polling.value || active.value !== 'oauth') return
       if (r?.ok) {
         stopPoll()
         browser.value = null
@@ -326,6 +349,7 @@ function startPolling() {
         setError(r)
       }
     } catch (e) {
+      if (!polling.value || active.value !== 'oauth') return
       stopPoll()
       setError(e)
     }
@@ -419,7 +443,7 @@ async function getLocalAccount() {
   try {
     const info = await api.inspectCodexLocal()
     if (!info || info.error === 'not_found') {
-      return setError('本机未检测到 Codex 登录（~/.codex/auth.json 不存在）。请先安装 Codex CLI 并 codex login，或改用浏览器授权。')
+      return setError('本机未检测到可导入的 Codex 登录。请先在官方客户端或 Codex CLI 中完成登录，或改用 OAuth 授权。')
     }
     if (info.error) {
       const text = { parse_error: '本机 auth.json 无法解析（文件损坏）', read_error: '本机 auth.json 无法读取（权限不足）', unsupported: '本机登录缺少续期凭据（refresh_token），请重新 codex login' }[info.error] || info.detail || info.error
@@ -487,7 +511,11 @@ async function switchToBridge() {
 }
 
 // 切到 apikey 标签时刷新已保存供应商
-watch(active, (v) => { if (v === 'apikey') loadProviders() })
+watch(active, (v) => {
+  error.value = ''; okMsg.value = ''; tempError.value = ''
+  if (v !== 'oauth') stopPoll()
+  if (v === 'apikey') loadProviders()
+})
 
 // 图标（内联 SVG，零依赖）
 const icons = {
@@ -526,7 +554,7 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
           :key="t.key"
           class="tab"
           :class="{ active: active === t.key }"
-          :disabled="tempRunning"
+          :disabled="tempRunning || loading || localBusy"
           @click="active = t.key"
         >
           <span class="tab-icon" v-html="tabIcon(t.key)"></span>

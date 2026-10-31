@@ -164,7 +164,11 @@ impl Console {
         let label = format!("console-{launch_id}-{}", uuid::Uuid::new_v4());
         let popup_label = label.clone();
         let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
-            .title("Codex Gateway · 控制台")
+            .title(if cfg!(debug_assertions) && isolated {
+                "Codex Gateway · 隔离测试（非真实账号环境）"
+            } else {
+                "Codex Gateway · 控制台"
+            })
             .inner_size(1200., 820.)
             .min_inner_size(760., 600.)
             .visible(false)

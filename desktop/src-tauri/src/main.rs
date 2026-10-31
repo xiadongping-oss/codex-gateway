@@ -159,7 +159,11 @@ fn main() {
             desktop::install(app.handle())?;
             let window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .title("Codex Gateway")
+                    .title(if cfg!(debug_assertions) && settings.isolated {
+                        "Codex Gateway · 隔离测试（非真实账号环境）"
+                    } else {
+                        "Codex Gateway"
+                    })
                     .inner_size(1040., 720.)
                     .min_inner_size(680., 580.)
                     .visible(

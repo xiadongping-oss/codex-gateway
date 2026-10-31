@@ -18,7 +18,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import os from 'node:os'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { loginTempRoot } from './storage-paths.mjs'
 
 const SESSION_ID_RE = /^[0-9a-f]{16}$/
@@ -26,12 +26,14 @@ export const LOGIN_TIMEOUT_MS = 10 * 60 * 1000
 
 // 默认 profile（~/.codex/auth.json）：桌面版客户端若不尊重 CODEX_HOME，
 // 登录凭据会落到这里 —— 会话用「内容指纹变化」识别这次登录（见 resolveAuth）。
-export function defaultCodexAuthPath() {
-  return path.join(os.homedir(), '.codex', 'auth.json')
+export function defaultCodexAuthPath(env = process.env, homedir = os.homedir) {
+  const raw = String(env?.CODEX_HOME ?? '').trim()
+  const unquoted = raw.replace(/^["']+|["']+$/g, '').trim()
+  return unquoted ? path.join(unquoted, 'auth.json') : path.join(homedir(), '.codex', 'auth.json')
 }
-function readDefaultAuthText() {
+function readDefaultAuthText(env) {
   try {
-    return fs.readFileSync(defaultCodexAuthPath(), 'utf-8')
+    return fs.readFileSync(defaultCodexAuthPath(env), 'utf-8')
   } catch {
     return null
   }
@@ -80,6 +82,9 @@ export function derivePhase(session, { now = Date.now(), pidRunning } = {}) {
   if (session.hasCredentials) {
     if (session.clientExited) return { phase: 'ready', error: null, hasCredentials: true }
     return { phase: 'logged-in', error: null, hasCredentials: true }
+  }
+  if (Number.isInteger(session.clientExitCode) && session.clientExitCode !== 0) {
+    return { phase: 'failed', error: `官方客户端启动命令失败（退出码 ${session.clientExitCode}），请检查客户端安装或使用浏览器授权`, hasCredentials: false }
   }
   if (now - session.startedAt > LOGIN_TIMEOUT_MS) {
     const timeoutHint = session.defaultWatch
@@ -169,54 +174,63 @@ export function discoverStoreCodexClient({
 }
 
 // ---------- 官方客户端发现 ----------
-// 顺序：显式环境变量 > Windows 执行别名 > where/which > 常见安装位 > Store 应用扫描。
+// 顺序：显式环境变量 > GUI / Store > PATH CLI。PATH 查找不通过 shell。
 // 全部落空返回 null，由上层给出可操作的报错文案。
 export function discoverCodexClient({
   env = process.env,
   platform = process.platform,
   existsSync = fs.existsSync,
+  runFile = execFileSync,
+  // Compatibility for existing injected tests; production uses runFile below.
   execSync,
   readdirSync = fs.readdirSync,
   readlinkSync = fs.readlinkSync,
   readFile = fs.readFileSync
 } = {}) {
-  const explicit = String(env.CODEX_CLIENT_PATH || '').trim()
-  if (explicit && existsSync(explicit)) return { path: explicit, kind: 'explicit' }
+  const paths = platform === 'win32' ? path.win32 : path.posix
+  const explicit = String(env.CODEX_CLIENT_PATH || '').trim().replace(/^("|')(.*)\1$/, '$2')
+  if (explicit && existsSync(explicit)) {
+    const launchKind = platform === 'darwin'
+      ? (/\.app\/?$/i.test(explicit) ? 'app' : 'cli')
+      : (/\.(cmd|bat)$/i.test(explicit) ? 'cli' : 'app')
+    return { path: explicit, kind: 'explicit', launchKind }
+  }
+
+  function findCli() {
+    try {
+      const options = { encoding: 'utf-8', timeout: 5000, windowsHide: true, env, shell: false }
+      const out = execSync
+        ? execSync(platform === 'win32' ? 'where codex' : 'which codex', options)
+        : runFile(platform === 'win32' ? 'where.exe' : '/usr/bin/which', ['codex'], options)
+      const candidate = String(out).split(/\r?\n/).map(s => s.trim()).find(p => p && existsSync(p))
+      return candidate ? { path: candidate, kind: 'cli' } : null
+    } catch { return null }
+  }
 
   if (platform === 'win32') {
-    const la = env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+    const la = env.LOCALAPPDATA || paths.join(os.homedir(), 'AppData', 'Local')
     const candidates = [
-      path.join(la, 'Microsoft', 'WindowsApps', 'codex.exe'),
-      path.join(la, 'Programs', 'Codex', 'Codex.exe'),
-      path.join(la, 'Programs', 'ChatGPT', 'ChatGPT.exe')
+      paths.join(la, 'Microsoft', 'WindowsApps', 'codex.exe'),
+      paths.join(la, 'Programs', 'Codex', 'Codex.exe')
     ]
     for (const p of candidates) {
       if (existsSync(p)) return { path: p, kind: 'app' }
     }
-    if (execSync) {
-      try {
-        const out = execSync('where codex', { encoding: 'utf-8', timeout: 5000 })
-        const first = String(out).split(/\r?\n/).map((s) => s.trim()).find(Boolean)
-        if (first && existsSync(first)) return { path: first, kind: 'cli' }
-      } catch { /* where 没命中，继续往下 */ }
-    }
     const store = discoverStoreCodexClient({ localAppData: la, existsSync, readdirSync, readlinkSync, readFile })
     if (store) return store
-    return null
+    return findCli()
   }
-  if (execSync) {
-    try {
-      const out = execSync('which codex', { encoding: 'utf-8', timeout: 5000 })
-      const first = String(out).split(/\r?\n/).map((s) => s.trim()).find(Boolean)
-      if (first && existsSync(first)) return { path: first, kind: 'cli' }
-    } catch { /* 继续 */ }
+  if (platform === 'darwin') {
+    for (const candidate of ['/Applications/Codex.app', paths.join(env.HOME || os.homedir(), 'Applications', 'Codex.app')]) {
+      if (existsSync(candidate)) return { path: candidate, kind: 'app' }
+    }
   }
-  return null
+  return findCli()
 }
 
 // ---------- 会话管理器 ----------
 // ChildProcess objects are the only process authority. Persisted PIDs are diagnostic data.
-export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discoverImpl = discoverCodexClient, pidAliveImpl, trackChild = () => {}, defaultAuthText = readDefaultAuthText } = {}) {
+export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discoverImpl = discoverCodexClient, pidAliveImpl, trackChild = () => {}, env = process.env, platform = process.platform, defaultAuthText = () => readDefaultAuthText(env) } = {}) {
   const root = tempLoginRootDir(dataRoot)
   // sessionId -> { sessionId, profileDir, pid, clientPath, startedAt, hasCredentials, clientExited, phase, error }
   const sessions = new Map()
@@ -226,7 +240,7 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     if (typeof child.once !== 'function') return // injected test doubles only
     children.add(child)
     trackChild(child)
-    child.once('exit', () => { children.delete(child); session.clientExited = true })
+    child.once('exit', code => { children.delete(child); session.clientExited = true; session.clientExitCode = code })
     child.once('error', () => {
       if (!child.pid) { children.delete(child); session.clientExited = true }
       session.phase = 'failed'; session.error = '启动官方客户端失败，请使用浏览器授权重试'
@@ -304,11 +318,12 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
 
   // 启动：发现客户端 → 造临时 profile → 新窗口拉起官方客户端
   async function start() {
-    const client = discoverImpl({ env: process.env, platform: process.platform })
+    const client = discoverImpl({ env, platform })
     if (!client) {
       throw new Error('未找到官方 Codex 客户端。可安装 Codex 桌面版（Microsoft Store）或 CLI（npm i -g @openai/codex）后重试，或改用浏览器授权。')
     }
     const sessionId = crypto.randomBytes(8).toString('hex')
+    const launchKind = client.launchKind || client.kind
     const profileDir = profileDirFor(dataRoot, sessionId)
     writeMarker(profileDir, { sessionId, createdAt: new Date().toISOString(), clientPath: client.path })
     const defaultText = defaultAuthText()
@@ -318,32 +333,39 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
       // 会话开始时的默认 profile 指纹（null=当时没有凭据文件）
       defaultAuthDigest: defaultText ? digestText(defaultText) : null,
       // 桌面客户端（store/app）是常驻单实例：退出≠失败，转看默认 profile 变化
-      defaultWatch: client.kind === 'store' || client.kind === 'app',
+      defaultWatch: launchKind === 'store' || launchKind === 'app',
       credSource: null,
       hasCredentials: false, clientExited: false, phase: 'launching', error: null
     }
     sessions.set(sessionId, session)
 
     try {
-      if (process.platform === 'win32') {
+      if (platform === 'win32') {
         // start "" /WAIT：新控制台/GUI 窗口跑官方客户端；cmd 壳挂着等它退出，
         // pid 即壳进程 —— 检测壳存活 + 凭据文件，两路信号互为兜底。
         // CLI 形态补 login 子命令（浏览器授权 + 本地回调，完成后进程退出）；
         // 桌面 GUI 不带参数，直接开窗口。
-        const cliArgs = client.kind === 'cli' ? ' login' : ''
-        const child = spawnImpl(`start "" /WAIT "${client.path}"${cliArgs}`, {
+        const cliArgs = launchKind === 'cli' ? ' login' : ''
+        // START otherwise runs batch files with CMD /K: even a failed CLI login
+        // leaves that window open and /WAIT never observes its exit code.
+        // Bare CMD is START's documented COMSPEC substitution, not a PATH lookup.
+        const command = launchKind === 'cli' && /\.(cmd|bat)$/i.test(client.path)
+          ? `start "" /WAIT CMD /d /s /c ""${client.path}" login"`
+          : `start "" /WAIT "${client.path}"${cliArgs}`
+        const child = spawnImpl(command, {
           shell: true, stdio: 'ignore',
-          env: { ...process.env, CODEX_HOME: profileDir }
+          env: { ...env, CODEX_HOME: profileDir }
         })
         session.pid = child.pid || null
         own(child, session)
         child.unref?.()
-      } else if (process.platform === 'darwin' && client.kind === 'app') {
+      } else if (platform === 'darwin' && launchKind === 'app') {
         // macOS GUI 应用走 open（--env 需要 macOS 13+）。open 立即返回，
         // pid 不可靠 —— posix 侧以凭据轮询为准，用户在界面上点「完成导入」。
-        const child = spawnImpl(`open -n "${client.path}" --env "CODEX_HOME=${profileDir}"`, {
+        const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`
+        const child = spawnImpl(`/usr/bin/open -n ${quote(client.path)} --env ${quote(`CODEX_HOME=${profileDir}`)}`, {
           shell: true, stdio: 'ignore',
-          env: { ...process.env, CODEX_HOME: profileDir }
+          env: { ...env, CODEX_HOME: profileDir }
         })
         session.pid = null // open 的壳进程不可作存活信号
         own(child, session)

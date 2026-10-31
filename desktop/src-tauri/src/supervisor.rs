@@ -284,6 +284,11 @@ impl Controller {
         }
     }
 }
+fn official_login_env_allowed(key: &str, isolated: bool) -> bool {
+    // Official login/import reads the user's selected profile; bridge credentials
+    // remain separately fixed by the managed storage policy. Tests inherit neither.
+    !isolated && matches!(key, "CODEX_HOME" | "CODEX_CLIENT_PATH")
+}
 fn launch(settings: &Settings, cancel: &AtomicBool) -> Result<Session, String> {
     let resources = Resources::load(&settings.resources)?;
     if cancel.load(Ordering::Relaxed) {
@@ -327,6 +332,7 @@ fn launch(settings: &Settings, cancel: &AtomicBool) -> Result<Session, String> {
             "SSL_CERT_DIR",
         ]
         .contains(&upper.as_str())
+            || official_login_env_allowed(&upper, settings.smoke || settings.isolated)
         {
             command.env(key, value);
         }
@@ -1153,6 +1159,21 @@ fn run(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn official_login_custom_paths_are_preserved_only_outside_isolation() {
+        for key in ["CODEX_HOME", "CODEX_CLIENT_PATH"] {
+            assert!(super::official_login_env_allowed(key, false));
+            assert!(!super::official_login_env_allowed(key, true));
+        }
+        for key in [
+            "NODE_OPTIONS",
+            "NODE_PATH",
+            "CGW_ADMIN_TOKEN",
+            "BRIDGE_AUTH_FILE",
+        ] {
+            assert!(!super::official_login_env_allowed(key, false));
+        }
+    }
     use super::*;
     #[test]
     fn bridge_port_override_requires_isolation_and_pool_capacity() {
