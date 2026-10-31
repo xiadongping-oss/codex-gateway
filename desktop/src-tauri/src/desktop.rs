@@ -14,6 +14,7 @@ pub struct Desktop {
     pub background: AtomicBool,
     pub duplicates: AtomicUsize,
     pub isolated: bool,
+    pub account_validation: bool,
     pub notice: Mutex<String>,
     pub page: Mutex<String>,
 }

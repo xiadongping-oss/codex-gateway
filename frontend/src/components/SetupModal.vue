@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import * as api from '../api/gateway'
 import { PROVIDER_PRESETS, CUSTOM_PROVIDER_ID } from '../api/providerPresets'
 import { copyText as writeClipboard } from '../api/client'
@@ -17,6 +17,9 @@ const active = ref('oauth')
 const loading = ref(false)
 const error = ref('')
 const okMsg = ref('')
+let disposed = false
+let actionGeneration = 0
+const actionCurrent = generation => !disposed && generation === actionGeneration
 
 const mode = ref('bridge')
 const hasApiKey = ref(false)
@@ -34,6 +37,7 @@ const device = ref(null)
 const callbackUrl = ref('')
 const polling = ref(false)
 let pollTimer = null
+let authPollGeneration = 0
 
 // Token·JSON（多格式文本，见 parseAuthTokenText）
 const jsonText = ref('')
@@ -68,6 +72,8 @@ const tempRunning = computed(() => tempPhase.value === 'running')
 let tempTimer = null
 let tempGeneration = 0
 let tempPolling = false
+const tempImporting = ref(false)
+const tempRetryable = ref(false)
 
 function tempStepState(i) {
   // i: 0-5；已完成 = index < tempDoneSteps；当前活跃 = index === tempDoneSteps && running
@@ -77,12 +83,18 @@ function tempStepState(i) {
 }
 
 async function startTempLogin() {
+  if (tempImporting.value || loading.value) return
+  loading.value = true
+  error.value = ''; tempError.value = ''; okMsg.value = ''
+  if (tempSession.value?.sessionId && !await cancelTempLogin()) { loading.value = false; return }
+  if (disposed) return
   const generation = ++tempGeneration
   error.value = ''
   okMsg.value = ''
   tempError.value = ''
   tempDoneSteps.value = 0
   tempHint.value = ''
+  tempRetryable.value = false
   loading.value = true
   try {
     const r = await api.officialLoginStart()
@@ -90,11 +102,11 @@ async function startTempLogin() {
       if (r?.sessionId) api.officialLoginCancel(r.sessionId).catch(() => {})
       return
     }
-    if (!r?.ok) return setError(r?.detail || '启动失败')
+    if (!r?.ok || !r.sessionId) return setError(r?.detail || '启动失败：未获得登录会话')
     tempSession.value = r
     tempPhase.value = 'running'
     tempDoneSteps.value = 2 // preparing + launching 已由后端完成
-    tempHint.value = '已发出启动命令：请在打开的官方客户端里完成 OpenAI 登录（若客户端已在后台运行，直接切换到那个窗口登录即可）。'
+    tempHint.value = '已发出启动命令，等待官方客户端登录。'
     pollTempLogin()
   } catch (e) {
     if (generation === tempGeneration) setError(e)
@@ -120,7 +132,7 @@ function pollTempLogin() {
       // 桌面版是常驻单实例：新进程交接退出后，登录发生在已打开的客户端里，
       // 凭据写进默认 profile —— 提示用户去那个窗口操作，而不是干等
       tempHint.value = st.watchDefaultProfile
-        ? `官方客户端已在后台运行（${st.elapsedSec || 0}s）。请切换到已打开的 Codex 客户端完成登录；凭据变化后这里会自动读取。`
+        ? `等待官方客户端登录（${st.elapsedSec || 0}s）。已登录的账号可选择「从本地导入」。`
         : `等待登录中…（${st.elapsedSec || 0}s）在打开的官方客户端里完成 OpenAI 登录。`
     } else if (st.phase === 'logged-in') {
       tempDoneSteps.value = 3
@@ -130,15 +142,23 @@ function pollTempLogin() {
     } else if (st.phase === 'ready') {
       stopTempPoll()
       await finishTempLogin()
-    } else if (st.phase === 'failed') {
+    } else if (st.phase === 'importing') {
+      tempDoneSteps.value = 4
+      tempHint.value = '正在导入账号，请稍候…'
+    } else if (['failed', 'cancelled', 'unknown'].includes(st.phase)) {
       stopTempPoll()
       tempPhase.value = 'failed'
-      tempError.value = st.error || '登录流程失败'
+      tempRetryable.value = false
+      tempError.value = st.error || (st.phase === 'unknown' ? '登录会话不存在或已过期，请重新开始' : st.phase === 'cancelled' ? '本次登录已取消，请重新开始' : '登录流程失败')
     }
     } catch (e) {
       if (generation !== tempGeneration) return
       tempError.value = e?.message || '无法获取登录进度，请检查网关。'
-      if (e?.status === 401 || e?.status === 403) stopTempPoll()
+      if ([400, 401, 403, 404, 410].includes(e?.status)) {
+        stopTempPoll()
+        tempPhase.value = 'failed'
+        tempRetryable.value = false
+      }
     } finally { tempPolling = false }
   }, 2000)
 }
@@ -146,46 +166,80 @@ function stopTempPoll() {
   if (tempTimer) { clearInterval(tempTimer); tempTimer = null }
 }
 async function finishTempLogin() {
+  const sessionId = tempSession.value?.sessionId
+  if (!sessionId || tempImporting.value) return
+  const generation = tempGeneration
+  tempImporting.value = true
+  tempRetryable.value = false
   tempDoneSteps.value = 4
   tempHint.value = '正在读取登录信息…'
   try {
-    const r = await api.officialLoginFinish(tempSession.value.sessionId)
+    const r = await api.officialLoginFinish(sessionId)
+    if (disposed || generation !== tempGeneration) return
     if (!r?.ok) {
       tempPhase.value = 'failed'
+      tempRetryable.value = true
       tempError.value = r?.detail || '导入失败（登录信息已保留，可点击重试导入）'
       return
     }
     tempDoneSteps.value = 6
     tempPhase.value = 'completed'
+    tempSession.value = null
     tempHint.value = r.cleaned
       ? '登录信息已导入，临时配置已清理。'
       : '登录信息已导入。临时配置可能仍由客户端使用，已保留；可自行关闭官方客户端。'
     okMsg.value = `官方登录导入成功${r.email ? '（' + r.email + '）' : ''}${r.isExisting ? '，已有账号凭据已更新' : ''}`
     emit('changed')
   } catch (e) {
+    if (disposed || generation !== tempGeneration) return
     tempPhase.value = 'failed'
     tempError.value = e?.message || '导入失败'
+    tempRetryable.value = ![400, 401, 403, 404, 410].includes(e?.status)
+    if (e?.status === 400) {
+      // Both an expired session and a failed persistence operation use HTTP 400.
+      // Only a retained server session can safely offer retry with the same credentials.
+      try {
+        const st = await api.officialLoginStatus(sessionId)
+        if (disposed || generation !== tempGeneration) return
+        tempRetryable.value = ['ready', 'logged-in', 'importing'].includes(st?.phase)
+      } catch {}
+    }
+  } finally {
+    if (generation === tempGeneration) tempImporting.value = false
   }
 }
 async function retryTempImport() {
+  if (!tempRetryable.value || tempImporting.value) return
   tempPhase.value = 'running'
   tempError.value = ''
   await finishTempLogin()
 }
-async function cancelTempLogin() {
-  ++tempGeneration
+async function cancelTempLogin({ detaching = false } = {}) {
+  const generation = ++tempGeneration
   stopTempPoll()
-  if (tempSession.value?.sessionId) {
-    await api.officialLoginCancel(tempSession.value.sessionId).catch(() => {})
+  const sessionId = tempSession.value?.sessionId
+  if (sessionId) {
+    try { await api.officialLoginCancel(sessionId) }
+    catch (e) {
+      if (!detaching && !disposed && generation === tempGeneration) {
+        tempError.value = e?.message || '无法取消本次登录，请重试'
+        if (tempRunning.value) pollTempLogin()
+        return false
+      }
+    }
   }
+  if (generation !== tempGeneration) return true
   tempSession.value = null
   tempPhase.value = 'idle'
   tempDoneSteps.value = 0
   tempHint.value = ''
+  tempRetryable.value = false
+  tempImporting.value = false
+  return true
 }
 function closeTempLogin() {
   // 登录进行中关闭弹窗：先取消会话，避免留下无人接管的临时配置
-  if (tempRunning.value) cancelTempLogin()
+  cancelTempLogin({ detaching: true })
   emit('close')
 }
 
@@ -237,7 +291,9 @@ onMounted(() => {
   }
 })
 onUnmounted(() => {
-  ++tempGeneration
+  disposed = true
+  ++actionGeneration
+  cancelTempLogin({ detaching: true })
   stopPoll()
   stopTempPoll()
   api.cancelBrowserLoginApi().catch(() => {})
@@ -245,6 +301,7 @@ onUnmounted(() => {
 })
 
 function setError(e) {
+  if (disposed) return
   let msg = ''
   if (e instanceof Error) msg = e.message
   else if (e && typeof e === 'object') msg = e.detail || e.error || e.message || JSON.stringify(e)
@@ -253,6 +310,7 @@ function setError(e) {
   okMsg.value = ''
 }
 function setOk(m) {
+  if (disposed) return
   okMsg.value = m
   error.value = ''
 }
@@ -275,6 +333,7 @@ function currentPayload() {
 
 // ---------- 待授权卡片 ----------
 async function savePendingCard() {
+  const generation = actionGeneration
   if (!email.value.trim() && !note.value.trim()) {
     return setError('请至少填写账号邮箱或备注')
   }
@@ -286,12 +345,13 @@ async function savePendingCard() {
       email: email.value.trim(),
       note: note.value.trim()
     })
+    if (!actionCurrent(generation)) return
     if (r?.ok) {
       pendingId.value = r.accountId
       setOk('待授权卡片已保存，授权完成后会自动归档到该账号')
     } else setError(r)
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
@@ -303,15 +363,21 @@ async function savePendingCard() {
 // 运行时直接 TypeError: api.startBrowserLogin is not a function，
 // 被 catch 吞成一句「操作失败」—— OAuth 与设备授权两条路一度完全不可用。
 async function startAuth() {
+  const generation = actionGeneration
   loading.value = true
   error.value = ''
   try {
     if (authMode.value === 'device') {
       const r = await api.startDeviceFlowApi()
+      if (!actionCurrent(generation)) return
       if (r?.ok || r?.verification_uri || r?.user_code) { device.value = r; setOk('设备授权已发起：打开链接并输入用户码') }
       else setError(r)
     } else {
       const r = await api.startBrowserLoginApi()
+      if (!actionCurrent(generation)) {
+        api.cancelBrowserLoginApi().catch(() => {})
+        return
+      }
       if (r?.ok || r?.hostedUrl) {
         browser.value = r
         setOk('浏览器授权已发起，请在打开的页面完成登录')
@@ -321,7 +387,7 @@ async function startAuth() {
       } else setError(r)
     }
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
@@ -331,12 +397,16 @@ async function startAuth() {
 // 上一轮没回来就跳过这一轮，避免慢响应时请求叠加。
 function startPolling() {
   stopPoll()
+  const generation = actionGeneration
+  const pollGeneration = authPollGeneration
+  let inFlight = false
   polling.value = true
   pollTimer = setInterval(async () => {
-    if (loading.value || !polling.value) return
+    if (loading.value || !polling.value || inFlight) return
+    inFlight = true
     try {
       const r = await api.pollBrowserLoginApi(currentPayload())
-      if (!polling.value || active.value !== 'oauth') return
+      if (!actionCurrent(generation) || pollGeneration !== authPollGeneration || !polling.value || active.value !== 'oauth') return
       if (r?.ok) {
         stopPoll()
         browser.value = null
@@ -349,13 +419,14 @@ function startPolling() {
         setError(r)
       }
     } catch (e) {
-      if (!polling.value || active.value !== 'oauth') return
+      if (!actionCurrent(generation) || pollGeneration !== authPollGeneration || !polling.value || active.value !== 'oauth') return
       stopPoll()
       setError(e)
-    }
+    } finally { inFlight = false }
   }, 2000)
 }
 function stopPoll() {
+  ++authPollGeneration
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
   polling.value = false
 }
@@ -363,29 +434,35 @@ async function openBrowserLogin() {
   if (browser.value?.hostedUrl) api.openBrowser(browser.value.hostedUrl)
 }
 async function submitCallback() {
+  const generation = actionGeneration
+  stopPoll()
   loading.value = true
   error.value = ''
   try {
     // 签名是 (callbackUrl, payload)，不是 ({ callbackUrl, pendingId })
     const r = await api.submitBrowserCallbackApi(callbackUrl.value, { pendingId: pendingId.value || undefined, name: email.value.trim() || undefined })
+    if (!actionCurrent(generation)) return
     if (r?.ok) {
       stopPoll()
       setOk('授权完成，账号已就绪')
       emit('changed')
     } else setError(r)
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
 }
 async function continueAuth() {
+  const generation = actionGeneration
+  stopPoll()
   loading.value = true
   error.value = ''
   try {
     const r = authMode.value === 'device'
       ? await api.pollDeviceFlowApi(currentPayload())
       : await api.pollBrowserLoginApi(currentPayload())
+    if (!actionCurrent(generation)) return
     // 后端成功时返回的是 { ok: true, accountId, path }，**没有** done 字段。
     // 此前判 `r?.ok && r.done` 恒为假，于是即使授权真的完成了也走不到成功分支 ——
     // 用户点「我已授权，继续」永远只会看到「还没检测到授权完成」。
@@ -399,7 +476,7 @@ async function continueAuth() {
       setOk('还没检测到授权完成，完成授权后稍等片刻再点一次')
     } else setError(r)
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
@@ -410,26 +487,31 @@ async function onFile(e) {
   const f = e.target.files?.[0]
   if (!f) return
   importFile.value = f
+  const generation = actionGeneration
   const reader = new FileReader()
   reader.onload = () => {
+    if (!actionCurrent(generation)) return
     jsonText.value = String(reader.result || '')
     active.value = 'json'
   }
+  reader.onerror = () => { if (actionCurrent(generation)) setError('无法读取所选文件，请重试') }
   reader.readAsText(f)
 }
 async function importSave() {
+  const generation = actionGeneration
   if (!jsonText.value.trim()) return setError('请先粘贴凭据内容或选择文件')
   loading.value = true
   error.value = ''
   try {
     const r = await api.importTokenText(jsonText.value, email.value.trim() || undefined)
+    if (!actionCurrent(generation)) return
     if (r?.ok) {
       setOk((r.warning ? r.warning + '；' : '') + '已导入并添加为账号（设为当前）')
       jsonText.value = ''
       emit('changed')
     } else setError(r)
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
@@ -437,11 +519,22 @@ async function importSave() {
 
 // ---------- 本机登录导入 ----------
 const localBusy = ref(false)
+async function importExistingLocal() {
+  loading.value = true
+  if (!await cancelTempLogin()) { loading.value = false; return }
+  if (disposed) return
+  active.value = 'import'
+  await nextTick()
+  loading.value = false
+  if (!disposed) await getLocalAccount()
+}
 async function getLocalAccount() {
+  const generation = actionGeneration
   localBusy.value = true
   error.value = ''
   try {
     const info = await api.inspectCodexLocal()
+    if (!actionCurrent(generation)) return
     if (!info || info.error === 'not_found') {
       return setError('本机未检测到可导入的 Codex 登录。请先在官方客户端或 Codex CLI 中完成登录，或改用 OAuth 授权。')
     }
@@ -450,12 +543,13 @@ async function getLocalAccount() {
       return setError(text)
     }
     const r = await api.importCodexLocal()
+    if (!actionCurrent(generation)) return
     if (r?.ok) {
       setOk(`已导入本机登录${r.email ? '（' + r.email + '）' : ''}${r.isExisting ? '，凭据已更新' : '并设为当前账号'}`)
       emit('changed')
     } else setError(r?.detail || r?.error || '导入失败')
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     localBusy.value = false
   }
@@ -468,6 +562,7 @@ function selectPreset(id) {
   if (p) providerBaseUrl.value = p.baseUrl
 }
 async function saveApiKey() {
+  const generation = actionGeneration
   if (!apiKey.value.trim()) return setError('请输入 API Key')
   const baseUrl = providerBaseUrl.value.trim()
   if (providerPresetId.value === CUSTOM_PROVIDER_ID && !baseUrl) return setError('自定义供应商需要填写接口地址（BaseUrl）')
@@ -476,45 +571,65 @@ async function saveApiKey() {
   try {
     const presetName = activePreset.value?.name
     const r = await api.setAuthMode('openai', apiKey.value.trim(), baseUrl || undefined)
+    if (!actionCurrent(generation)) return
     if (r?.ok) {
       mode.value = 'openai'
       hasApiKey.value = true
       // 记住这个供应商供下次快选（失败不影响切换）
       if (baseUrl) {
         await api.saveProvider(presetName || baseUrl.replace(/^https?:\/\//, '').split('/')[0], baseUrl).catch(() => {})
+        if (!actionCurrent(generation)) return
         loadProviders()
       }
       setOk(`已切换为 API Key 模式${baseUrl ? '（上游：' + baseUrl + '）' : '（直连 api.openai.com）'}`)
       emit('changed')
     } else setError(r)
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
 }
 async function switchToBridge() {
+  const generation = actionGeneration
   loading.value = true
   error.value = ''
   try {
     const r = await api.setAuthMode('bridge', '')
+    if (!actionCurrent(generation)) return
     if (r?.ok) {
       mode.value = 'bridge'
       setOk('已切换回 Bridge（Codex 登录）模式')
       emit('changed')
     } else setError(r)
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
 }
 
 // 切到 apikey 标签时刷新已保存供应商
-watch(active, (v) => {
+watch(active, (v, previous) => {
+  ++actionGeneration
+  if (previous === 'tempLogin' && tempSession.value) cancelTempLogin()
   error.value = ''; okMsg.value = ''; tempError.value = ''
-  if (v !== 'oauth') stopPoll()
+  if (v !== 'oauth') {
+    stopPoll()
+    if (browser.value) api.cancelBrowserLoginApi().catch(() => {})
+    browser.value = null
+    device.value = null
+  }
   if (v === 'apikey') loadProviders()
+})
+watch(authMode, () => {
+  ++actionGeneration
+  stopPoll()
+  if (browser.value) api.cancelBrowserLoginApi().catch(() => {})
+  browser.value = null
+  device.value = null
+  callbackUrl.value = ''
+  error.value = ''; okMsg.value = ''
 })
 
 // 图标（内联 SVG，零依赖）
@@ -541,11 +656,11 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
 </script>
 
 <template>
-  <div class="modal-mask" @click.self="tempRunning ? closeTempLogin() : emit('close')">
-    <div class="modal" role="dialog" aria-modal="true" aria-label="添加 Codex 账号" v-modal-focus="() => tempRunning ? closeTempLogin() : emit('close')">
+  <div class="modal-mask" @click.self="closeTempLogin">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="添加 Codex 账号" v-modal-focus="closeTempLogin">
       <div class="modal-head">
         <div class="modal-title">添加 Codex 账号</div>
-        <button class="x" @click="tempRunning ? closeTempLogin() : emit('close')" aria-label="关闭">×</button>
+        <button class="x" @click="closeTempLogin" aria-label="关闭">×</button>
       </div>
 
       <div class="tabs">
@@ -591,17 +706,21 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
             <span v-html="icons.monitor"></span>
             打开官方客户端并登录
           </button>
-          <button v-if="tempRunning" class="btn-outline wide" @click="cancelTempLogin">
+          <button v-if="tempRunning" class="btn-outline wide" :disabled="tempImporting" @click="cancelTempLogin">
             取消本次官方登录
           </button>
-          <button v-if="tempPhase === 'failed' && tempDoneSteps >= 4" class="btn-primary" @click="retryTempImport">
+          <button v-if="tempRetryable" class="btn-primary" @click="retryTempImport">
             <span v-html="icons.rotate"></span>
             重试导入登录信息
           </button>
+          <button v-if="tempPhase !== 'completed'" class="btn-outline wide" :disabled="loading || localBusy || tempImporting" @click="importExistingLocal">
+            从本地导入
+          </button>
 
-          <p class="hint dim">
+          <details class="examples"><summary>未弹出客户端或已登录？</summary><p class="hint dim">
+            可自行打开官方客户端完成新登录；已有本机登录可点「从本地导入」。
             取消只停止本次导入，不会关闭已打开的官方客户端。无法确认客户端已退出时会保留临时配置；导入失败时保留凭据供重试。
-          </p>
+          </p></details>
         </div>
 
         <!-- OAuth -->
@@ -625,11 +744,11 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
           <p class="hint">点击下方按钮，在浏览器中完成 OpenAI 账号 OAuth 授权。</p>
 
           <div class="seg">
-            <button class="seg-item" :class="{ on: authMode === 'browser' }" @click="authMode = 'browser'">
+            <button class="seg-item" :disabled="loading" :class="{ on: authMode === 'browser' }" @click="authMode = 'browser'">
               <span v-html="icons.globe"></span>
               浏览器授权
             </button>
-            <button class="seg-item" :class="{ on: authMode === 'device' }" @click="authMode = 'device'">
+            <button class="seg-item" :disabled="loading" :class="{ on: authMode === 'device' }" @click="authMode = 'device'">
               <span v-html="icons.terminal"></span>
               设备授权
             </button>

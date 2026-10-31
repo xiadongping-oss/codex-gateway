@@ -269,6 +269,114 @@ test('start→status→finish：GUI 交接退出后返回 auth，保留可能仍
   await assert.rejects(mgr.finish(r.sessionId), /会话不存在/)
 })
 
+test('finish commits only after persistence and retries the original snapshot after failure', async () => {
+  const mgr = makeManager(tmpDataRoot(), {
+    alive: { flag: false }, discoverImpl: () => ({ path: 'C:\\fake\\codex.cmd', kind: 'cli' })
+  })
+  const session = await mgr.start()
+  const auth = path.join(session.profileDir, 'auth.json')
+  fs.writeFileSync(auth, JSON.stringify({ tokens: { access_token: 'fixture-first' } }))
+  assert.equal((await mgr.status(session.sessionId)).phase, 'ready')
+  await assert.rejects(mgr.finish(session.sessionId, async result => {
+    result.authJson.tokens.access_token = 'callback-mutated'
+    throw new Error('fixture registry write failed')
+  }), /fixture registry write failed/)
+  assert.ok(fs.existsSync(auth), 'credentials must survive a failed persistence callback')
+  assert.equal((await mgr.status(session.sessionId)).hasCredentials, true)
+  fs.writeFileSync(auth, JSON.stringify({ tokens: { access_token: 'fixture-other-account' } }))
+  const done = await mgr.finish(session.sessionId, async ({ authJson }) => {
+    assert.equal(authJson.tokens.access_token, 'fixture-first')
+    return { accountId: 'saved-account' }
+  })
+  assert.deepEqual(done.persisted, { accountId: 'saved-account' })
+  assert.equal(done.authJson, undefined, 'callback mode returns persistence metadata, not auth')
+  assert.equal(done.cleaned, true)
+  assert.equal(fs.existsSync(session.profileDir), false)
+  assert.equal((await mgr.status(session.sessionId)).phase, 'unknown')
+})
+
+test('finish excludes concurrent finish/cancel/recover while persistence is pending', async () => {
+  const root = tmpDataRoot()
+  const mgr = makeManager(root)
+  const session = await mgr.start()
+  fs.writeFileSync(path.join(session.profileDir, 'auth.json'), '{"tokens":{"access_token":"fixture"}}')
+  let release
+  let writes = 0
+  const pending = mgr.finish(session.sessionId, async () => {
+    writes++
+    await new Promise(resolve => { release = resolve })
+    return { accountId: 'one-account' }
+  })
+  assert.equal((await mgr.status(session.sessionId)).phase, 'importing')
+  await assert.rejects(mgr.finish(session.sessionId, () => { writes++ }), /正在导入/)
+  await assert.rejects(mgr.cancel(session.sessionId), /正在导入/)
+  mgr.recover()
+  await assert.rejects(mgr.finish(session.sessionId, () => { writes++ }), /正在导入/)
+  release()
+  assert.equal((await pending).persisted.accountId, 'one-account')
+  assert.equal(writes, 1)
+  const recovered = makeManager(root)
+  recovered.recover()
+  assert.equal((await recovered.status(session.sessionId)).phase, 'unknown', 'completed retained GUI profile must not resurrect')
+  assert.ok(fs.existsSync(session.profileDir), 'GUI may still use its profile')
+})
+
+test('default-profile failed import survives restart without switching to a newer account', async () => {
+  const root = tmpDataRoot()
+  let defaultText = null
+  const options = { dataRoot: root, platform: 'win32', spawnImpl: () => ({ pid: 7, unref() {} }),
+    discoverImpl: () => ({ path: 'fixture.exe', kind: 'app' }), defaultAuthText: () => defaultText }
+  const mgr = createOfficialLoginManager(options)
+  const session = await mgr.start()
+  defaultText = '{"tokens":{"access_token":"fixture-original"}}'
+  await assert.rejects(mgr.finish(session.sessionId, () => { throw new Error('fixture config failed') }), /fixture config failed/)
+  defaultText = '{"tokens":{"access_token":"fixture-next"}}'
+  const recovered = createOfficialLoginManager(options)
+  recovered.recover()
+  assert.equal((await recovered.status(session.sessionId)).phase, 'ready')
+  const result = await recovered.finish(session.sessionId, ({ authJson }) => {
+    assert.equal(authJson.tokens.access_token, 'fixture-original')
+    return { accountId: 'original' }
+  })
+  assert.equal(result.credSource, 'default-profile')
+  assert.equal(defaultText, '{"tokens":{"access_token":"fixture-next"}}', 'default profile is never modified')
+  assert.equal(fs.existsSync(path.join(session.profileDir, 'pending-import.json')), false)
+})
+
+test('snapshot write failure does not call persistence or consume the login session', async () => {
+  const mgr = makeManager(tmpDataRoot())
+  const session = await mgr.start()
+  fs.writeFileSync(path.join(session.profileDir, 'auth.json'), '{"tokens":{"access_token":"fixture"}}')
+  const blocked = path.join(session.profileDir, 'pending-import.json')
+  fs.mkdirSync(blocked)
+  let writes = 0
+  await assert.rejects(mgr.finish(session.sessionId, () => { writes++ }))
+  assert.equal(writes, 0)
+  assert.equal((await mgr.status(session.sessionId)).hasCredentials, true)
+  fs.rmdirSync(blocked)
+  await mgr.finish(session.sessionId, () => { writes++; return { accountId: 'saved' } })
+  assert.equal(writes, 1)
+})
+
+test('cancelled failed import is not recovered and damaged snapshots never select a replacement account', async () => {
+  const root = tmpDataRoot()
+  const mgr = makeManager(root)
+  const first = await mgr.start()
+  fs.writeFileSync(path.join(first.profileDir, 'auth.json'), '{"tokens":{"access_token":"fixture"}}')
+  await assert.rejects(mgr.finish(first.sessionId, () => { throw new Error('fixture failure') }))
+  await mgr.cancel(first.sessionId)
+  assert.equal(fs.existsSync(path.join(first.profileDir, 'pending-import.json')), false)
+  const second = await mgr.start()
+  fs.writeFileSync(path.join(second.profileDir, 'auth.json'), '{"tokens":{"access_token":"replacement"}}')
+  fs.writeFileSync(path.join(second.profileDir, 'pending-import.json'), '{broken')
+  const recovered = makeManager(root)
+  recovered.recover()
+  assert.equal((await recovered.status(first.sessionId)).phase, 'unknown')
+  assert.equal((await recovered.status(second.sessionId)).phase, 'unknown')
+  assert.ok(fs.existsSync(first.profileDir))
+  assert.ok(fs.existsSync(second.profileDir))
+})
+
 test('cancel：取消导入，不按 PID 杀客户端，不删除未确认退出的目录', async () => {
   const root = tmpDataRoot()
   const killed = []
@@ -301,7 +409,7 @@ test('start：CLI 形态补 login 子命令；桌面客户端进入 defaultWatch
   })
   const r1 = await mgrCli.start()
   assert.match(seen[0], /"C:\\npm\\codex\.cmd" login/)
-  assert.equal(seen[0], 'start "" /WAIT CMD /d /s /c ""C:\\npm\\codex.cmd" login"')
+  assert.equal(seen[0], 'start "" /WAIT CMD /d /s /c ""C:\\npm\\codex.cmd" login" & exit /b')
   await mgrCli.cancel(r1.sessionId)
 
   // store 形态：不带 login；客户端退出后仍 waiting-login（watchDefaultProfile=true）
@@ -497,7 +605,7 @@ test('explicit Windows CMD client gets login; asynchronous launch errors and non
     const manager = createOfficialLoginManager({ dataRoot: tmpDataRoot(), platform: 'win32',
       discoverImpl: () => failure === 'nonzero-store' ? { path: 'C:\\store\\Codex.exe', kind: 'store' } : client,
       spawnImpl: (command, options) => {
-        if (failure !== 'nonzero-store') assert.equal(command, 'start "" /WAIT CMD /d /s /c ""C:\\fixture cli\\codex.cmd" login"')
+        if (failure !== 'nonzero-store') assert.equal(command, 'start "" /WAIT CMD /d /s /c ""C:\\fixture cli\\codex.cmd" login" & exit /b')
         assert.equal(options.shell, true); return child
       }, defaultAuthText: () => null })
     const session = await manager.start()

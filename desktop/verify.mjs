@@ -31,11 +31,11 @@ try {
   // Frontend dependencies are installed explicitly by the developer/CI; the
   // gateway's versioned dependency tree is read as-is, never npm-installed here.
   await run.step('frontend', process.execPath, [path.join(root, 'frontend/node_modules/vite/bin/vite.js'), 'build'], { cwd: path.join(root, 'frontend') })
-  await run.step('frontend-tests', process.execPath, ['--test', 'frontend/tests/image-clipboard.test.mjs', 'frontend/tests/client-errors.test.mjs'], { cwd: root })
+  await run.step('frontend-tests', process.execPath, ['--test', 'frontend/tests/image-clipboard.test.mjs', 'frontend/tests/client-errors.test.mjs', 'frontend/tests/setup-modal.test.mjs'], { cwd: root })
   await run.step('validation-tests', process.execPath, ['--test', 'desktop/validation.test.mjs'], { cwd: root })
   await run.step('distribution-tests', process.execPath, ['--test', '--test-timeout=120000', 'desktop/rust-environment.test.mjs', 'desktop/build-resources.test.mjs', 'gateway/tests/runtime-resources.test.mjs', 'gateway/tests/build-release.test.mjs'], { cwd: root })
   await run.step('migration-tests', process.execPath, ['--test', '--test-timeout=120000', 'desktop/migration.test.mjs'], { cwd: root })
-  await run.step('gateway-core', process.execPath, ['--test', '--test-timeout=60000', 'gateway/tests/storage.test.mjs', 'gateway/tests/storage-integration.test.mjs', 'gateway/tests/desktop.test.mjs', 'gateway/tests/desktop-integration.test.mjs', 'gateway/tests/image-size.test.mjs', 'gateway/tests/mcp-gallery.test.mjs', 'gateway/tests/mcp-client.test.mjs', 'gateway/tests/official-login.test.mjs', 'gateway/tests/token-text.test.mjs'], { cwd: root })
+  await run.step('gateway-core', process.execPath, ['--test', '--test-timeout=60000', 'gateway/tests/storage.test.mjs', 'gateway/tests/storage-integration.test.mjs', 'gateway/tests/desktop.test.mjs', 'gateway/tests/desktop-integration.test.mjs', 'gateway/tests/image-size.test.mjs', 'gateway/tests/mcp-gallery.test.mjs', 'gateway/tests/mcp-client.test.mjs', 'gateway/tests/official-login.test.mjs', 'gateway/tests/token-text.test.mjs', 'gateway/tests/account-persistence.test.mjs'], { cwd: root })
   await run.step('rust-tests', process.execPath, ['desktop/build.mjs', '--test', '--locked', ...offline], { cwd: root, timeout: 25 * 60_000, env: { ...process.env, ...(process.platform === 'darwin' ? { MACOSX_DEPLOYMENT_TARGET: '13.0' } : {}) } })
   if (process.platform === 'darwin') { run.report.acceptance.macLockRecovery = 'core_scenarios_passed'; run.save() }
   const build = JSON.parse(fs.readFileSync(path.join(root, 'desktop/.generated/last-build.json')))

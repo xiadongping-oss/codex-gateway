@@ -20,10 +20,10 @@ const gwCfg = computed(() => gw.value.config || {})
 // 健康检查失败原因：/health 透传 bridge 的错误体（/__gw/status 的 health.data.error）
 // 常见失败是上游地区限制（未配代理直连），这时给出可操作的指引而不是干巴巴的「失败」。
 const gwHealthReason = computed(() => {
-  if (gwHealthOk.value) return null
+  if (mode.value !== 'bridge' || gwHealthOk.value) return null
   const h = gw.value.health || {}
   if (h.timeout) return { text: '健康检查超时（bridge 无响应）', hint: '' }
-  if (h.status === 0) return { text: 'bridge 端口无响应，实例可能启动失败', hint: '查看「API 日志」里的启动报错' }
+  if (h.status === 0) return gw.value.running ? { text: '模型代理端口无响应', hint: '查看「调用日志」里的运行日志' } : null
   const detail = String(h.data?.error || h.error || '').trim()
   if (!detail) return null
   const regionBlock = /unsupported_country_region_territory|region_territory/i.test(detail)
@@ -41,7 +41,14 @@ const health = ref(null)
 const loading = ref(false)
 const error = ref('')
 const showSetup = ref(false)
-const mode = ref('bridge')
+const mode = ref('')
+const hasApiKey = ref(false)
+const bridgeDiagnostic = computed(() => {
+  if (!gw.value.running) return { ok: null, text: account.value.loggedIn ? '模型代理未启动' : '尚未配置账号' }
+  if (health.value?.ok !== true) return { ok: false, text: '模型代理连接异常' + (health.value?.error ? '：' + String(health.value.error).slice(0, 120) : '') }
+  if (!account.value.loggedIn) return { ok: false, text: '模型代理已启动，账号尚未登录' }
+  return { ok: true, text: '模型代理连接正常 · 账号登录有效' }
+})
 const accounts = ref([])
 const activeId = ref(null)
 const editingId = ref(null)
@@ -81,29 +88,23 @@ async function diagnose(seq = null) {
   loading.value = true
   error.value = ''
   try {
-    const h = await api.diagnose()
-    const acc = await api.getAccount()
-    const s = await api.getAuthState().catch(() => null)
+    const s = await api.getAuthState()
+    if (!s || !['bridge', 'openai'].includes(s.mode)) throw new Error('无法读取连接配置，请检查本地服务与控制台登录状态')
+    const [acc, h] = await Promise.all([api.getAccount(), s.mode === 'bridge' ? api.diagnose() : Promise.resolve(null)])
     if (isStale(seq)) return
     health.value = h
     account.value = acc
-    if (s?.mode) mode.value = s.mode
-    const bridgeOk = health.value?.ok === true
-    const parts = []
-    if (health.value?.version) parts.push('bridge v' + health.value.version)
-    parts.push(account.value?.loggedIn ? '账号登录有效' : '账号未登录')
-    if (bridgeOk && account.value?.loggedIn && gwHealthOk.value) parts.push('上游健康检查通过')
-    diagResult.value = {
-      ok: bridgeOk && !!account.value?.loggedIn,
-      text: bridgeOk
-        ? '连接正常 · ' + parts.join(' · ')
-        : '桥接进程异常' + (health.value?.error ? '：' + String(health.value.error).slice(0, 120) : '')
-    }
+    mode.value = s.mode
+    hasApiKey.value = !!s.hasApiKey
+    diagResult.value = s.mode === 'openai'
+      ? { ok: null, text: hasApiKey.value ? 'API Key 已配置 · 上游连接未测试' : 'API Key 尚未配置' }
+      : bridgeDiagnostic.value
     clearTimeout(diagTimer)
     diagTimer = setTimeout(() => (diagResult.value = null), 10000)
   } catch (e) {
     if (isStale(seq)) return
     error.value = e?.message || '诊断失败'
+    mode.value = ''
     fetchErr.value = error.value
     diagResult.value = { ok: false, text: '检测失败：' + (e?.message || '网关控制接口无响应') }
     clearTimeout(diagTimer)
@@ -220,13 +221,17 @@ onUnmounted(() => {
       </div>
 
       <!-- 检测连接结果横条：显式反馈，10 秒后自动淡出 -->
-      <div v-if="diagResult" class="diag-result" :class="diagResult.ok ? 'ok' : 'bad'">
-        <span class="status-dot" :class="{ off: !diagResult.ok }"></span>
+      <div v-if="diagResult" class="diag-result" :class="diagResult.ok === true ? 'ok' : diagResult.ok === false ? 'bad' : 'neutral'">
+        <span class="status-dot" :class="{ off: diagResult.ok === false, neutral: diagResult.ok === null }"></span>
         <span class="diag-text">{{ diagResult.text }}</span>
       </div>
 
       <!-- 仅异常 / 特殊模式显示状态条；正常登录态由当前账号行直接呈现，避免重复 -->
-      <div v-if="mode === 'openai' || !account.loggedIn || !accounts.length" class="conn-state" :class="account.loggedIn ? 'ok' : 'bad'">
+      <div v-if="mode === 'openai'" class="conn-state">
+        <span class="status-dot neutral"></span>
+        <div class="conn-main"><div class="cs-name">API Key 模式</div><div class="cs-mail">{{ hasApiKey ? '密钥已配置，上游连接未测试' : '尚未配置，点击「添加账号」设置供应商与密钥' }}</div></div>
+      </div>
+      <div v-else-if="mode === 'bridge' && (!account.loggedIn || !accounts.length)" class="conn-state" :class="account.loggedIn ? 'ok' : 'bad'">
         <span class="status-dot" :class="{ off: !account.loggedIn }"></span>
         <div class="conn-main">
           <div class="cs-name">
@@ -293,7 +298,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div class="account-proxy-diagnostics">
+    <div v-if="mode === 'bridge'" class="account-proxy-diagnostics">
       <details class="help-details"><summary>模型代理诊断信息</summary>
       <div class="gw-state">
         <span>PID <b class="mono">{{ gw.pid || '—' }}</b></span>
@@ -313,10 +318,15 @@ onUnmounted(() => {
     <div class="grid2">
       <AccountQuotaCard />
 
-      <div class="card" v-if="health">
+      <div class="card" v-if="mode === 'openai'">
         <div class="card-title">连接诊断</div>
-        <div class="health-status" :class="health.ok === true ? 'ok' : 'bad'">
-          {{ health.ok === true ? '✓ 桥接进程正常' : '✗ 桥接进程异常' }}
+        <div class="health-status">{{ hasApiKey ? 'API Key 已配置' : '尚未配置 API Key' }}</div>
+        <div class="h-detail">{{ hasApiKey ? '上游连接未测试。可通过客户端调用验证。' : '添加供应商与密钥后即可使用。' }}</div>
+      </div>
+      <div class="card" v-else-if="mode === 'bridge' && health">
+        <div class="card-title">连接诊断</div>
+        <div class="health-status" :class="bridgeDiagnostic.ok === true ? 'ok' : bridgeDiagnostic.ok === false ? 'bad' : ''">
+          {{ bridgeDiagnostic.text }}
           <span v-if="health.version">· bridge v{{ health.version }}</span>
         </div>
         <div v-if="health.error" class="health-row">
@@ -376,6 +386,7 @@ onUnmounted(() => {
 }
 .diag-result.ok { border-color: rgba(139,107,214,0.35); }
 .diag-result.bad { border-color: rgba(244,63,94,0.4); background: rgba(244,63,94,0.07); }
+.status-dot.neutral { background: var(--text-3); animation: none; }
 .diag-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2, var(--text)); }
 .conn-state {
   display: flex; align-items: center; gap: 12px; padding: 12px 16px; min-width: 0; flex: 1;

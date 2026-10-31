@@ -294,6 +294,7 @@ mod tests {
             smoke: false,
             isolated: true,
             smoke_case: "normal".into(),
+            account_validation: false,
         };
         let cancel = AtomicBool::new(false);
         let mut wizard = Wizard::default();

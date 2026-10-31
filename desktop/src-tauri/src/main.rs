@@ -166,6 +166,8 @@ fn main() {
             background: AtomicBool::new(args.iter().any(|s| s == "--from-autostart")),
             duplicates: std::sync::atomic::AtomicUsize::new(0),
             isolated,
+            account_validation: cfg!(debug_assertions)
+                && args.iter().any(|a| a == "--account-validation"),
             notice: std::sync::Mutex::new(String::new()),
             page: std::sync::Mutex::new("overview".into()),
         })
@@ -206,7 +208,9 @@ fn main() {
             desktop::install(app.handle())?;
             let window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-                    .title(if cfg!(debug_assertions) && settings.isolated {
+                    .title(if cfg!(debug_assertions) && settings.account_validation {
+                        "Codex Gateway · 账号验收（独立工作空间）"
+                    } else if cfg!(debug_assertions) && settings.isolated {
                         "Codex Gateway · 隔离测试（非真实账号环境）"
                     } else {
                         "Codex Gateway · 工作台"

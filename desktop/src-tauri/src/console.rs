@@ -216,7 +216,9 @@ impl Console {
         let nav_label = label.clone();
         let popup_label = label.clone();
         let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
-            .title(if cfg!(debug_assertions) && isolated {
+            .title(if cfg!(debug_assertions) && app.state::<crate::desktop::Desktop>().account_validation {
+                "Codex Gateway · 账号验收（独立工作空间）"
+            } else if cfg!(debug_assertions) && isolated {
                 "Codex Gateway · 隔离测试（非真实账号环境）"
             } else {
                 "Codex Gateway · 工作台"

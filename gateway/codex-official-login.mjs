@@ -20,6 +20,7 @@ import crypto from 'node:crypto'
 import os from 'node:os'
 import { spawn, execFileSync } from 'node:child_process'
 import { loginTempRoot } from './storage-paths.mjs'
+import { writeJsonAtomic } from './atomic-write.mjs'
 
 const SESSION_ID_RE = /^[0-9a-f]{16}$/
 export const LOGIN_TIMEOUT_MS = 10 * 60 * 1000
@@ -283,9 +284,26 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     }
   }
 
+  function readImportState(profileDir) {
+    try { return JSON.parse(fs.readFileSync(path.join(profileDir, 'import-state.json'), 'utf-8')) } catch { return null }
+  }
+  function readPendingImport(profileDir) {
+    try {
+      const pending = JSON.parse(fs.readFileSync(path.join(profileDir, 'pending-import.json'), 'utf-8'))
+      const text = JSON.stringify(pending.authJson)
+      if (pending.schemaVersion === 1 && authFileHasCredentials(text) && ['temp-profile', 'default-profile'].includes(pending.credSource)) {
+        return { text, source: pending.credSource }
+      }
+    } catch { /* Keep the original profile available if a snapshot is unreadable. */ }
+    return null
+  }
+
   // 凭据解析：临时 profile 优先；其次默认 profile —— 但只有内容相对「会话开始时
   // 的指纹」发生变化才采纳。不然用户早就登录过的旧凭据会被误当成这次的新登录。
   function resolveAuth(session) {
+    // A failed import retries the exact credentials the user submitted, even if
+    // an official GUI writes another account to its default profile meanwhile.
+    if (session.pendingImport) return session.pendingImport
     const tempText = readAuthText(session.profileDir)
     if (tempText && authFileHasCredentials(tempText)) return { text: tempText, source: 'temp-profile' }
     const defText = defaultAuthText()
@@ -349,9 +367,12 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
         // START otherwise runs batch files with CMD /K: even a failed CLI login
         // leaves that window open and /WAIT never observes its exit code.
         // Bare CMD is START's documented COMSPEC substitution, not a PATH lookup.
-        const command = launchKind === 'cli' && /\.(cmd|bat)$/i.test(client.path)
+        const launch = launchKind === 'cli' && /\.(cmd|bat)$/i.test(client.path)
           ? `start "" /WAIT CMD /d /s /c ""${client.path}" login"`
           : `start "" /WAIT "${client.path}"${cliArgs}`
+        // START's child code can otherwise be lost when the outer shell exits.
+        // No delayed expansion: valid install paths may contain literal '!'.
+        const command = `${launch} & exit /b`
         const child = spawnImpl(command, {
           shell: true, stdio: 'ignore',
           env: { ...env, CODEX_HOME: profileDir }
@@ -394,12 +415,15 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     s.credSource = info ? info.source : null
     const alive = pidAliveImpl ? pidAlive(s.pid) : !!s.child && !s.clientExited
     if (pidAliveImpl) s.clientExited = s.pid != null && !alive
-    const d = derivePhase(s, { now: Date.now(), pidRunning: alive })
+    const d = s.finishing
+      ? { phase: 'importing', error: null, hasCredentials: true }
+      : derivePhase(s, { now: Date.now(), pidRunning: alive })
     if (d.phase === 'failed') {
       s.phase = 'failed'
       s.error = d.error
     } else {
       s.phase = d.phase
+      s.error = d.error
     }
     return {
       sessionId,
@@ -414,28 +438,55 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     }
   }
 
-  // 导入 + 清理：返回 auth.json 原文交由上层注册账号；清理失败不影响导入。
-  async function finish(sessionId) {
+  // The persistence callback is the commit boundary. Never consume credentials
+  // before account/config writes succeed; only one finish may own a session.
+  // No-callback callers retain the historical auth-result/consume contract.
+  async function finish(sessionId, persist) {
     const s = sessions.get(sessionId)
     if (!s) throw new Error('会话不存在或已过期')
-    const info = resolveAuth(s)
-    if (!info) {
-      throw new Error('还没读到本次登录的凭据：临时目录为空，默认 Codex 凭据也没有变化。请先在官方客户端完成登录')
+    if (s.finishing) throw new Error('本次登录正在导入，请等待完成后重试')
+    if (persist !== undefined && typeof persist !== 'function') throw new TypeError('导入保存回调无效')
+    s.finishing = true
+    try {
+      const info = resolveAuth(s)
+      if (!info) throw new Error('还没读到本次登录的凭据：临时目录为空，默认 Codex 凭据也没有变化。请先在官方客户端完成登录')
+      if (!s.pendingImport) {
+        // Own namespace only; never overwrite the GUI's auth.json or default home.
+        // Atomic private snapshot also survives a gateway restart after a failure.
+        writeJsonAtomic(path.join(s.profileDir, 'pending-import.json'), {
+          schemaVersion: 1, authJson: JSON.parse(info.text), credSource: info.source
+        })
+        s.pendingImport = { text: info.text, source: info.source }
+      }
+      s.hasCredentials = true
+      const result = { authJson: JSON.parse(info.text), credSource: info.source, clientPath: s.clientPath, marker: readMarker(s.profileDir) }
+      const persisted = persist ? await persist(result) : undefined
+      // Retained GUI/recovered profiles must not resurrect a consumed session.
+      writeJsonAtomic(path.join(s.profileDir, 'import-state.json'), { phase: 'completed' })
+      // Import never kills a GUI that may have handed off to an existing instance.
+      const cleaned = !s.recovered && s.clientExited && !s.defaultWatch && destroyProfile(s.profileDir)
+      if (!cleaned) { try { fs.unlinkSync(path.join(s.profileDir, 'pending-import.json')) } catch {} }
+      sessions.delete(sessionId)
+      return persist ? { persisted, credSource: info.source, cleaned } : { ...result, cleaned }
+    } finally {
+      s.finishing = false
+      if (sessions.has(sessionId) && s.pendingImport) {
+        s.phase = s.clientExited ? 'ready' : 'logged-in'
+        s.error = null
+      }
     }
-    // Import never kills a GUI that may have handed off to an existing instance.
-    const marker = readMarker(s.profileDir)
-    const result = { authJson: JSON.parse(info.text), credSource: info.source, clientPath: s.clientPath, marker }
-    const cleaned = !s.recovered && s.clientExited && !s.defaultWatch && destroyProfile(s.profileDir)
-    sessions.delete(sessionId)
-    return { ...result, cleaned }
   }
 
   async function cancel(sessionId) {
     const s = sessions.get(sessionId)
     if (!s) return { ok: true }
+    if (s.finishing) throw new Error('本次登录正在导入，暂时不能取消')
+    writeJsonAtomic(path.join(s.profileDir, 'import-state.json'), { phase: 'cancelled' })
     // Cancelling stops watching/importing. Keep a profile while a client may still
     // write to it; the shell owns new descendants and cleans them on application exit.
     if (!s.recovered && s.clientExited && !s.defaultWatch) destroyProfile(s.profileDir)
+    // This snapshot belongs only to the gateway; the GUI never writes it.
+    try { fs.unlinkSync(path.join(s.profileDir, 'pending-import.json')) } catch {}
     sessions.delete(sessionId)
     return { ok: true }
   }
@@ -452,10 +503,15 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     }
     for (const ent of entries) {
       if (!ent.isDirectory() || !SESSION_ID_RE.test(ent.name)) continue
+      if (sessions.has(ent.name)) { kept += 1; continue }
       const dir = path.join(root, ent.name)
+      if (['completed', 'cancelled'].includes(readImportState(dir)?.phase)) { kept += 1; continue }
       const marker = readMarker(dir)
       const authText = readAuthText(dir)
-      if (authText && authFileHasCredentials(authText)) {
+      const pendingImport = readPendingImport(dir)
+      // Never silently substitute another auth file for a damaged retry snapshot.
+      if (!pendingImport && fs.existsSync(path.join(dir, 'pending-import.json'))) { kept += 1; continue }
+      if (pendingImport || (authText && authFileHasCredentials(authText))) {
         // 有凭据：登记成可恢复会话（用户重跑 finish 就能导入，不必再登录一遍）
         sessions.set(ent.name, {
           sessionId: ent.name, profileDir: dir,
@@ -463,7 +519,7 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
           pid: null,
           startedAt: marker?.createdAt ? Date.parse(marker.createdAt) : Date.now(),
           hasCredentials: true, clientExited: true,
-          phase: 'ready', error: null, recovered: true
+          phase: 'ready', error: null, recovered: true, pendingImport
         })
         kept += 1
       } else {

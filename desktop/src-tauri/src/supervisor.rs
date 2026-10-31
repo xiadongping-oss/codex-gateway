@@ -31,6 +31,7 @@ pub struct Settings {
     pub smoke: bool,
     pub isolated: bool,
     pub smoke_case: String,
+    pub account_validation: bool,
 }
 impl Settings {
     pub fn resolve(app: &tauri::AppHandle) -> Result<Self, Box<dyn std::error::Error>> {
@@ -46,6 +47,7 @@ impl Settings {
         let mut smoke = false;
         let mut isolated = false;
         let mut smoke_case = String::from("normal");
+        let mut account_validation = false;
         if cfg!(debug_assertions) {
             for arg in std::env::args().skip(1) {
                 if let Some(v) = arg.strip_prefix("--data-dir=") {
@@ -62,6 +64,8 @@ impl Settings {
                     smoke = true;
                 } else if arg == "--isolated" {
                     isolated = true;
+                } else if arg == "--account-validation" {
+                    account_validation = true;
                 } else if arg == "--from-autostart" {
                     // Visibility is handled by the native desktop state, in all builds.
                 } else {
@@ -80,6 +84,7 @@ impl Settings {
             return Err("Isolated checks require an explicit test data directory".into());
         }
         validate_bridge_port(bridge_port, smoke || isolated)?;
+        validate_account_validation(account_validation, isolated, smoke)?;
         if ![
             "normal",
             "session-loss",
@@ -114,6 +119,7 @@ impl Settings {
             smoke,
             isolated,
             smoke_case,
+            account_validation,
         })
     }
 }
@@ -122,6 +128,16 @@ fn validate_bridge_port(port: Option<u16>, isolated: bool) -> Result<(), &'stati
     // may override its base. Never accept inherited BRIDGE_* environment values.
     if port.is_some_and(|p| !isolated || p == 0 || p > u16::MAX - 5) {
         return Err("Bridge port override requires isolation and a valid six-port range");
+    }
+    Ok(())
+}
+fn validate_account_validation(
+    enabled: bool,
+    isolated: bool,
+    smoke: bool,
+) -> Result<(), &'static str> {
+    if enabled && (!isolated || smoke) {
+        return Err("Host account validation requires an explicit isolated manual workspace");
     }
     Ok(())
 }
@@ -344,7 +360,10 @@ fn launch(settings: &Settings, cancel: &AtomicBool) -> Result<Session, String> {
             "SSL_CERT_DIR",
         ]
         .contains(&upper.as_str())
-            || official_login_env_allowed(&upper, settings.smoke || settings.isolated)
+            || official_login_env_allowed(
+                &upper,
+                settings.smoke || (settings.isolated && !settings.account_validation),
+            )
         {
             command.env(key, value);
         }
@@ -353,14 +372,16 @@ fn launch(settings: &Settings, cancel: &AtomicBool) -> Result<Session, String> {
         .env("CGW_DATA_DIR", &settings.data)
         .env("LAUNCHER_PORT", settings.port.to_string());
     if settings.smoke || settings.isolated {
-        let home = settings
-            .data
-            .parent()
-            .ok_or("DATA_DIR_INVALID")?
-            .join("isolated-home");
-        fs::create_dir_all(&home).map_err(|_| "DATA_DIR_UNWRITABLE")?;
-        for key in ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
-            command.env(key, &home);
+        if !settings.account_validation {
+            let home = settings
+                .data
+                .parent()
+                .ok_or("DATA_DIR_INVALID")?
+                .join("isolated-home");
+            fs::create_dir_all(&home).map_err(|_| "DATA_DIR_UNWRITABLE")?;
+            for key in ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"] {
+                command.env(key, &home);
+            }
         }
         command.env("DISABLE_AUTOSTART", "1");
         if let Some(port) = settings.bridge_port {
@@ -639,6 +660,17 @@ fn run(
             }
             None => None,
         };
+        #[cfg(debug_assertions)]
+        if settings.account_validation
+            && settings.data.parent().is_some_and(|root| {
+                root.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("cgw-account-native-"))
+                    && fs::symlink_metadata(root.join("account-validation-stop"))
+                        .is_ok_and(|m| m.is_file())
+            })
+        {
+            action = Some("quit".into());
+        }
         if action.as_deref() == Some("quit") {
             stay_for_backups = false;
         }
@@ -1224,6 +1256,14 @@ fn run(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn host_account_validation_requires_explicit_manual_isolation() {
+        assert!(super::validate_account_validation(false, false, false).is_ok());
+        assert!(super::validate_account_validation(false, true, true).is_ok());
+        assert!(super::validate_account_validation(true, true, false).is_ok());
+        assert!(super::validate_account_validation(true, false, false).is_err());
+        assert!(super::validate_account_validation(true, true, true).is_err());
+    }
+    #[test]
     fn official_login_custom_paths_are_preserved_only_outside_isolation() {
         for key in ["CODEX_HOME", "CODEX_CLIENT_PATH"] {
             assert!(super::official_login_env_allowed(key, false));
@@ -1261,6 +1301,7 @@ mod tests {
             smoke: true,
             isolated: true,
             smoke_case: "normal".into(),
+            account_validation: false,
         }
     }
     #[test]
@@ -1377,6 +1418,7 @@ mod tests {
             smoke: true,
             isolated: true,
             smoke_case: "normal".into(),
+            account_validation: false,
         };
         let cancel = AtomicBool::new(false);
         let mut first = launch(&settings, &cancel).unwrap();
@@ -1439,6 +1481,7 @@ mod tests {
             smoke: true,
             isolated: true,
             smoke_case: "normal".into(),
+            account_validation: false,
         };
         let mut session = launch(&settings, &AtomicBool::new(false)).unwrap();
         fn http(port: u16, path: &str, cookie: &str) -> String {
@@ -1510,6 +1553,7 @@ mod tests {
             smoke: true,
             isolated: true,
             smoke_case: "normal".into(),
+            account_validation: false,
         };
         for origin in [
             "http://localhost:4173",

@@ -147,6 +147,14 @@ const adminAuth = ADMIN_AUTH_DISABLED ? null : createAdminAuth({ token: adminTok
 
 // 多模式配置：bridge（复用 codex login OAuth）/ openai（自带 API Key 直连）
 let gwConfig = loadConfig()
+// Account writes may already be committed. Report config failure without rolling
+// back durable credentials, and update the live pointer only after persistence.
+function persistAccountSelection(authFilePath) {
+  if (saveConfig({ ...gwConfig, authFilePath }) !== true) {
+    throw new Error('账号凭据已保留，但激活配置未能保存，请检查磁盘权限后重试。')
+  }
+  gwConfig.authFilePath = authFilePath
+}
 // 多账号：启动迁移旧 auth.json，并让 bridge 指向“当前激活账号”。
 //
 // 必须 await：migrateLegacyAuth 里的 addAccount 要写盘。不 await 会让 gwConfig
@@ -2752,8 +2760,7 @@ async function handleHttpRequest(req, res) {
           mode: 'bridge',
           data
         })
-        gwConfig.authFilePath = acct.path
-        saveConfig(gwConfig)
+        persistAccountSelection(acct.path)
         pushLog('● 已添加账号：' + acct.path)
         if (gwConfig.mode === 'bridge') restartBridgeFor(acct.id, '新增账号')
         return sendJson(res, 200, { ok: true, accountId: acct.id, activeId: acct.reg.activeId })
@@ -2780,8 +2787,7 @@ async function handleHttpRequest(req, res) {
           mode: 'bridge',
           data
         })
-        gwConfig.authFilePath = acct.path
-        saveConfig(gwConfig)
+        persistAccountSelection(acct.path)
         pushLog('● 已通过文本导入添加账号：' + acct.path)
         if (gwConfig.mode === 'bridge') restartBridgeFor(acct.id, '文本导入账号')
         return sendJson(res, 200, { ok: true, accountId: acct.id, activeId: acct.reg.activeId, warning })
@@ -2806,12 +2812,11 @@ async function handleHttpRequest(req, res) {
         const data = normalizeAuthJson(JSON.parse(fs.readFileSync(info.path, 'utf-8')))
         const acct = await addAccount({
           name: body.name || (info.email ? info.email : '本机 Codex 导入'),
-          provider: 'oauth',
+          provider: data.auth_mode === 'api_key' ? 'apikey' : 'oauth',
           mode: 'bridge',
           data
         })
-        gwConfig.authFilePath = acct.path
-        saveConfig(gwConfig)
+        persistAccountSelection(acct.path)
         pushLog('● 从本机 Codex CLI 导入账号：' + (info.email || acct.id) + ' → ' + acct.path)
         if (gwConfig.mode === 'bridge') restartBridgeFor(acct.id, '本机导入')
         return sendJson(res, 200, {
@@ -2844,22 +2849,23 @@ async function handleHttpRequest(req, res) {
     if (p === '/__gw/codex-official-login/finish' && req.method === 'POST') {
       try {
         const body = await readOptionalBody(req)
-        const r = await officialLogin.finish(body.sessionId)
-        const data = normalizeAuthJson(r.authJson)
-        const email = jwtClaims(data.tokens?.id_token)?.email || null
-        const acct = await addAccount({
-          name: body.name || email || '官方客户端登录',
-          provider: data.auth_mode === 'api_key' ? 'apikey' : 'oauth',
-          mode: 'bridge',
-          data
+        const r = await officialLogin.finish(body.sessionId, async ({ authJson }) => {
+          const data = normalizeAuthJson(authJson)
+          const email = jwtClaims(data.tokens?.id_token)?.email || null
+          const acct = await addAccount({
+            name: body.name || email || '官方客户端登录',
+            provider: data.auth_mode === 'api_key' ? 'apikey' : 'oauth',
+            mode: 'bridge',
+            data
+          })
+          persistAccountSelection(acct.path)
+          return { accountId: acct.id, activeId: acct.reg.activeId, isExisting: acct.isExisting === true, email }
         })
-        gwConfig.authFilePath = acct.path
-        saveConfig(gwConfig)
-        pushLog('● 官方客户端登录导入成功：' + (email || acct.id))
-        if (gwConfig.mode === 'bridge') restartBridgeFor(acct.id, '官方登录')
+        const { accountId, activeId, isExisting, email } = r.persisted
+        pushLog('● 官方客户端登录导入成功：' + (email || accountId))
+        if (gwConfig.mode === 'bridge') restartBridgeFor(accountId, '官方登录')
         return sendJson(res, 200, {
-          ok: true, accountId: acct.id, activeId: acct.reg.activeId,
-          isExisting: acct.isExisting === true, email, cleaned: r.cleaned,
+          ok: true, accountId, activeId, isExisting, email, cleaned: r.cleaned,
           // 凭据来源：temp-profile=临时目录；default-profile=桌面版写进了 ~/.codex
           credSource: r.credSource || null
         })

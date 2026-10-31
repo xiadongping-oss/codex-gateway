@@ -869,7 +869,7 @@ export async function addAccount({ name, provider = 'token', mode = 'bridge', da
     existing.email = emailFromIdToken(data?.tokens?.id_token) || existing.email || ''
     existing.updatedAt = new Date().toISOString()
     reg.activeId = id
-    saveAccounts(reg)
+    if (!saveAccounts(reg)) throw new Error('账号凭据已保留，但账号列表未能保存，请检查磁盘权限后重试。')
     return { id, reg, path: accountAuthPath(id), isExisting: true }
   }
 
@@ -883,7 +883,7 @@ export async function addAccount({ name, provider = 'token', mode = 'bridge', da
     createdAt: new Date().toISOString()
   })
   reg.activeId = prelimId
-  saveAccounts(reg)
+  if (!saveAccounts(reg)) throw new Error('账号凭据已保留，但账号列表未能保存，请检查磁盘权限后重试。')
   return { id: prelimId, reg, path: accountAuthPath(prelimId), isExisting: false }
 }
 
