@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { prepareDesktop, verifyDesktop } from '../prepare-desktop.mjs'
 import { releaseRustEnvironment } from './rust-environment.mjs'
 import { inspectDistributionPaths } from './distribution-paths.mjs'
+import { isolateBuildResources } from './build-resources.mjs'
 
 const desktop = path.dirname(fileURLToPath(import.meta.url)), root = path.dirname(desktop)
 const args = process.argv.slice(2)
@@ -54,6 +55,7 @@ try {
   // Dedicated release cache; timestamp validation below rejects any stale installer.
   const cargoTarget = path.join(desktop, 'src-tauri/target/windows-package')
   const env = { ...releaseRustEnvironment(root), CARGO_TARGET_DIR: cargoTarget, CGW_BUILD_RESOURCES: outDir }
+  isolateBuildResources(root, path.join(cargoTarget, 'release'))
   await runCommand('tauri-build', process.execPath, [cli, 'build', '--ci', '--no-sign', '--no-bundle', '--config', config, '--', '--locked', ...(args.includes('--offline') ? ['--offline'] : [])], desktop, env)
   const binary = path.join(cargoTarget, 'release/codex-gateway-desktop.exe')
   report.binaryPaths = inspectDistributionPaths(binary, root)
