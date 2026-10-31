@@ -25,6 +25,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { prepareBridge } from './prepare-bridge.mjs'
+import { excludeDependencyResource } from './dependency-resources.mjs'
 import { readRuntimeLock, selectRuntime, executableTarget } from './runtime-lock.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)))
@@ -172,6 +173,9 @@ function copyTree(srcDir, destDir) {
     if (GATEWAY_DENY.has(name)) continue
     const src = path.join(srcDir, name)
     const dest = path.join(destDir, name)
+    const dependencyRelative = path.relative(path.join(ROOT, 'gateway/node_modules'), src)
+    if (!path.isAbsolute(dependencyRelative) && !dependencyRelative.startsWith('..' + path.sep) &&
+        excludeDependencyResource(dependencyRelative)) continue
     const st = fs.statSync(src)
     if (st.isDirectory()) copyTree(src, dest)
     else copyFile(src, dest)

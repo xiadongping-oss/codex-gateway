@@ -196,7 +196,9 @@ export async function startGateway() { return await gwRequest('/__gw/start', 'PO
 export async function stopGateway() { return await gwRequest('/__gw/stop', 'POST').catch(() => null) }
 export async function restartGateway() { return await gwRequest('/__gw/restart', 'POST').catch(() => null) }
 export async function getGatewayLogs() {
-  return (await gwRequest('/__gw/logs', 'GET').catch(() => null)) || { lines: [] }
+  const result = await gwRequest('/__gw/logs', 'GET')
+  if (!Array.isArray(result?.lines)) throw new Error('运行日志响应无效')
+  return result
 }
 
 // ---------- 连接诊断 ----------
@@ -275,8 +277,9 @@ export async function deleteUploadRecord(sourceId, name) {
 
 // 调用日志：网关反代层逐笔记录的真实 /v1 调用（环形缓冲 200 条）
 export async function getLogs(_opts = {}) {
-  const r = await gwRequest('/__gw/call-logs', 'GET').catch(() => null)
-  return (r && Array.isArray(r.logs)) ? r.logs : []
+  const r = await gwRequest('/__gw/call-logs', 'GET')
+  if (!Array.isArray(r?.logs)) throw new Error('调用日志响应无效')
+  return r.logs
 }
 
 // ---------- 生成图片（bridge image_generation 落盘产物） ----------

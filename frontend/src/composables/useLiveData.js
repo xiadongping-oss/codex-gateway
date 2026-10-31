@@ -125,7 +125,11 @@ function createLiveData() {
       ])
       gwConnected.value = !!(r1.ok && r1.value && typeof r1.value.running === 'boolean')
       if (gwConnected.value) gw.value = r1.value
-      if (r2.ok && r2.value && r2.value.lines) gwLogs.value = r2.value.lines
+      if (r2.ok && Array.isArray(r2.value?.lines)) {
+        gwLogs.value = r2.value.lines
+        gwLogsLoaded.value = true
+        gwLogsError.value = ''
+      } else gwLogsError.value = '运行日志暂时无法刷新，请稍后重试。'
     } finally {
       gwRefreshing = false
     }
@@ -133,13 +137,21 @@ function createLiveData() {
 
   // ---- 最近调用（概览页「最近调用」卡片） ----
   const logs = ref([])
+  const logsLoaded = ref(false)
+  const logsError = ref('')
+  const gwLogsLoaded = ref(false)
+  const gwLogsError = ref('')
   let logsLoading = false
   async function refreshLogs() {
     if (logsLoading) return
     logsLoading = true
     try {
       const r = await settle(api.getLogs())
-      if (r.ok && Array.isArray(r.value)) logs.value = r.value
+      if (r.ok && Array.isArray(r.value)) {
+        logs.value = r.value
+        logsLoaded.value = true
+        logsError.value = ''
+      } else logsError.value = '调用日志暂时无法刷新，请稍后重试。'
     } finally {
       logsLoading = false
     }
@@ -219,6 +231,7 @@ function createLiveData() {
     status, account, capabilities, capabilitiesBase, models, health, logs,
     lastFetchAt, lastError, errFlags,
     gw, gwLogs, gwBusy, gwConnected, gwActionError,
+    logsLoaded, logsError, gwLogsLoaded, gwLogsError,
     diagnose, gwStart, gwStop, gwRestart, addLog, toggleCapability,
     refresh, refreshLogs
   }

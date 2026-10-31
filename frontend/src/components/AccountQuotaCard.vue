@@ -268,7 +268,7 @@ onUnmounted(() => {
         </div>
         <div class="meta-item">
           <span class="k">订阅到期</span>
-          <span class="v" :class="planUrgent">{{ plan.expiresInText }}</span>
+          <span class="v" :class="planUrgent">{{ plan?.expiresInText || '尚无订阅信息' }}</span>
         </div>
         <div class="meta-item">
           <span class="k">账号类型</span>

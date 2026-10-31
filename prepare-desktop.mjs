@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { prepareRuntime, verifyPreparedRuntime } from './prepare-runtime.mjs'
 import { prepareBridge } from './prepare-bridge.mjs'
+import { excludeDependencyResource } from './dependency-resources.mjs'
 import { verifyBridgePatched } from './gateway/bridge-patches.mjs'
 import { TARGETS, sha256, runtimeError, readRuntimeLock, selectRuntime } from './runtime-lock.mjs'
 
@@ -35,12 +36,13 @@ function copyFile(source, destination) {
   fs.mkdirSync(path.dirname(destination), { recursive: true })
   fs.writeFileSync(destination, bytes, { flag: 'wx', mode: 0o644 })
 }
-function copyTree(source, destination) {
+function copyTree(source, destination, dependencyRoot) {
   if (!safeSource(source).isDirectory()) throw runtimeError('RESOURCE_INVALID', '资源目录不存在')
   for (const name of fs.readdirSync(source).sort()) {
     if (DENY.has(name)) continue
     const file = path.join(source, name), out = path.join(destination, name)
-    if (safeSource(file).isDirectory()) copyTree(file, out)
+    if (dependencyRoot && excludeDependencyResource(path.relative(dependencyRoot, file))) continue
+    if (safeSource(file).isDirectory()) copyTree(file, out, dependencyRoot)
     else copyFile(file, out)
   }
 }
@@ -79,7 +81,8 @@ export async function prepareDesktop({ target, outDir, root = ROOT, cacheDir = p
     const runtime = await prepareRuntime({ target, outDir: path.join(destination, 'runtime'), lockPath, cacheDir, artifactPath, offline })
     for (const file of GATEWAY_FILES) copyFile(path.join(root, 'gateway', file), path.join(destination, 'gateway', file))
     for (const file of DESKTOP_TOOLS) copyFile(path.join(root, 'desktop', file), path.join(destination, 'desktop', file))
-    copyTree(path.join(root, 'gateway/node_modules'), path.join(destination, 'gateway/node_modules'))
+    const dependencyRoot = path.join(root, 'gateway/node_modules')
+    copyTree(dependencyRoot, path.join(destination, 'gateway/node_modules'), dependencyRoot)
     const bridge = prepareBridge(path.join(destination, 'gateway'), path.join(root, 'gateway')).manifest
     copyTree(path.join(root, 'frontend/dist'), path.join(destination, 'frontend/dist'))
     if (!fs.existsSync(path.join(destination, 'frontend/dist/index.html'))) throw runtimeError('RESOURCE_INVALID', '缺少已构建的前端 index.html')

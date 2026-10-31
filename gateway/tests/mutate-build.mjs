@@ -107,6 +107,7 @@ function makeRepo(mutatedSource) {
   fs.copyFileSync(TEST_FILE, path.join(dir, 'gateway', 'tests', 'build-release.test.mjs'))
   fs.copyFileSync(path.join(REPO, 'runtime-lock.mjs'), path.join(dir, 'runtime-lock.mjs'))
   fs.copyFileSync(path.join(REPO, 'prepare-bridge.mjs'), path.join(dir, 'prepare-bridge.mjs'))
+  fs.copyFileSync(path.join(REPO, 'dependency-resources.mjs'), path.join(dir, 'dependency-resources.mjs'))
   fs.copyFileSync(path.join(REPO, 'gateway', 'bridge-patches.mjs'), path.join(dir, 'gateway', 'bridge-patches.mjs'))
   fs.writeFileSync(path.join(dir, 'build-release.mjs'), mutatedSource)
   return dir

@@ -248,10 +248,17 @@ body {
 :root[data-theme="dark"] { color-scheme: dark; }
 body { font-family: "Segoe UI", "Microsoft YaHei", -apple-system, sans-serif; }
 button { font-family: inherit; }
-button:focus-visible, a:focus-visible, summary:focus-visible { outline: 3px solid var(--primary); outline-offset: 3px; }
+button:focus-visible, a:focus-visible, summary:focus-visible, :root input:focus-visible, :root select:focus-visible, :root textarea:focus-visible { outline: 3px solid var(--primary); outline-offset: 3px; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 .card { border-radius: 20px; }
 .card-title { font-size: 15px; }
+.content > * { flex-shrink: 0; min-width: 0; }
+.card-sub, .modal-hint { overflow-wrap: anywhere; }
+.modal-mask { padding: 16px; overflow-y: auto; }
+.modal { max-width: 100%; max-height: calc(100dvh - 32px); overflow-y: auto; }
+@media (max-width: 680px) {
+  .row > .card, .row2 > .field2 { min-width: 0; }
+}
 .btn-primary { background: var(--primary); color: var(--on-primary); border-radius: 999px; padding: 10px 18px; }
 .btn-primary:hover { background: var(--primary); filter: brightness(1.08); }
 .btn-ghost { border-radius: 999px; }

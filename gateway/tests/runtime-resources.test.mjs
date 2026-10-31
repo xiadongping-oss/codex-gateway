@@ -189,6 +189,32 @@ test('desktop resource failure never merges into an existing output or leaves pa
   assert.equal(fs.existsSync(output), false)
   await assert.rejects(prepareDesktop({ ...f, outDir: path.join(f.root, 'gateway/resources') }), { code: 'RESOURCE_INVALID' })
 })
+
+for (const target of Object.keys(TARGETS)) test(`${target}: dependency cleanup preserves runtime assets, licenses and maps`, async t => {
+  const f = fixture(t, target), put = resources(f)
+  const excluded = [
+    '@modelcontextprotocol/sdk/dist/esm/examples/server/sample.js',
+    '@modelcontextprotocol/sdk/dist/cjs/examples/server/sample.js.map',
+    'json-schema-traverse/spec/fixtures/schema.js', 'json-schema-traverse/spec/index.spec.js',
+    'object-inspect/example/circular.js', 'qs/test/index.js', 'zod/src/v4/core/tests/index.ts'
+  ]
+  const retained = [
+    '@modelcontextprotocol/sdk/LICENSE', '@modelcontextprotocol/sdk/NOTICE',
+    '@modelcontextprotocol/sdk/dist/esm/server/index.js',
+    '@modelcontextprotocol/sdk/dist/esm/server/index.js.map',
+    'json-schema-traverse/LICENSE', 'json-schema-traverse/index.js',
+    'unrelated/examples/runtime.js', 'unrelated/fixtures/runtime.json',
+    'json-schema-traverse/specification/runtime.js'
+  ]
+  for (const rel of [...excluded, ...retained]) put(`gateway/node_modules/${rel}`, '// fixture\n')
+  const manifest = await prepareDesktop(f)
+  for (const rel of excluded) {
+    assert.ok(!manifest.files[`gateway/node_modules/${rel}`], rel)
+    assert.ok(fs.existsSync(path.join(f.root, 'gateway/node_modules', rel)), 'source remains untouched')
+  }
+  for (const rel of retained) assert.ok(manifest.files[`gateway/node_modules/${rel}`], rel)
+  assert.equal(verifyDesktop(f).target, target)
+})
 test('desktop resources reject missing required files and damaged bridge snapshots', async t => {
   for (const type of ['missing', 'patch']) {
     const f = fixture(t), put = resources(f)

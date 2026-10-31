@@ -5,16 +5,14 @@ import { useLiveData } from '../composables/useLiveData'
 // 调用日志与 bridge 日志都取自共享单例：
 // 此前本页面自己每 2.5s 轮询一次 /__gw/call-logs，而 useLiveData 也在轮询
 // 同一个接口（每 2s），等于同一份数据被拉两遍。改为共用后只保留一路请求。
-const { gwLogs, logs, refreshLogs } = useLiveData()
+const { gwLogs, logs, refreshLogs, logsLoaded: loaded, logsError, gwLogsLoaded, gwLogsError } = useLiveData()
 
-const loaded = ref(false)
 const filter = ref('all')
 // 页内 Tab：业务调用日志 / Bridge 进程运行日志（自原「网关控制」页并入）
 const tab = ref('calls')
 
 onMounted(() => {
   refreshLogs()
-  loaded.value = true
 })
 
 // 状态筛选：全部 / 成功 / 限流 / 未授权 / 其他错误
@@ -45,6 +43,7 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
     </div>
 
     <template v-if="tab === 'calls'">
+    <div v-if="logsError" class="log-warning" role="alert">{{ logsError }}<span v-if="loaded"> 当前保留上次获取的记录。</span></div>
     <div class="page-head">
       <div class="live-tag"><span class="dot"></span>实时调用日志 · 网关反代逐笔记录 · 每 2.5s 刷新</div>
       <div class="chips">
@@ -76,6 +75,7 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
           <span class="mono time">{{ fmtTime(l.at) }}</span>
         </div>
       </div>
+      <div class="empty" v-else-if="logsError"><div class="empty-sub">暂时无法确认是否有调用记录，连接恢复后会自动刷新。</div></div>
       <div class="empty" v-else-if="loaded && filter !== 'all'">
         <div class="empty-title">该状态下暂无记录</div>
         <div class="empty-sub">当前筛选「{{ filterDefs.find((f) => f.key === filter)?.label }}」没有匹配的调用，切换到「全部」查看所有记录。</div>
@@ -84,20 +84,21 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
         <div class="empty-title">暂无调用记录</div>
         <div class="empty-sub">从任意 OpenAI 兼容客户端（WorkBuddy / Codex CLI / curl）发起请求后，这里会实时显示每次 /v1 调用的模型、状态、延迟与 Token 用量。</div>
       </div>
-      <div class="empty" v-else>
+      <div class="empty" v-else role="status">
         <div class="empty-sub">载入中…</div>
       </div>
     </div>
     </template>
 
     <template v-else>
+      <div v-if="gwLogsError" class="log-warning" role="alert">{{ gwLogsError }}<span v-if="gwLogsLoaded"> 当前保留上次获取的记录。</span></div>
       <div class="page-head">
         <div class="live-tag"><span class="dot"></span>启动器捕获的 chatgpt-bridge 子进程标准输出 / 错误 · 每 3s 刷新</div>
       </div>
       <div class="card">
         <div class="bridge-logs">
           <div v-for="(line, i) in gwLogs" :key="i" class="log-line" :class="{ err: isErrLine(line) }">{{ line }}</div>
-          <div v-if="!gwLogs.length" class="empty-sub" style="padding: 30px; text-align: center">暂无日志</div>
+          <div v-if="!gwLogs.length" class="empty-sub" role="status" style="padding: 30px; text-align: center">{{ gwLogsError ? '暂时无法确认是否有运行日志' : gwLogsLoaded ? '暂无日志' : '载入中…' }}</div>
         </div>
         <div class="card-sub" style="margin-top: 10px">
           这里是进程级运行日志（启动 / 健康检查 / 上游错误 / 补丁校验）；业务调用的模型、状态与 Token 请看「业务调用」标签。
@@ -108,6 +109,9 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
 </template>
 
 <style scoped>
+.log-warning { color: var(--amber); background: var(--card); border: 1px solid var(--border-strong); border-radius: 14px; padding: 12px 16px; }
+.table { min-width: 640px; }
+.log-line { overflow-wrap: anywhere; }
 .tabs { display: flex; gap: 4px; margin-bottom: 16px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 4px; width: fit-content; }
 .tab {
   background: transparent; color: var(--text-3); border: none; border-radius: 8px;

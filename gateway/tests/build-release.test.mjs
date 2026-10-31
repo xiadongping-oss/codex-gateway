@@ -125,6 +125,31 @@ test('构建：快照缺失必须失败，不能依赖工作区已打补丁的 d
   assert.match(result.out, /快照缺失/)
 })
 
+test('依赖清理：剔除已审查的测试/示例，保留许可证、运行映射和同名运行目录', () => {
+  const excluded = [
+    '@modelcontextprotocol/sdk/dist/cjs/examples/server/sample.js',
+    '@modelcontextprotocol/sdk/dist/esm/examples/server/sample.js.map',
+    'json-schema-traverse/spec/fixtures/schema.js', 'object-inspect/example/circular.js',
+    'qs/test/index.js', 'zod/src/v4/core/tests/index.ts'
+  ]
+  const retained = [
+    '@modelcontextprotocol/sdk/LICENSE', '@modelcontextprotocol/sdk/NOTICE',
+    '@modelcontextprotocol/sdk/dist/esm/server/index.js.map',
+    'json-schema-traverse/index.js', 'json-schema-traverse/LICENSE',
+    'unrelated/examples/runtime.js', 'unrelated/fixtures/runtime.json',
+    'json-schema-traverse/specification/runtime.js'
+  ]
+  const extra = Object.fromEntries([...excluded, ...retained].map(rel => [`gateway/node_modules/${rel}`, '// fixture\n']))
+  const { root, script } = fakeRepo({ extra })
+  const result = run(script, ['--no-runtime'])
+  assert.equal(result.code, 0, result.out)
+  for (const rel of excluded) {
+    assert.ok(!fs.existsSync(path.join(stagingOf(root), 'gateway/node_modules', rel)), rel)
+    assert.ok(fs.existsSync(path.join(root, 'gateway/node_modules', rel)), 'source remains untouched')
+  }
+  for (const rel of retained) assert.ok(fs.existsSync(path.join(stagingOf(root), 'gateway/node_modules', rel)), rel)
+})
+
 // ---------- 造一个 zip（内容用 python 打包，条目为普通目录结构） ----------
 function makeZip(zipPath, files) {
   const stage = tmpdir('zip')
@@ -195,6 +220,7 @@ function fakeRepo({ lockSha, extra = {}, eol = 'lf' } = {}) {
   w('gateway/bridge-patches.mjs', fs.readFileSync(path.join(REPO, 'gateway/bridge-patches.mjs'), 'utf8'))
   w('runtime-lock.mjs', fs.readFileSync(path.join(REPO, 'runtime-lock.mjs'), 'utf8'))
   w('prepare-bridge.mjs', fs.readFileSync(path.join(REPO, 'prepare-bridge.mjs'), 'utf8'))
+  w('dependency-resources.mjs', fs.readFileSync(path.join(REPO, 'dependency-resources.mjs'), 'utf8'))
   w('frontend/dist/index.html', '<html></html>')
   w('docs/lan-kit/INSTALL.md', '# i\n')
   w('docs/lan-kit/setup-client.mjs', '//\n')

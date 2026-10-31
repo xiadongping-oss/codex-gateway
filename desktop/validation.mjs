@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
+import { releaseRustEnvironment } from './rust-environment.mjs'
 
 // Harness deadlines, not production recovery limits. Multi-launch checks include
 // repeated resource hashing, WebView startup and the fixed recovery backoff.
@@ -56,7 +57,7 @@ export function cargoEnvironment(root, build, inherited = process.env) {
   if (!fs.existsSync(manifest)) throw new Error('构建记录缺少资源清单')
   // Reconstruct the overlay instead of trusting arbitrary config from a previous run.
   const overlay = { bundle: { resources: { [path.relative(path.join(root, 'desktop/src-tauri'), resources).replaceAll('\\', '/') + '/']: 'gateway-resources/' } } }
-  const env = { ...inherited, CGW_BUILD_RESOURCES: resources, CARGO_TARGET_DIR: path.join(root, 'desktop/src-tauri/target'), TAURI_CONFIG: JSON.stringify(overlay) }
+  const env = { ...(build.release ? releaseRustEnvironment(root, inherited) : inherited), CGW_BUILD_RESOURCES: resources, CARGO_TARGET_DIR: path.join(root, 'desktop/src-tauri/target'), TAURI_CONFIG: JSON.stringify(overlay) }
   if (process.platform === 'darwin') env.MACOSX_DEPLOYMENT_TARGET = '13.0'
   return env
 }

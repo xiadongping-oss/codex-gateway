@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { prepareDesktop, verifyDesktop } from '../prepare-desktop.mjs'
+import { releaseRustEnvironment } from './rust-environment.mjs'
 
 const desktop = path.dirname(fileURLToPath(import.meta.url)), root = path.dirname(desktop)
 const target = `${process.platform}-${process.arch}`
@@ -15,7 +16,7 @@ const outDir = path.join(generated, `${target}-${Date.now()}`)
 await prepareDesktop({ root, target, outDir, offline: args.includes('--offline') })
 verifyDesktop({ target, outDir })
 const overlay = { bundle: { resources: { [path.relative(path.join(desktop, 'src-tauri'), outDir).replaceAll('\\', '/') + '/']: 'gateway-resources/' } } }
-const env = { ...process.env, CARGO_TARGET_DIR: path.join(desktop, 'src-tauri/target'), CGW_BUILD_RESOURCES: outDir, TAURI_CONFIG: JSON.stringify(overlay) }
+const env = { ...(release ? releaseRustEnvironment(root) : process.env), CARGO_TARGET_DIR: path.join(desktop, 'src-tauri/target'), CGW_BUILD_RESOURCES: outDir, TAURI_CONFIG: JSON.stringify(overlay) }
 fs.writeFileSync(path.join(generated, 'last-build.json'), JSON.stringify({ target, outDir, overlay, release }, null, 2) + '\n')
 const cmd = ['--manifest-path', path.join(desktop, 'src-tauri/Cargo.toml')]
 const child = spawn('cargo', [test ? 'test' : 'build', ...cmd, '--features', 'custom-protocol', ...(release ? ['--release'] : []), ...(args.includes('--locked') ? ['--locked'] : []), ...(args.includes('--offline') ? ['--offline'] : [])], { cwd: root, env, windowsHide: true, stdio: 'inherit' })
