@@ -1,0 +1,25 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "shortDescription": "Local gateway and desktop console",
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": {
+        "template": "installer/template.nsi",
+        "sidebarImage": "installer/sidebar.bmp",
+        "headerImage": "installer/header.bmp",
+        "uninstallerHeaderImage": "installer/header.bmp",
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": true,
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "installerHooks": "installer/hooks.nsh",
+        "compression": "lzma"
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "url": "https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi",
+  "ref": "tauri-cli-v2.12.4",
+  "sourceSha256": "d00089d3b1a2c4a30d7b6e098079100cb8f25e980f84d4515aca4597b95e967d",
+  "license": "TAURI-LICENSE-MIT.txt",
+  "changes": [
+    "Remove product-name-only autostart deletion; use hooks.nsh exact installation command ownership check",
+    "Remove app-data deletion checkbox and recursive deletion; preserve account data on uninstall",
+    "Project branding: generated purple workspace sidebar/header and original code/companion-node icon, readable UI font, localized welcome/background/data retention copy"
+  ],
+  "upgradePolicy": "Review upstream changes together with pinned CLI version; do not replace template automatically"
+}
