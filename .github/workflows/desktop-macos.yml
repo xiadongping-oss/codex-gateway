@@ -1,0 +1,95 @@
+name: Desktop macOS validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/desktop-macos-validation]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-build:
+    name: ${{ matrix.target }} build and native checks
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
+    env:
+      CARGO_BUILD_JOBS: '2'
+      RUSTUP_TOOLCHAIN: '1.94.0'
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22.22.2'
+          package-manager-cache: false
+      - name: Install pinned Rust tools
+        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
+      - name: Restore architecture-specific Rust build cache
+        id: cargo-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            desktop/src-tauri/target/debug/.fingerprint
+            desktop/src-tauri/target/debug/build
+            desktop/src-tauri/target/debug/deps
+          key: ${{ matrix.runner }}-${{ matrix.target }}-rust-1.94-v1-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: ${{ matrix.runner }}-${{ matrix.target }}-rust-1.94-v1-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}-
+      - name: Install frontend build dependencies
+        run: npm ci --prefix frontend --ignore-scripts --no-audit --no-fund
+      - name: Validate on the actual target architecture
+        run: node desktop/verify.mjs --native --expect-target=${{ matrix.target }} --report-dir=output/desktop-ci/${{ matrix.target }}
+      - name: Show failed validation stage
+        if: failure()
+        env:
+          VALIDATION_REPORT_DIR: output/desktop-ci/${{ matrix.target }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs'
+          import path from 'node:path'
+          const dir = process.env.VALIDATION_REPORT_DIR
+          const reportFile = path.join(dir, 'report.json')
+          if (!fs.existsSync(reportFile)) { console.log('Validation did not produce a report'); process.exit(0) }
+          const report = JSON.parse(fs.readFileSync(reportFile, 'utf8'))
+          for (const stage of report.stages.filter(stage => stage.status === 'failed')) {
+            if (!/^[a-z0-9-]+$/.test(stage.name)) continue
+            console.log(`Failed stage: ${stage.name}; exit=${stage.exitCode}; timeout=${stage.timedOut}`)
+            const file = path.join(dir, `${stage.name}.log`)
+            if (fs.existsSync(file)) for (const line of fs.readFileSync(file, 'utf8').slice(-16000).split('\n')) console.log(' | ' + line)
+          }
+          NODE
+      - name: Preserve verification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: desktop-checks-${{ matrix.target }}-${{ github.run_attempt }}
+          path: output/desktop-ci/${{ matrix.target }}/
+          retention-days: 7
+          if-no-files-found: error
+      - name: Preserve reusable Rust build work
+        if: ${{ !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true' && hashFiles('desktop/src-tauri/target/.rustc_info.json') != '' }}
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            desktop/src-tauri/target/debug/.fingerprint
+            desktop/src-tauri/target/debug/build
+            desktop/src-tauri/target/debug/deps
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}

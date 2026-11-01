@@ -64,3 +64,6 @@ desktop/src-tauri/gen/
 output/desktop-validation/
 output/desktop-ci/
 output/ui/
+# 其余 output/ 也是本机验证跑出来的日志与临时脚本，不入库
+output/
+.playwright-cli/

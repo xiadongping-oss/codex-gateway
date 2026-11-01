@@ -20,6 +20,7 @@
 // data/、api-keys.json、auth.json…），绿色版升级到安装版时迁移数据
 // 就是「原样拷贝」，不需要任何格式转换。
 import path from 'node:path'
+import { isManagedStorage, resolveStoragePaths } from './storage-paths.mjs'
 // isInsideRoot 本是参考图的白名单判定，但它做的事就是通用的
 // 「解析 + 大小写不敏感（win32）+ 带分隔符前缀」路径归属判断，
 // 这里复用它来判断 authFilePath 是否落在程序目录内，避免两套实现将来分叉。
@@ -33,6 +34,7 @@ export const DATA_DIR_ENV = 'CGW_DATA_DIR'
  * @param {string} modDir 程序目录（gateway/），未设置环境变量时的回退值
  */
 export function resolveDataRoot(env = process.env, modDir = path.resolve('.')) {
+  if (isManagedStorage(env)) return resolveStoragePaths(env, modDir).root
   const raw = String(env?.[DATA_DIR_ENV] ?? '').trim()
   if (!raw) return modDir
   if (!path.isAbsolute(raw)) return modDir

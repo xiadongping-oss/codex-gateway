@@ -73,7 +73,7 @@ onUnmounted(() => {
     </div>
 
     <div v-if="isEmpty" class="qs-empty">
-      还没有观测到额度——到账号页点「刷新额度」探一次，或直接用它跑一次对话（ChatGPT 未公开额度接口）
+      暂未获取
     </div>
 
     <div class="qs-mid" v-if="weekly">
@@ -118,7 +118,7 @@ onUnmounted(() => {
 }
 .qs-rt {
   font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px;
-  color: #34d399; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.35);
+  color: var(--primary); background: rgba(139,107,214,0.1); border: 1px solid rgba(139,107,214,0.35);
 }
 .qs-sample {
   font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; cursor: help;
@@ -135,7 +135,7 @@ onUnmounted(() => {
 /* 空态不画进度条：画了就是「还剩 100%」的假信息 */
 .qs-empty { flex: 1; font-size: 12px; color: var(--text-3); }
 .qs-badge {
-  font-size: 10.5px; font-weight: 700; color: #04130d;
+  font-size: 10.5px; font-weight: 700; color: var(--on-primary);
   background: var(--emerald); border-radius: 5px; padding: 1px 6px;
 }
 .qs-expire {
@@ -162,7 +162,7 @@ onUnmounted(() => {
   overflow: hidden; margin: 5px 0 4px;
 }
 .qs-fill { height: 100%; border-radius: 999px; transition: width 0.4s ease; }
-.qs-fill.emerald { background: linear-gradient(90deg, #10b981, #34d399); }
+.qs-fill.emerald { background: linear-gradient(90deg, var(--primary), var(--primary)); }
 .qs-fill.amber { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
 .qs-fill.rose { background: linear-gradient(90deg, #e11d48, #f43f5e); }
 .qs-foot { font-size: 10.5px; color: var(--text-3); font-family: var(--mono); }

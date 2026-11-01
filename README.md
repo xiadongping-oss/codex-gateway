@@ -11,6 +11,7 @@
 | **宿主机**（自己用 / 给同事发 Key） | 本页[快速开始](#快速开始宿主机) |
 | **局域网用户**（用别人电脑上的网关） | 浏览器打开 `http://<宿主机IP>:4173/setup`，输入管理员发的 Key，按页面指引复制/下载配置即可（**零命令行**） |
 | **维护者**（构建发布包） | [`docs/RELEASE.md`](docs/RELEASE.md) |
+| **桌面版开发**（Windows 与 macOS） | [实施计划](docs/DESKTOP-PLAN.md) · [任务清单](docs/DESKTOP-TASKS.md) · [控制协议](docs/DESKTOP-CONTROL.md) · [数据目录](docs/DESKTOP-DATA.md)（规划中的 Tauri 桌面版） |
 
 > 使用前请务必阅读[合规与使用须知](#合规与使用须知)。
 
@@ -53,12 +54,14 @@ flowchart LR
 前置：本机已安装 **Node.js 18+**（Windows 绿色版发布包用户无需本节，解压后按 `QUICK-START.md` 双击启动）。
 
 ```bash
-npm run setup   # 首次：安装本地代理（已内置，离线可用）
+npm run setup   # 首次：安装依赖并准备 bridge 补丁
 npm run login   # 首次：ChatGPT OAuth 登录
 npm start       # 启动并自动打开控制台 http://127.0.0.1:4173
 ```
 
 启动后会在默认浏览器打开控制台（如果浏览器没弹出，手动访问 `http://127.0.0.1:4173`，页面会提示如何登录）。
+
+bridge 补丁在构建时固化，启动只校验版本与完整性。源码开发若单独重新安装了 `gateway` 依赖，启动前运行 `npm run prepare:bridge`；发行包校验失败应重新安装完整包。补丁维护规则见 [构建指南](docs/RELEASE.md#bridge-补丁构建规则)。
 
 ### 控制台登录（管理令牌）
 
@@ -94,9 +97,11 @@ flowchart LR
     C --> E["素材站 /gallery<br/>预览 · 复制 · 下载 · 删除"]
 ```
 
-- **API 方式**：`POST /v1/images/generations`（标准 images 协议），`size` / `quality` 参数正常生效；未指定时自动使用最高质量档。
-- **MCP 方式**：网关提供 `generate_image` / `list_generated_images` / `delete_generated_image` 三个 MCP 工具，本机（stdio）与局域网（HTTP）两种接入方式可并存，列表/删除按调用 Key 隔离。
+- **API 方式**：`POST /v1/images/generations`（标准 images 协议），`size` / `quality` 原样传给上游，未指定时使用 `size=auto`、`quality=high`。实际尺寸可能与请求不同；bridge 模式响应的 `data[0].cgw_image_size` 提供请求尺寸、从 PNG 文件头读取的实际尺寸和是否匹配，MCP 结果同步提示。无法识别时明确标为未知；网关保留原图，不自动缩放。
+- **MCP 方式**：HTTP MCP 提供 `generate_image` / `list_generated_images` / `delete_generated_image` 三个工具，列表、鉴权下载和删除按调用 Key 隔离。本机 stdio 提供生图与图库列表，列表读取宿主机完整图库；两种接入方式可并存。
 - 生成结果自动落盘并进入素材站，响应附带可直接打开的 `url` 与本机 `local_path`。
+
+带 Key 生图及图库列表会额外返回 `download_url`：请求此地址时携带同一个 `Authorization: Bearer <API Key>`，无需管理控制台会话。MCP 使用该下载地址；浏览器用户可在 `/gallery` 输入 Key 预览和下载。原有 `url` 字段保留兼容，访问规则不变。
 
 > 说明：图片能力由对话模型 + 内置图像工具渲染，`gpt-image-2.5-*` 仅为客户端填写的入口名称；响应中的 `model` 字段会回写真实渲染模型。
 

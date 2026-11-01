@@ -3,17 +3,18 @@
 // S3 兼容对象存储（R2 / OSS / COS / MinIO）/ Lsky Pro / SM.MS
 // 由 gateway/launcher.mjs 挂载到 /__gw/assets/*，逻辑只此一份。
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { writeJsonAtomic } from './atomic-write.mjs'
-import { resolveDataRoot } from './data-root.mjs'
+import { resolveStoragePaths } from './storage-paths.mjs'
+import { validateExternalPath } from './storage-init.mjs'
 
 const MOD_DIR = path.dirname(fileURLToPath(import.meta.url))
-const STORE_PATH = process.env.ASSETS_STORE_PATH || path.join(resolveDataRoot(process.env, MOD_DIR), 'data', 'asset-sources.json')
+const STORAGE = resolveStoragePaths(process.env, MOD_DIR)
+const STORE_PATH = STORAGE.assets
 
-const genImagesDir = () => path.join(os.homedir(), '.chatgpt-bridge', 'gen-images')
+const genImagesDir = () => STORAGE.generated
 const GEN_IMAGE_RE = /^[A-Za-z0-9_-]+\.png$/
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg'])
@@ -32,8 +33,12 @@ function store() {
   if (storeCache) return storeCache
   try {
     const parsed = JSON.parse(fs.readFileSync(STORE_PATH, 'utf-8'))
+    if (STORAGE.managed) for (const source of parsed.sources || []) {
+      if (source.type === 'local') validateExternalPath(source.config?.dir || '', STORAGE, '素材源目录')
+    }
     storeCache = { sources: Array.isArray(parsed.sources) ? parsed.sources : [], uploads: parsed.uploads && typeof parsed.uploads === 'object' ? parsed.uploads : {} }
-  } catch {
+  } catch (error) {
+    if (STORAGE.managed && error.code !== 'ENOENT') throw error
     storeCache = { sources: [], uploads: {} }
   }
   return storeCache
@@ -147,6 +152,7 @@ function validateSourceInput(body = {}) {
   if (type === 'local') {
     const dir = String(cfgIn.dir || '').trim()
     if (!dir) throw new Error('缺少目录路径')
+    validateExternalPath(dir, STORAGE, '素材源目录')
     const st = fs.statSync(dir)
     if (!st.isDirectory()) throw new Error('不是目录：' + dir)
     config = { dir: path.resolve(dir) }
@@ -588,6 +594,9 @@ export function deleteUploadRecord(sourceId, name) {
 export function deleteAssets(sourceId, names, all = false) {
   if (!sourceId || sourceId === 'generated') {
     const dir = genImagesDir()
+    const indexFile = path.join(dir, 'index.json')
+    const index = fs.existsSync(indexFile) ? JSON.parse(fs.readFileSync(indexFile, 'utf8')) : {}
+    if (!index || typeof index !== 'object' || Array.isArray(index)) throw new Error('生成图库归属索引损坏，未删除图片')
     let targets = []
     if (all) {
       try { targets = fs.readdirSync(dir).filter((n) => GEN_IMAGE_RE.test(n)) } catch { targets = [] }
@@ -595,7 +604,10 @@ export function deleteAssets(sourceId, names, all = false) {
       targets = (Array.isArray(names) ? names : []).filter((n) => GEN_IMAGE_RE.test(n))
     }
     let deleted = 0
-    for (const n of targets) { try { fs.unlinkSync(path.join(dir, n)); deleted++ } catch {} }
+    for (const n of targets) {
+      try { fs.unlinkSync(path.join(dir, n)); deleted++; delete index[n] } catch {}
+    }
+    if (deleted && fs.existsSync(indexFile)) writeJsonAtomic(indexFile, index)
     return { ok: true, deleted }
   }
   const src = findSource(sourceId)

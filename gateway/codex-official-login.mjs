@@ -18,19 +18,23 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import os from 'node:os'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
+import { loginTempRoot } from './storage-paths.mjs'
+import { writeJsonAtomic } from './atomic-write.mjs'
 
 const SESSION_ID_RE = /^[0-9a-f]{16}$/
 export const LOGIN_TIMEOUT_MS = 10 * 60 * 1000
 
 // 默认 profile（~/.codex/auth.json）：桌面版客户端若不尊重 CODEX_HOME，
 // 登录凭据会落到这里 —— 会话用「内容指纹变化」识别这次登录（见 resolveAuth）。
-export function defaultCodexAuthPath() {
-  return path.join(os.homedir(), '.codex', 'auth.json')
+export function defaultCodexAuthPath(env = process.env, homedir = os.homedir) {
+  const raw = String(env?.CODEX_HOME ?? '').trim()
+  const unquoted = raw.replace(/^["']+|["']+$/g, '').trim()
+  return unquoted ? path.join(unquoted, 'auth.json') : path.join(homedir(), '.codex', 'auth.json')
 }
-function readDefaultAuthText() {
+function readDefaultAuthText(env) {
   try {
-    return fs.readFileSync(defaultCodexAuthPath(), 'utf-8')
+    return fs.readFileSync(defaultCodexAuthPath(env), 'utf-8')
   } catch {
     return null
   }
@@ -40,7 +44,7 @@ function digestText(text) {
 }
 
 export function tempLoginRootDir(dataRoot) {
-  return path.join(dataRoot, 'tmp', 'codex-temp-login')
+  return loginTempRoot(dataRoot)
 }
 
 export function profileDirFor(dataRoot, sessionId) {
@@ -79,6 +83,9 @@ export function derivePhase(session, { now = Date.now(), pidRunning } = {}) {
   if (session.hasCredentials) {
     if (session.clientExited) return { phase: 'ready', error: null, hasCredentials: true }
     return { phase: 'logged-in', error: null, hasCredentials: true }
+  }
+  if (Number.isInteger(session.clientExitCode) && session.clientExitCode !== 0) {
+    return { phase: 'failed', error: `官方客户端启动命令失败（退出码 ${session.clientExitCode}），请检查客户端安装或使用浏览器授权`, hasCredentials: false }
   }
   if (now - session.startedAt > LOGIN_TIMEOUT_MS) {
     const timeoutHint = session.defaultWatch
@@ -168,57 +175,93 @@ export function discoverStoreCodexClient({
 }
 
 // ---------- 官方客户端发现 ----------
-// 顺序：显式环境变量 > Windows 执行别名 > where/which > 常见安装位 > Store 应用扫描。
+// 顺序：显式环境变量 > GUI / Store > PATH CLI。PATH 查找不通过 shell。
 // 全部落空返回 null，由上层给出可操作的报错文案。
 export function discoverCodexClient({
   env = process.env,
   platform = process.platform,
   existsSync = fs.existsSync,
+  runFile = execFileSync,
+  // Compatibility for existing injected tests; production uses runFile below.
   execSync,
   readdirSync = fs.readdirSync,
   readlinkSync = fs.readlinkSync,
   readFile = fs.readFileSync
 } = {}) {
-  const explicit = String(env.CODEX_CLIENT_PATH || '').trim()
-  if (explicit && existsSync(explicit)) return { path: explicit, kind: 'explicit' }
+  const paths = platform === 'win32' ? path.win32 : path.posix
+  const explicit = String(env.CODEX_CLIENT_PATH || '').trim().replace(/^("|')(.*)\1$/, '$2')
+  if (explicit && existsSync(explicit)) {
+    const launchKind = platform === 'darwin'
+      ? (/\.app\/?$/i.test(explicit) ? 'app' : 'cli')
+      : (/\.(cmd|bat)$/i.test(explicit) ? 'cli' : 'app')
+    return { path: explicit, kind: 'explicit', launchKind }
+  }
+
+  function findCli() {
+    try {
+      const options = { encoding: 'utf-8', timeout: 5000, windowsHide: true, env, shell: false }
+      const out = execSync
+        ? execSync(platform === 'win32' ? 'where codex' : 'which codex', options)
+        : runFile(platform === 'win32' ? 'where.exe' : '/usr/bin/which', ['codex'], options)
+      const candidate = String(out).split(/\r?\n/).map(s => s.trim()).find(p => p && existsSync(p))
+      return candidate ? { path: candidate, kind: 'cli' } : null
+    } catch { return null }
+  }
 
   if (platform === 'win32') {
-    const la = env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+    const la = env.LOCALAPPDATA || paths.join(os.homedir(), 'AppData', 'Local')
     const candidates = [
-      path.join(la, 'Microsoft', 'WindowsApps', 'codex.exe'),
-      path.join(la, 'Programs', 'Codex', 'Codex.exe'),
-      path.join(la, 'Programs', 'ChatGPT', 'ChatGPT.exe')
+      paths.join(la, 'Microsoft', 'WindowsApps', 'codex.exe'),
+      paths.join(la, 'Programs', 'Codex', 'Codex.exe')
     ]
     for (const p of candidates) {
       if (existsSync(p)) return { path: p, kind: 'app' }
     }
-    if (execSync) {
-      try {
-        const out = execSync('where codex', { encoding: 'utf-8', timeout: 5000 })
-        const first = String(out).split(/\r?\n/).map((s) => s.trim()).find(Boolean)
-        if (first && existsSync(first)) return { path: first, kind: 'cli' }
-      } catch { /* where 没命中，继续往下 */ }
-    }
     const store = discoverStoreCodexClient({ localAppData: la, existsSync, readdirSync, readlinkSync, readFile })
     if (store) return store
-    return null
+    return findCli()
   }
-  if (execSync) {
-    try {
-      const out = execSync('which codex', { encoding: 'utf-8', timeout: 5000 })
-      const first = String(out).split(/\r?\n/).map((s) => s.trim()).find(Boolean)
-      if (first && existsSync(first)) return { path: first, kind: 'cli' }
-    } catch { /* 继续 */ }
+  if (platform === 'darwin') {
+    for (const candidate of ['/Applications/Codex.app', paths.join(env.HOME || os.homedir(), 'Applications', 'Codex.app')]) {
+      if (existsSync(candidate)) return { path: candidate, kind: 'app' }
+    }
   }
-  return null
+  return findCli()
 }
 
 // ---------- 会话管理器 ----------
-// spawnImpl / discoverImpl / pidAliveImpl / killTree 可注入：单测不真启进程、不真探 pid。
-export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discoverImpl = discoverCodexClient, pidAliveImpl, killTree, defaultAuthText = readDefaultAuthText } = {}) {
+// ChildProcess objects are the only process authority. Persisted PIDs are diagnostic data.
+export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discoverImpl = discoverCodexClient, pidAliveImpl, trackChild = () => {}, env = process.env, platform = process.platform, defaultAuthText = () => readDefaultAuthText(env) } = {}) {
   const root = tempLoginRootDir(dataRoot)
   // sessionId -> { sessionId, profileDir, pid, clientPath, startedAt, hasCredentials, clientExited, phase, error }
   const sessions = new Map()
+  const children = new Set()
+  function own(child, session) {
+    session.child = child
+    if (typeof child.once !== 'function') return // injected test doubles only
+    children.add(child)
+    trackChild(child)
+    child.once('exit', code => { children.delete(child); session.clientExited = true; session.clientExitCode = code })
+    child.once('error', () => {
+      if (!child.pid) { children.delete(child); session.clientExited = true }
+      session.phase = 'failed'; session.error = '启动官方客户端失败，请使用浏览器授权重试'
+    })
+  }
+  async function stopAndWait(ms = 3000) {
+    const owned = [...children]
+    if (!owned.length) return true
+    return new Promise(resolve => {
+      let timer
+      const check = () => { if (owned.every(c => !children.has(c))) done(true) }
+      const done = ok => { clearTimeout(timer); for (const c of owned) { c.removeListener('exit', check); c.removeListener('error', check) }; resolve(ok) }
+      timer = setTimeout(() => done(false), ms)
+      for (const c of owned) {
+        c.once('exit', check); c.once('error', check)
+        try { c.kill('SIGKILL') } catch {}
+      }
+      check()
+    })
+  }
 
   function readMarker(profileDir) {
     try {
@@ -241,9 +284,26 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     }
   }
 
+  function readImportState(profileDir) {
+    try { return JSON.parse(fs.readFileSync(path.join(profileDir, 'import-state.json'), 'utf-8')) } catch { return null }
+  }
+  function readPendingImport(profileDir) {
+    try {
+      const pending = JSON.parse(fs.readFileSync(path.join(profileDir, 'pending-import.json'), 'utf-8'))
+      const text = JSON.stringify(pending.authJson)
+      if (pending.schemaVersion === 1 && authFileHasCredentials(text) && ['temp-profile', 'default-profile'].includes(pending.credSource)) {
+        return { text, source: pending.credSource }
+      }
+    } catch { /* Keep the original profile available if a snapshot is unreadable. */ }
+    return null
+  }
+
   // 凭据解析：临时 profile 优先；其次默认 profile —— 但只有内容相对「会话开始时
   // 的指纹」发生变化才采纳。不然用户早就登录过的旧凭据会被误当成这次的新登录。
   function resolveAuth(session) {
+    // A failed import retries the exact credentials the user submitted, even if
+    // an official GUI writes another account to its default profile meanwhile.
+    if (session.pendingImport) return session.pendingImport
     const tempText = readAuthText(session.profileDir)
     if (tempText && authFileHasCredentials(tempText)) return { text: tempText, source: 'temp-profile' }
     const defText = defaultAuthText()
@@ -276,11 +336,12 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
 
   // 启动：发现客户端 → 造临时 profile → 新窗口拉起官方客户端
   async function start() {
-    const client = discoverImpl({ env: process.env, platform: process.platform })
+    const client = discoverImpl({ env, platform })
     if (!client) {
       throw new Error('未找到官方 Codex 客户端。可安装 Codex 桌面版（Microsoft Store）或 CLI（npm i -g @openai/codex）后重试，或改用浏览器授权。')
     }
     const sessionId = crypto.randomBytes(8).toString('hex')
+    const launchKind = client.launchKind || client.kind
     const profileDir = profileDirFor(dataRoot, sessionId)
     writeMarker(profileDir, { sessionId, createdAt: new Date().toISOString(), clientPath: client.path })
     const defaultText = defaultAuthText()
@@ -290,33 +351,45 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
       // 会话开始时的默认 profile 指纹（null=当时没有凭据文件）
       defaultAuthDigest: defaultText ? digestText(defaultText) : null,
       // 桌面客户端（store/app）是常驻单实例：退出≠失败，转看默认 profile 变化
-      defaultWatch: client.kind === 'store' || client.kind === 'app',
+      defaultWatch: launchKind === 'store' || launchKind === 'app',
       credSource: null,
       hasCredentials: false, clientExited: false, phase: 'launching', error: null
     }
     sessions.set(sessionId, session)
 
     try {
-      if (process.platform === 'win32') {
+      if (platform === 'win32') {
         // start "" /WAIT：新控制台/GUI 窗口跑官方客户端；cmd 壳挂着等它退出，
         // pid 即壳进程 —— 检测壳存活 + 凭据文件，两路信号互为兜底。
         // CLI 形态补 login 子命令（浏览器授权 + 本地回调，完成后进程退出）；
         // 桌面 GUI 不带参数，直接开窗口。
-        const cliArgs = client.kind === 'cli' ? ' login' : ''
-        const child = spawnImpl(`start "" /WAIT "${client.path}"${cliArgs}`, {
+        const cliArgs = launchKind === 'cli' ? ' login' : ''
+        // START otherwise runs batch files with CMD /K: even a failed CLI login
+        // leaves that window open and /WAIT never observes its exit code.
+        // Bare CMD is START's documented COMSPEC substitution, not a PATH lookup.
+        const launch = launchKind === 'cli' && /\.(cmd|bat)$/i.test(client.path)
+          ? `start "" /WAIT CMD /d /s /c ""${client.path}" login"`
+          : `start "" /WAIT "${client.path}"${cliArgs}`
+        // START's child code can otherwise be lost when the outer shell exits.
+        // No delayed expansion: valid install paths may contain literal '!'.
+        const command = `${launch} & exit /b`
+        const child = spawnImpl(command, {
           shell: true, stdio: 'ignore',
-          env: { ...process.env, CODEX_HOME: profileDir }
+          env: { ...env, CODEX_HOME: profileDir }
         })
         session.pid = child.pid || null
+        own(child, session)
         child.unref?.()
-      } else if (process.platform === 'darwin' && client.kind === 'app') {
+      } else if (platform === 'darwin' && launchKind === 'app') {
         // macOS GUI 应用走 open（--env 需要 macOS 13+）。open 立即返回，
         // pid 不可靠 —— posix 侧以凭据轮询为准，用户在界面上点「完成导入」。
-        const child = spawnImpl(`open -n "${client.path}" --env "CODEX_HOME=${profileDir}"`, {
+        const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`
+        const child = spawnImpl(`/usr/bin/open -n ${quote(client.path)} --env ${quote(`CODEX_HOME=${profileDir}`)}`, {
           shell: true, stdio: 'ignore',
-          env: { ...process.env, CODEX_HOME: profileDir }
+          env: { ...env, CODEX_HOME: profileDir }
         })
         session.pid = null // open 的壳进程不可作存活信号
+        own(child, session)
         child.unref?.()
       } else {
         throw new Error('posix 平台暂不支持 CLI 形态的官方登录（TUI 需要交互终端），请使用浏览器授权。')
@@ -340,14 +413,17 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     const info = resolveAuth(s)
     s.hasCredentials = !!info
     s.credSource = info ? info.source : null
-    const alive = pidAlive(s.pid)
-    s.clientExited = s.pid != null && !alive
-    const d = derivePhase(s, { now: Date.now(), pidRunning: alive })
+    const alive = pidAliveImpl ? pidAlive(s.pid) : !!s.child && !s.clientExited
+    if (pidAliveImpl) s.clientExited = s.pid != null && !alive
+    const d = s.finishing
+      ? { phase: 'importing', error: null, hasCredentials: true }
+      : derivePhase(s, { now: Date.now(), pidRunning: alive })
     if (d.phase === 'failed') {
       s.phase = 'failed'
       s.error = d.error
     } else {
       s.phase = d.phase
+      s.error = d.error
     }
     return {
       sessionId,
@@ -362,32 +438,55 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     }
   }
 
-  // 导入 + 清理：返回 auth.json 原文交由上层注册账号；清理失败不影响导入。
-  async function finish(sessionId) {
+  // The persistence callback is the commit boundary. Never consume credentials
+  // before account/config writes succeed; only one finish may own a session.
+  // No-callback callers retain the historical auth-result/consume contract.
+  async function finish(sessionId, persist) {
     const s = sessions.get(sessionId)
     if (!s) throw new Error('会话不存在或已过期')
-    const info = resolveAuth(s)
-    if (!info) {
-      throw new Error('还没读到本次登录的凭据：临时目录为空，默认 Codex 凭据也没有变化。请先在官方客户端完成登录')
+    if (s.finishing) throw new Error('本次登录正在导入，请等待完成后重试')
+    if (persist !== undefined && typeof persist !== 'function') throw new TypeError('导入保存回调无效')
+    s.finishing = true
+    try {
+      const info = resolveAuth(s)
+      if (!info) throw new Error('还没读到本次登录的凭据：临时目录为空，默认 Codex 凭据也没有变化。请先在官方客户端完成登录')
+      if (!s.pendingImport) {
+        // Own namespace only; never overwrite the GUI's auth.json or default home.
+        // Atomic private snapshot also survives a gateway restart after a failure.
+        writeJsonAtomic(path.join(s.profileDir, 'pending-import.json'), {
+          schemaVersion: 1, authJson: JSON.parse(info.text), credSource: info.source
+        })
+        s.pendingImport = { text: info.text, source: info.source }
+      }
+      s.hasCredentials = true
+      const result = { authJson: JSON.parse(info.text), credSource: info.source, clientPath: s.clientPath, marker: readMarker(s.profileDir) }
+      const persisted = persist ? await persist(result) : undefined
+      // Retained GUI/recovered profiles must not resurrect a consumed session.
+      writeJsonAtomic(path.join(s.profileDir, 'import-state.json'), { phase: 'completed' })
+      // Import never kills a GUI that may have handed off to an existing instance.
+      const cleaned = !s.recovered && s.clientExited && !s.defaultWatch && destroyProfile(s.profileDir)
+      if (!cleaned) { try { fs.unlinkSync(path.join(s.profileDir, 'pending-import.json')) } catch {} }
+      sessions.delete(sessionId)
+      return persist ? { persisted, credSource: info.source, cleaned } : { ...result, cleaned }
+    } finally {
+      s.finishing = false
+      if (sessions.has(sessionId) && s.pendingImport) {
+        s.phase = s.clientExited ? 'ready' : 'logged-in'
+        s.error = null
+      }
     }
-    // 关掉仍在运行的客户端（用户可能登录完没关）
-    if (!s.clientExited && s.pid && pidAlive(s.pid) && killTree) {
-      try { await killTree(s.pid) } catch { /* 关不掉也不影响读凭据 */ }
-    }
-    const marker = readMarker(s.profileDir)
-    const result = { authJson: JSON.parse(info.text), credSource: info.source, clientPath: s.clientPath, marker }
-    const cleaned = destroyProfile(s.profileDir)
-    sessions.delete(sessionId)
-    return { ...result, cleaned }
   }
 
   async function cancel(sessionId) {
     const s = sessions.get(sessionId)
     if (!s) return { ok: true }
-    if (s.pid && pidAlive(s.pid) && killTree) {
-      try { await killTree(s.pid) } catch { /* 尽力而为 */ }
-    }
-    destroyProfile(s.profileDir)
+    if (s.finishing) throw new Error('本次登录正在导入，暂时不能取消')
+    writeJsonAtomic(path.join(s.profileDir, 'import-state.json'), { phase: 'cancelled' })
+    // Cancelling stops watching/importing. Keep a profile while a client may still
+    // write to it; the shell owns new descendants and cleans them on application exit.
+    if (!s.recovered && s.clientExited && !s.defaultWatch) destroyProfile(s.profileDir)
+    // This snapshot belongs only to the gateway; the GUI never writes it.
+    try { fs.unlinkSync(path.join(s.profileDir, 'pending-import.json')) } catch {}
     sessions.delete(sessionId)
     return { ok: true }
   }
@@ -404,30 +503,34 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
     }
     for (const ent of entries) {
       if (!ent.isDirectory() || !SESSION_ID_RE.test(ent.name)) continue
+      if (sessions.has(ent.name)) { kept += 1; continue }
       const dir = path.join(root, ent.name)
+      if (['completed', 'cancelled'].includes(readImportState(dir)?.phase)) { kept += 1; continue }
       const marker = readMarker(dir)
       const authText = readAuthText(dir)
-      if (authText && authFileHasCredentials(authText)) {
+      const pendingImport = readPendingImport(dir)
+      // Never silently substitute another auth file for a damaged retry snapshot.
+      if (!pendingImport && fs.existsSync(path.join(dir, 'pending-import.json'))) { kept += 1; continue }
+      if (pendingImport || (authText && authFileHasCredentials(authText))) {
         // 有凭据：登记成可恢复会话（用户重跑 finish 就能导入，不必再登录一遍）
         sessions.set(ent.name, {
           sessionId: ent.name, profileDir: dir,
           clientPath: marker?.clientPath || null,
-          pid: marker?.pid || null,
+          pid: null,
           startedAt: marker?.createdAt ? Date.parse(marker.createdAt) : Date.now(),
           hasCredentials: true, clientExited: true,
-          phase: 'ready', error: null, recovered: true
+          phase: 'ready', error: null, recovered: true, pendingImport
         })
         kept += 1
       } else {
-        if (marker?.pid && pidAlive(marker.pid) && killTree) {
-          try { killTree(marker.pid) } catch { /* 尽力而为 */ }
-        }
-        destroyProfile(dir)
-        removed += 1
+        // A stale PID can now belong to an unrelated process. Never signal it,
+        // and do not remove a profile whose previous writer cannot be verified.
+        if (marker?.pid || marker?.clientPath) { kept += 1; continue }
+        if (destroyProfile(dir)) removed += 1
       }
     }
     return { kept, removed }
   }
 
-  return { start, status, finish, cancel, recover, destroyProfile }
+  return { start, status, finish, cancel, recover, destroyProfile, stopAndWait }
 }

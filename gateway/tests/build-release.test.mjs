@@ -85,6 +85,71 @@ function treeHash(dir) {
 const EPOCH = '1700000000'
 const withEpoch = { ...process.env, SOURCE_DATE_EPOCH: EPOCH }
 
+test('构建：只在 staging 固化补丁，记录指纹且不修改工作区依赖', () => {
+  const { root } = fakeRepo()
+  const source = path.join(root, 'gateway/node_modules/chatgpt-bridge/dist/cli.js')
+  const before = fs.readFileSync(source)
+  const result = run(path.join(root, 'build-release.mjs'), ['--no-runtime'], { env: withEpoch })
+  assert.equal(result.code, 0, result.out)
+  const stage = path.join(root, 'release/staging', NAME)
+  const info = JSON.parse(fs.readFileSync(path.join(stage, 'BUILD-INFO.json')))
+  for (const name of ['cli', 'index']) {
+    const actual = fs.readFileSync(path.join(stage, `gateway/node_modules/chatgpt-bridge/dist/${name}.js`))
+    assert.equal(actual.toString(), `// patched ${name}\n`)
+    assert.equal(info.bridge.files[`${name}.js`], sha256(actual))
+  }
+  assert.equal(info.bridge.version, '0.3.0')
+  assert.deepEqual(fs.readFileSync(source), before)
+  assert.ok(!fs.existsSync(path.join(stage, 'prepare-bridge.mjs')), '运行包不分发补丁写入工具')
+})
+
+for (const [label, extra, expected] of [
+  ['快照损坏', { 'gateway/patches/index.patched.js': '// corrupt\n' }, /快照内容不匹配/],
+  ['依赖版本漂移', { 'gateway/node_modules/chatgpt-bridge/package.json': '{"name":"chatgpt-bridge","version":"0.4.0"}' }, /版本不匹配/],
+  ['补丁清单损坏', { 'gateway/patches/manifest.json': '{}' }, /清单格式无效/]
+]) {
+  test(`构建：${label} 必须阻断发行`, () => {
+    const { root } = fakeRepo({ extra })
+    const result = run(path.join(root, 'build-release.mjs'), ['--no-runtime'])
+    assert.notEqual(result.code, 0, result.out)
+    assert.match(result.out, expected)
+    assert.ok(!fs.existsSync(path.join(root, 'release/staging', NAME, 'BUILD-INFO.json')))
+  })
+}
+
+test('构建：快照缺失必须失败，不能依赖工作区已打补丁的 dist', () => {
+  const { root } = fakeRepo()
+  fs.unlinkSync(path.join(root, 'gateway/patches/cli.patched.js'))
+  const result = run(path.join(root, 'build-release.mjs'), ['--no-runtime'])
+  assert.notEqual(result.code, 0, result.out)
+  assert.match(result.out, /快照缺失/)
+})
+
+test('依赖清理：剔除已审查的测试/示例，保留许可证、运行映射和同名运行目录', () => {
+  const excluded = [
+    '@modelcontextprotocol/sdk/dist/cjs/examples/server/sample.js',
+    '@modelcontextprotocol/sdk/dist/esm/examples/server/sample.js.map',
+    'json-schema-traverse/spec/fixtures/schema.js', 'object-inspect/example/circular.js',
+    'qs/test/index.js', 'zod/src/v4/core/tests/index.ts'
+  ]
+  const retained = [
+    '@modelcontextprotocol/sdk/LICENSE', '@modelcontextprotocol/sdk/NOTICE',
+    '@modelcontextprotocol/sdk/dist/esm/server/index.js.map',
+    'json-schema-traverse/index.js', 'json-schema-traverse/LICENSE',
+    'unrelated/examples/runtime.js', 'unrelated/fixtures/runtime.json',
+    'json-schema-traverse/specification/runtime.js'
+  ]
+  const extra = Object.fromEntries([...excluded, ...retained].map(rel => [`gateway/node_modules/${rel}`, '// fixture\n']))
+  const { root, script } = fakeRepo({ extra })
+  const result = run(script, ['--no-runtime'])
+  assert.equal(result.code, 0, result.out)
+  for (const rel of excluded) {
+    assert.ok(!fs.existsSync(path.join(stagingOf(root), 'gateway/node_modules', rel)), rel)
+    assert.ok(fs.existsSync(path.join(root, 'gateway/node_modules', rel)), 'source remains untouched')
+  }
+  for (const rel of retained) assert.ok(fs.existsSync(path.join(stagingOf(root), 'gateway/node_modules', rel)), rel)
+})
+
 // ---------- 造一个 zip（内容用 python 打包，条目为普通目录结构） ----------
 function makeZip(zipPath, files) {
   const stage = tmpdir('zip')
@@ -143,8 +208,19 @@ function fakeRepo({ lockSha, extra = {}, eol = 'lf' } = {}) {
   w('gateway/service-unix/stop-gateway.sh', '#!/bin/sh\necho ok\n')
   w('gateway/service-unix/install-autostart.sh', '#!/bin/sh\necho ok\n')
   w('gateway/service-unix/uninstall-autostart.sh', '#!/bin/sh\necho ok\n')
-  w('gateway/node_modules/chatgpt-bridge/dist/cli.js', '//\n')  // node_modules 不参与路径扫描
-  w('gateway/patches/keep.patch', '')
+  w('gateway/node_modules/chatgpt-bridge/package.json', JSON.stringify({ name: 'chatgpt-bridge', version: '0.3.0' }))
+  const bridgeFiles = {}
+  for (const name of ['cli', 'index']) {
+    const patched = `// patched ${name}\n`
+    w(`gateway/node_modules/chatgpt-bridge/dist/${name}.js`, '// original\n')
+    w(`gateway/patches/${name}.patched.js`, patched)
+    bridgeFiles[`${name}.js`] = sha256(patched)
+  }
+  w('gateway/patches/manifest.json', JSON.stringify({ schemaVersion: 1, package: 'chatgpt-bridge', version: '0.3.0', files: bridgeFiles }))
+  w('gateway/bridge-patches.mjs', fs.readFileSync(path.join(REPO, 'gateway/bridge-patches.mjs'), 'utf8'))
+  w('runtime-lock.mjs', fs.readFileSync(path.join(REPO, 'runtime-lock.mjs'), 'utf8'))
+  w('prepare-bridge.mjs', fs.readFileSync(path.join(REPO, 'prepare-bridge.mjs'), 'utf8'))
+  w('dependency-resources.mjs', fs.readFileSync(path.join(REPO, 'dependency-resources.mjs'), 'utf8'))
   w('frontend/dist/index.html', '<html></html>')
   w('docs/lan-kit/INSTALL.md', '# i\n')
   w('docs/lan-kit/setup-client.mjs', '//\n')
@@ -152,7 +228,7 @@ function fakeRepo({ lockSha, extra = {}, eol = 'lf' } = {}) {
   if (lockSha !== undefined) {
     w('node-runtime.lock.json', JSON.stringify({
       version: 'v22.0.0', sha256: lockSha, bytes: 1,
-      platform: process.platform, arch: process.arch, note: 'test'
+      platform: 'win32', arch: 'x64', note: 'test'
     }))
   }
   for (const [rel, data] of Object.entries(extra)) w(rel, data)
@@ -225,6 +301,19 @@ test('verify-zip：api-keys.json 要被拦住', () => {
   assert.match(r.out, /禁止内容/)
 })
 
+test('verify-zip：两种待保存 OAuth 凭据都不能混入归档', () => {
+  requirePython()
+  for (const name of ['.oauth-browser-pending.json', '.oauth-device-pending.json']) {
+    const zip = makeZip(path.join(tmpdir('oauth-zip'), 'pending.zip'), {
+      [`${NAME}/README.md`]: '# fixture\n',
+      [`${NAME}/gateway/${name}`]: '{"fixture":"pending-credential"}'
+    })
+    const r = run(SCRIPT, ['--verify-zip', `--zip=${zip}`])
+    assert.equal(r.code, 1, r.out)
+    assert.match(r.out, /禁止内容/)
+  }
+})
+
 test('verify-zip：压缩后 .sh 变成 CRLF 要被拦住', () => {
   requirePython()
   const zip = makeZip(path.join(tmpdir('z'), 'crlf-sh.zip'), {
@@ -244,7 +333,9 @@ test('verify-zip：包不存在时明确报错，而不是静默通过', () => {
 // ======================= --verify-build =======================
 // 全部在假仓库里跑同一份脚本：ROOT 变了，锁文件也跟着走，所以能精确构造
 // 「声明 / 实物 / 锁」三者的任意不一致，而不必真造一个 83MB 的 node.exe。
-const FAKE_NODE = Buffer.from('not a real node runtime, just bytes for hashing')
+const FAKE_NODE = Buffer.alloc(256)
+FAKE_NODE.writeUInt16LE(0x5a4d); FAKE_NODE.writeUInt32LE(64, 60)
+FAKE_NODE.writeUInt32LE(0x4550, 64); FAKE_NODE.writeUInt16LE(0x8664, 68); FAKE_NODE.writeUInt16LE(0x20b, 88)
 const NODE_SHA = sha256(FAKE_NODE)
 
 function buildZipWithNode(zipPath, { declaredSha, nodeBuf = FAKE_NODE, infoVersion = VER }) {
@@ -328,6 +419,8 @@ test('复制阶段：用户数据 / 密钥 / 测试套件不会被带进 staging
       'gateway/data/call-logs.json': '[]',
       'gateway/api-keys.json': '{}',
       'gateway/accounts/acc.json': '{}',
+      'gateway/.oauth-browser-pending.json': '{"fixture":"browser-pending-secret"}',
+      'gateway/.oauth-device-pending.json': '{"fixture":"device-pending-secret"}',
       'gateway/logs/launcher.log': 'x',
       'gateway/tests/audit.mjs': '// attack payload'
     }
@@ -336,7 +429,7 @@ test('复制阶段：用户数据 / 密钥 / 测试套件不会被带进 staging
   assert.equal(r.code, 0, r.out)
 
   const staging = path.join(root, 'release', 'staging', NAME)
-  for (const rel of ['gateway/data', 'gateway/api-keys.json', 'gateway/accounts', 'gateway/logs', 'gateway/tests']) {
+  for (const rel of ['gateway/data', 'gateway/api-keys.json', 'gateway/accounts', 'gateway/.oauth-browser-pending.json', 'gateway/.oauth-device-pending.json', 'gateway/logs', 'gateway/tests']) {
     assert.ok(!fs.existsSync(path.join(staging, rel)), `不应被复制进发布包：${rel}`)
   }
 })
@@ -393,7 +486,7 @@ test('构建：包根生成 install.vbs / uninstall.vbs，与 service 副本字�
 })
 
 // ======================= 运行时锁（构建阶段） =======================
-test('构建：内置运行时与锁文件不一致时中止，并给出两条出路', () => {
+test('构建：内置运行时与锁文件不一致时中止，并给出两条出路', { skip: process.platform !== 'win32' || process.arch !== 'x64' }, () => {
   const { root, script } = fakeRepo({ lockSha: 'a'.repeat(64) })
   const r = run(script, [`--node=${process.execPath}`], { cwd: root })
   assert.equal(r.code, 1, r.out)
@@ -402,7 +495,7 @@ test('构建：内置运行时与锁文件不一致时中止，并给出两条�
   assert.match(r.out, /--node=/)
 })
 
-test('构建：锁文件一致时通过，且 BUILD-INFO 不含绝对路径与主机名', () => {
+test('构建：锁文件一致时通过，且 BUILD-INFO 不含绝对路径与主机名', { skip: process.platform !== 'win32' || process.arch !== 'x64' }, () => {
   const { root, script } = fakeRepo({ lockSha: sha256(fs.readFileSync(process.execPath)) })
   const r = run(script, [`--node=${process.execPath}`], { cwd: root })
   assert.equal(r.code, 0, r.out)
@@ -414,6 +507,46 @@ test('构建：锁文件一致时通过，且 BUILD-INFO 不含绝对路径与�
   // v1.2.0 栽过的坑：构建指纹把打包者家目录带进了分发包
   assert.doesNotMatch(raw, /[A-Za-z]:[\\/]+Users[\\/]+[A-Za-z0-9._-]+/)
   assert.ok(!raw.includes(os.hostname()), 'BUILD-INFO 不应记录主机名')
+})
+
+function v2Lock(root, targets) {
+  fs.writeFileSync(path.join(root, 'node-runtime.lock.json'), JSON.stringify({ schemaVersion: 2, targets }))
+}
+const nativeEntry = () => ({ version: process.version, platform: 'win32', arch: 'x64', bytes: fs.statSync(process.execPath).size, sha256: sha256(fs.readFileSync(process.execPath)) })
+test('构建：v2 选择 Windows 目标，缺失记录或缺失锁不能放行', { skip: process.platform !== 'win32' || process.arch !== 'x64' }, () => {
+  for (const targets of [null, {}, { 'darwin-arm64': { ...nativeEntry(), platform: 'darwin', arch: 'arm64' } }]) {
+    const { root, script } = fakeRepo()
+    if (targets) v2Lock(root, targets)
+    const r = run(script, [`--node=${process.execPath}`])
+    assert.notEqual(r.code, 0, r.out)
+    assert.match(r.out, /锁缺失|锁缺少目标/)
+  }
+})
+test('构建：v2 版本和大小都受锁约束', { skip: process.platform !== 'win32' || process.arch !== 'x64' }, () => {
+  for (const change of [{ bytes: 1 }, { version: 'v22.0.0' }]) {
+    const { root, script } = fakeRepo()
+    v2Lock(root, { 'win32-x64': { ...nativeEntry(), ...change } })
+    const r = run(script, [`--node=${process.execPath}`])
+    assert.notEqual(r.code, 0, r.out); assert.match(r.out, /版本或大小与锁文件不一致/)
+  }
+})
+test('构建：显式更新 Windows 锁不覆盖 Mac 记录，可补齐缺失目标', { skip: process.platform !== 'win32' || process.arch !== 'x64' }, () => {
+  const { root, script } = fakeRepo()
+  const mac = { version: 'v22.22.2', platform: 'darwin', arch: 'arm64', bytes: 123, sha256: 'a'.repeat(64) }
+  v2Lock(root, { 'darwin-arm64': mac })
+  const r = run(script, [`--node=${process.execPath}`, '--write-lock'])
+  assert.equal(r.code, 0, r.out)
+  const lock = JSON.parse(fs.readFileSync(path.join(root, 'node-runtime.lock.json')))
+  assert.deepEqual(lock.targets['darwin-arm64'], mac)
+  assert.deepEqual(lock.targets['win32-x64'], nativeEntry())
+})
+test('构建：错误架构在尝试执行之前拒绝，不能把 Mac Node 改名 node.exe', () => {
+  const { root, script } = fakeRepo()
+  const node = Buffer.alloc(256)
+  node.writeUInt32LE(0xfeedfacf); node.writeUInt32LE(0x0100000c, 4); node.writeUInt32LE(2, 12)
+  fs.writeFileSync(path.join(root, 'foreign.exe'), node)
+  const r = run(script, ['--node=' + path.join(root, 'foreign.exe')])
+  assert.notEqual(r.code, 0); assert.match(r.out, /Windows x64/)
 })
 
 // ======================= 换行符规范化（可复现构建） =======================

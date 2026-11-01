@@ -5,16 +5,26 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { EventEmitter } from 'node:events'
 
 import {
   authFileHasCredentials,
   derivePhase,
-  discoverCodexClient,
+  discoverCodexClient as discoverClient,
+  defaultCodexAuthPath,
   createOfficialLoginManager,
   profileDirFor,
   tempLoginRootDir,
   LOGIN_TIMEOUT_MS
 } from '../codex-official-login.mjs'
+
+// All discovery probes use injected filesystem/process boundaries. In particular,
+// adding a production PATH fallback must not make these tests consult this PC.
+function discoverCodexClient(options) {
+  return discoverClient({ runFile: () => { throw new Error('fixture: no PATH client') },
+    readdirSync: () => [], readlinkSync: () => { throw new Error('fixture: no link') },
+    readFile: () => { throw new Error('fixture: no manifest') }, ...options })
+}
 
 function tmpDataRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'cgw-offlogin-'))
@@ -219,6 +229,7 @@ test('默认 profile 兜底：临时 profile 永远优先；会话开始时无�
 function makeManager(root, { spawnImpl, killImpl, discoverImpl, alive = { flag: true } } = {}) {
   return createOfficialLoginManager({
     dataRoot: root,
+    platform: 'win32',
     spawnImpl: spawnImpl || (() => ({ pid: 4321, unref() {} })),
     killTree: killImpl || (async () => {}),
     // 默认注入假发现/假探活：单测不依赖本机是否装了 Codex、不真探进程。
@@ -230,7 +241,7 @@ function makeManager(root, { spawnImpl, killImpl, discoverImpl, alive = { flag: 
   })
 }
 
-test('start→status→finish 全流程：凭据出现+客户端退出 → finish 返回 auth 并清理目录', async () => {
+test('start→status→finish：GUI 交接退出后返回 auth，保留可能仍被使用的目录', async () => {
   const root = tmpDataRoot()
   const alive = { flag: true }
   const mgr = makeManager(root, { alive })
@@ -252,20 +263,128 @@ test('start→status→finish 全流程：凭据出现+客户端退出 → finis
 
   const fin = await mgr.finish(r.sessionId)
   assert.equal(fin.authJson.tokens.refresh_token, 'b')
-  assert.equal(fin.cleaned, true)
-  assert.ok(!fs.existsSync(r.profileDir))
+  assert.equal(fin.cleaned, false)
+  assert.ok(fs.existsSync(r.profileDir))
   // 会话已消费：再次 finish 报错
   await assert.rejects(mgr.finish(r.sessionId), /会话不存在/)
 })
 
-test('cancel：杀进程 + 清理目录 + 会话移除', async () => {
+test('finish commits only after persistence and retries the original snapshot after failure', async () => {
+  const mgr = makeManager(tmpDataRoot(), {
+    alive: { flag: false }, discoverImpl: () => ({ path: 'C:\\fake\\codex.cmd', kind: 'cli' })
+  })
+  const session = await mgr.start()
+  const auth = path.join(session.profileDir, 'auth.json')
+  fs.writeFileSync(auth, JSON.stringify({ tokens: { access_token: 'fixture-first' } }))
+  assert.equal((await mgr.status(session.sessionId)).phase, 'ready')
+  await assert.rejects(mgr.finish(session.sessionId, async result => {
+    result.authJson.tokens.access_token = 'callback-mutated'
+    throw new Error('fixture registry write failed')
+  }), /fixture registry write failed/)
+  assert.ok(fs.existsSync(auth), 'credentials must survive a failed persistence callback')
+  assert.equal((await mgr.status(session.sessionId)).hasCredentials, true)
+  fs.writeFileSync(auth, JSON.stringify({ tokens: { access_token: 'fixture-other-account' } }))
+  const done = await mgr.finish(session.sessionId, async ({ authJson }) => {
+    assert.equal(authJson.tokens.access_token, 'fixture-first')
+    return { accountId: 'saved-account' }
+  })
+  assert.deepEqual(done.persisted, { accountId: 'saved-account' })
+  assert.equal(done.authJson, undefined, 'callback mode returns persistence metadata, not auth')
+  assert.equal(done.cleaned, true)
+  assert.equal(fs.existsSync(session.profileDir), false)
+  assert.equal((await mgr.status(session.sessionId)).phase, 'unknown')
+})
+
+test('finish excludes concurrent finish/cancel/recover while persistence is pending', async () => {
+  const root = tmpDataRoot()
+  const mgr = makeManager(root)
+  const session = await mgr.start()
+  fs.writeFileSync(path.join(session.profileDir, 'auth.json'), '{"tokens":{"access_token":"fixture"}}')
+  let release
+  let writes = 0
+  const pending = mgr.finish(session.sessionId, async () => {
+    writes++
+    await new Promise(resolve => { release = resolve })
+    return { accountId: 'one-account' }
+  })
+  assert.equal((await mgr.status(session.sessionId)).phase, 'importing')
+  await assert.rejects(mgr.finish(session.sessionId, () => { writes++ }), /正在导入/)
+  await assert.rejects(mgr.cancel(session.sessionId), /正在导入/)
+  mgr.recover()
+  await assert.rejects(mgr.finish(session.sessionId, () => { writes++ }), /正在导入/)
+  release()
+  assert.equal((await pending).persisted.accountId, 'one-account')
+  assert.equal(writes, 1)
+  const recovered = makeManager(root)
+  recovered.recover()
+  assert.equal((await recovered.status(session.sessionId)).phase, 'unknown', 'completed retained GUI profile must not resurrect')
+  assert.ok(fs.existsSync(session.profileDir), 'GUI may still use its profile')
+})
+
+test('default-profile failed import survives restart without switching to a newer account', async () => {
+  const root = tmpDataRoot()
+  let defaultText = null
+  const options = { dataRoot: root, platform: 'win32', spawnImpl: () => ({ pid: 7, unref() {} }),
+    discoverImpl: () => ({ path: 'fixture.exe', kind: 'app' }), defaultAuthText: () => defaultText }
+  const mgr = createOfficialLoginManager(options)
+  const session = await mgr.start()
+  defaultText = '{"tokens":{"access_token":"fixture-original"}}'
+  await assert.rejects(mgr.finish(session.sessionId, () => { throw new Error('fixture config failed') }), /fixture config failed/)
+  defaultText = '{"tokens":{"access_token":"fixture-next"}}'
+  const recovered = createOfficialLoginManager(options)
+  recovered.recover()
+  assert.equal((await recovered.status(session.sessionId)).phase, 'ready')
+  const result = await recovered.finish(session.sessionId, ({ authJson }) => {
+    assert.equal(authJson.tokens.access_token, 'fixture-original')
+    return { accountId: 'original' }
+  })
+  assert.equal(result.credSource, 'default-profile')
+  assert.equal(defaultText, '{"tokens":{"access_token":"fixture-next"}}', 'default profile is never modified')
+  assert.equal(fs.existsSync(path.join(session.profileDir, 'pending-import.json')), false)
+})
+
+test('snapshot write failure does not call persistence or consume the login session', async () => {
+  const mgr = makeManager(tmpDataRoot())
+  const session = await mgr.start()
+  fs.writeFileSync(path.join(session.profileDir, 'auth.json'), '{"tokens":{"access_token":"fixture"}}')
+  const blocked = path.join(session.profileDir, 'pending-import.json')
+  fs.mkdirSync(blocked)
+  let writes = 0
+  await assert.rejects(mgr.finish(session.sessionId, () => { writes++ }))
+  assert.equal(writes, 0)
+  assert.equal((await mgr.status(session.sessionId)).hasCredentials, true)
+  fs.rmdirSync(blocked)
+  await mgr.finish(session.sessionId, () => { writes++; return { accountId: 'saved' } })
+  assert.equal(writes, 1)
+})
+
+test('cancelled failed import is not recovered and damaged snapshots never select a replacement account', async () => {
+  const root = tmpDataRoot()
+  const mgr = makeManager(root)
+  const first = await mgr.start()
+  fs.writeFileSync(path.join(first.profileDir, 'auth.json'), '{"tokens":{"access_token":"fixture"}}')
+  await assert.rejects(mgr.finish(first.sessionId, () => { throw new Error('fixture failure') }))
+  await mgr.cancel(first.sessionId)
+  assert.equal(fs.existsSync(path.join(first.profileDir, 'pending-import.json')), false)
+  const second = await mgr.start()
+  fs.writeFileSync(path.join(second.profileDir, 'auth.json'), '{"tokens":{"access_token":"replacement"}}')
+  fs.writeFileSync(path.join(second.profileDir, 'pending-import.json'), '{broken')
+  const recovered = makeManager(root)
+  recovered.recover()
+  assert.equal((await recovered.status(first.sessionId)).phase, 'unknown')
+  assert.equal((await recovered.status(second.sessionId)).phase, 'unknown')
+  assert.ok(fs.existsSync(first.profileDir))
+  assert.ok(fs.existsSync(second.profileDir))
+})
+
+test('cancel：取消导入，不按 PID 杀客户端，不删除未确认退出的目录', async () => {
   const root = tmpDataRoot()
   const killed = []
   const mgr = makeManager(root, { killImpl: async (pid) => killed.push(pid) })
   const r = await mgr.start()
   await mgr.cancel(r.sessionId)
-  assert.deepEqual(killed, [4321])
-  assert.ok(!fs.existsSync(r.profileDir))
+  assert.deepEqual(killed, [])
+  assert.ok(fs.existsSync(r.profileDir))
   const st = await mgr.status(r.sessionId)
   assert.equal(st.phase, 'unknown')
 })
@@ -290,7 +409,7 @@ test('start：CLI 形态补 login 子命令；桌面客户端进入 defaultWatch
   })
   const r1 = await mgrCli.start()
   assert.match(seen[0], /"C:\\npm\\codex\.cmd" login/)
-  assert.equal(seen[0].includes('start "" /WAIT'), true)
+  assert.equal(seen[0], 'start "" /WAIT CMD /d /s /c ""C:\\npm\\codex.cmd" login" & exit /b')
   await mgrCli.cancel(r1.sessionId)
 
   // store 形态：不带 login；客户端退出后仍 waiting-login（watchDefaultProfile=true）
@@ -305,6 +424,7 @@ test('start：CLI 形态补 login 子命令；桌面客户端进入 defaultWatch
   // 用独立管理器翻转探活：模拟交接退出
   const mgrStore2 = createOfficialLoginManager({
     dataRoot: root,
+    platform: 'win32',
     spawnImpl: () => ({ pid: 33, unref() {} }),
     killTree: async () => {},
     discoverImpl: () => ({ path: 'C:\\Store\\ChatGPT.exe', kind: 'store' }),
@@ -321,6 +441,7 @@ test('start：CLI 形态补 login 子命令；桌面客户端进入 defaultWatch
   const defRef = { text: null }
   const mgrStore3 = createOfficialLoginManager({
     dataRoot: root,
+    platform: 'win32',
     spawnImpl: () => ({ pid: 44, unref() {} }),
     killTree: async () => {},
     discoverImpl: () => ({ path: 'C:\\Store\\ChatGPT.exe', kind: 'store' }),
@@ -372,4 +493,160 @@ test('destroyProfile：只删会话命名空间内的目录', async () => {
   fs.mkdirSync(sess, { recursive: true })
   assert.equal(mgr.destroyProfile(sess), true)
   assert.ok(!fs.existsSync(sess))
+})
+
+test('recover never signals a stale PID or removes a potentially live profile', async () => {
+  const root = tmpDataRoot()
+  const dir = profileDirFor(root, 'd'.repeat(16))
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'session-marker.json'), JSON.stringify({ pid: process.pid, clientPath: 'unrelated.exe' }))
+  let signalled = false
+  const mgr = makeManager(root, { killImpl: () => { signalled = true } })
+  assert.deepEqual(mgr.recover(), { kept: 1, removed: 0 })
+  assert.equal(signalled, false)
+  assert.ok(fs.existsSync(dir))
+})
+
+test('shutdown waits for actual owned helper exit, even after cancelling its session', async () => {
+  const { EventEmitter } = await import('node:events')
+  const child = new EventEmitter()
+  child.pid = 9876; child.unref = () => {}
+  let killed = 0; child.kill = () => { killed++; return true }
+  const tracked = []
+  const mgr = createOfficialLoginManager({ dataRoot: tmpDataRoot(),
+    spawnImpl: () => child, discoverImpl: () => ({ path: 'C:\\fake\\client.exe', kind: 'app' }),
+    trackChild: c => tracked.push(c), defaultAuthText: () => null })
+  const session = await mgr.start()
+  await mgr.cancel(session.sessionId)
+  assert.equal(await mgr.stopAndWait(10), false)
+  let finished = false
+  const stop = mgr.stopAndWait(1000).then(ok => { finished = true; return ok })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(finished, false)
+  child.emit('exit', 0)
+  assert.equal(await stop, true)
+  assert.equal(killed, 2); assert.deepEqual(tracked, [child])
+})
+
+test('PATH discovery uses executable/argv without a shell and keeps the provided environment', () => {
+  const env = { LOCALAPPDATA: 'C:/fixture', PATH: 'fixture-only' }, calls = []
+  const found = discoverCodexClient({ env, platform: 'win32',
+    existsSync: value => value === 'C:\\fixture-cli\\codex.cmd',
+    runFile: (...args) => { calls.push(args); return 'C:\\missing\\codex.exe\r\nC:\\fixture-cli\\codex.cmd\r\n' } })
+  assert.deepEqual(found, { path: 'C:\\fixture-cli\\codex.cmd', kind: 'cli' })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0][0], 'where.exe'); assert.deepEqual(calls[0][1], ['codex'])
+  assert.equal(calls[0][2].shell, false); assert.equal(calls[0][2].env, env)
+  assert.equal(calls[0][2].windowsHide, true)
+  const unix = discoverCodexClient({ env: {}, platform: 'darwin', existsSync: p => p === '/fixture/bin/codex',
+    runFile: (command, args, options) => {
+      assert.equal(command, '/usr/bin/which'); assert.deepEqual(args, ['codex']); assert.equal(options.shell, false)
+      return '/fixture/bin/codex\n'
+    } })
+  assert.equal(unix.kind, 'cli')
+})
+
+test('Windows GUI and Store installations outrank a simultaneous PATH CLI', () => {
+  let searches = 0
+  const runFile = () => { searches++; return 'C:\\cli\\codex.cmd' }
+  const app = discoverCodexClient({ env: { LOCALAPPDATA: 'C:/la' }, platform: 'win32', runFile,
+    existsSync: p => norm(p) === 'C:/la/Programs/Codex/Codex.exe' })
+  assert.equal(app.kind, 'app'); assert.equal(searches, 0)
+  const install = 'C:/Program Files/WindowsApps/OpenAI.Codex_fixture'
+  const store = discoverCodexClient({ env: { LOCALAPPDATA: 'C:/la' }, platform: 'win32', runFile,
+    existsSync: p => norm(p) === `${install}/app/Codex.exe`,
+    readdirSync: p => norm(p) === 'C:/la/Microsoft/WindowsApps' ? ['codex-core-command-runner.exe'] : [],
+    readlinkSync: () => `${install}/app/resources/codex-command-runner.exe` })
+  assert.equal(store.kind, 'store'); assert.equal(searches, 0)
+})
+
+test('a standalone ChatGPT install is not a Codex client and does not mask the Codex Store package', () => {
+  const chatgpt = 'C:/la/Programs/ChatGPT/ChatGPT.exe'
+  assert.equal(discoverCodexClient({ env: { LOCALAPPDATA: 'C:/la' }, platform: 'win32',
+    existsSync: p => norm(p) === chatgpt }), null)
+  const install = 'C:/Program Files/WindowsApps/OpenAI.Codex_fixture'
+  const found = discoverCodexClient({ env: { LOCALAPPDATA: 'C:/la' }, platform: 'win32',
+    existsSync: p => [chatgpt, `${install}/app/Codex.exe`].includes(norm(p)),
+    readdirSync: p => norm(p) === 'C:/la/Microsoft/WindowsApps' ? ['OpenAI.Codex_fixture']
+      : norm(p) === 'C:/la/Microsoft/WindowsApps/OpenAI.Codex_fixture' ? ['chatgpt-desktop.exe'] : [],
+    readlinkSync: () => `${install}/app/Codex.exe`,
+    readFile: () => '<Application DisplayName="ChatGPT" Executable="app\\Codex.exe" />' })
+  assert.equal(found.kind, 'store')
+  assert.equal(norm(found.path), `${install}/app/Codex.exe`)
+})
+
+test('Mac application discovery and explicit bundle classification reach the GUI launcher', async () => {
+  for (const candidate of ['/Applications/Codex.app', '/Users/fixture/Applications/Codex.app']) {
+    const app = discoverCodexClient({ env: { HOME: '/Users/fixture' }, platform: 'darwin',
+      existsSync: p => p === candidate, runFile: () => assert.fail('GUI must outrank PATH CLI') })
+    assert.deepEqual(app, { path: candidate, kind: 'app' })
+  }
+  const appPath = "/Applications/Someone's $literal Codex.app"
+  const discovered = discoverCodexClient({ env: { CODEX_CLIENT_PATH: appPath }, platform: 'darwin', existsSync: p => p === appPath })
+  assert.equal(discovered.kind, 'explicit'); assert.equal(discovered.launchKind, 'app')
+  const calls = [], child = new EventEmitter(); child.pid = 9876; child.unref = () => {}
+  const manager = createOfficialLoginManager({ dataRoot: tmpDataRoot(), platform: 'darwin', env: { HOME: '/fixture/home' },
+    discoverImpl: ({ platform }) => { assert.equal(platform, 'darwin'); return discovered },
+    spawnImpl: (command, options) => { calls.push({ command, options }); return child }, defaultAuthText: () => null })
+  const session = await manager.start()
+  assert.ok(calls[0].command.startsWith("/usr/bin/open -n '/Applications/Someone'\\''s $literal Codex.app'"))
+  assert.equal(calls[0].options.env.CODEX_HOME, session.profileDir)
+  child.emit('exit', 0)
+  const status = await manager.status(session.sessionId)
+  assert.equal(status.phase, 'waiting-login'); assert.equal(status.watchDefaultProfile, true)
+  await manager.cancel(session.sessionId)
+})
+
+test('explicit Windows CMD client gets login; asynchronous launch errors and nonzero exits are reported', async () => {
+  const client = discoverCodexClient({ env: { CODEX_CLIENT_PATH: 'C:\\fixture cli\\codex.cmd' }, platform: 'win32', existsSync: () => true })
+  assert.equal(client.kind, 'explicit'); assert.equal(client.launchKind, 'cli')
+  for (const failure of ['error', 'nonzero-cli', 'nonzero-store']) {
+    const child = new EventEmitter(); child.pid = failure === 'error' ? undefined : 9876; child.unref = () => {}
+    const manager = createOfficialLoginManager({ dataRoot: tmpDataRoot(), platform: 'win32',
+      discoverImpl: () => failure === 'nonzero-store' ? { path: 'C:\\store\\Codex.exe', kind: 'store' } : client,
+      spawnImpl: (command, options) => {
+        if (failure !== 'nonzero-store') assert.equal(command, 'start "" /WAIT CMD /d /s /c ""C:\\fixture cli\\codex.cmd" login" & exit /b')
+        assert.equal(options.shell, true); return child
+      }, defaultAuthText: () => null })
+    const session = await manager.start()
+    if (failure === 'error') child.emit('error', Object.assign(new Error('fixture asynchronous failure'), { code: 'ENOENT' }))
+    else child.emit('exit', 7)
+    const status = await manager.status(session.sessionId)
+    assert.equal(status.phase, 'failed', failure)
+    assert.match(status.error, failure === 'error' ? /启动官方客户端失败/ : /退出码 7/)
+    await manager.cancel(session.sessionId)
+    assert.equal(await manager.stopAndWait(10), true)
+  }
+})
+
+test('a failed CLI exit does not discard credentials successfully written before exit', () => {
+  assert.equal(derivePhase({ hasCredentials: true, clientExited: true, clientExitCode: 1 }).phase, 'ready')
+})
+
+test('official default profile path honors CODEX_HOME with the same whitespace and quote normalization', () => {
+  for (const value of [' /fixture/custom ', '"/fixture/custom"', " '/fixture/custom' "]) {
+    assert.equal(defaultCodexAuthPath({ CODEX_HOME: value }, () => '/fixture/home'), path.join('/fixture/custom', 'auth.json'))
+  }
+  for (const value of ['', '  ', "''"]) {
+    assert.equal(defaultCodexAuthPath({ CODEX_HOME: value }, () => '/fixture/home'), path.join('/fixture/home', '.codex', 'auth.json'))
+  }
+})
+
+test('manager watches only its injected custom CODEX_HOME and requires a change from the starting credentials', async () => {
+  const root = tmpDataRoot(), custom = path.join(root, 'custom profile')
+  fs.mkdirSync(custom)
+  const auth = path.join(custom, 'auth.json')
+  fs.writeFileSync(auth, JSON.stringify({ tokens: { access_token: 'fixture-old' } }))
+  const manager = createOfficialLoginManager({ dataRoot: root, platform: 'win32', env: { CODEX_HOME: ` "${custom}" ` },
+    discoverImpl: () => ({ path: 'C:\\fixture\\Codex.exe', kind: 'app' }),
+    spawnImpl: (_command, options) => {
+      assert.notEqual(options.env.CODEX_HOME, custom, 'new client gets the temporary session profile')
+      return { pid: 9876, unref() {} }
+    } })
+  const session = await manager.start()
+  assert.equal((await manager.status(session.sessionId)).hasCredentials, false)
+  fs.writeFileSync(auth, JSON.stringify({ tokens: { access_token: 'fixture-new' } }))
+  const status = await manager.status(session.sessionId)
+  assert.equal(status.hasCredentials, true); assert.equal(status.credSource, 'default-profile')
+  await manager.cancel(session.sessionId)
 })

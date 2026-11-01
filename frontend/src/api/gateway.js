@@ -37,6 +37,10 @@
 //   DELETE /__gw/apikeys                按 id 删除 API Key
 
 import { request, gwRequest, parseBase, BASE, timeoutSignal } from './client'
+import { copyImageUrl } from './image-clipboard'
+function authRequest(path, method = 'GET', body = null) {
+  return gwRequest(path, method, body, undefined, { strictJson: true })
+}
 
 // 上传 / 导入要传整个文件的二进制，超时给得比控制面宽得多：
 // 大图 + 慢网时 30 秒不够，但没有上限又会让按钮永久转圈。
@@ -195,7 +199,9 @@ export async function startGateway() { return await gwRequest('/__gw/start', 'PO
 export async function stopGateway() { return await gwRequest('/__gw/stop', 'POST').catch(() => null) }
 export async function restartGateway() { return await gwRequest('/__gw/restart', 'POST').catch(() => null) }
 export async function getGatewayLogs() {
-  return (await gwRequest('/__gw/logs', 'GET').catch(() => null)) || { lines: [] }
+  const result = await gwRequest('/__gw/logs', 'GET')
+  if (!Array.isArray(result?.lines)) throw new Error('运行日志响应无效')
+  return result
 }
 
 // ---------- 连接诊断 ----------
@@ -274,8 +280,9 @@ export async function deleteUploadRecord(sourceId, name) {
 
 // 调用日志：网关反代层逐笔记录的真实 /v1 调用（环形缓冲 200 条）
 export async function getLogs(_opts = {}) {
-  const r = await gwRequest('/__gw/call-logs', 'GET').catch(() => null)
-  return (r && Array.isArray(r.logs)) ? r.logs : []
+  const r = await gwRequest('/__gw/call-logs', 'GET')
+  if (!Array.isArray(r?.logs)) throw new Error('调用日志响应无效')
+  return r.logs
 }
 
 // ---------- 生成图片（bridge image_generation 落盘产物） ----------
@@ -291,60 +298,57 @@ export async function deleteAssets(src, names, all = false) {
   return await gwRequest('/__gw/assets/files', 'DELETE', { src, names, all }).catch(() => null)
 }
 // 复制图片到系统剪贴板（blob → ClipboardItem；src 缺省 = 生成图库）
-export async function copyImageToClipboardImg(src, name) {
-  const res = await fetch(assetFileUrl(src, name))
-  if (!res.ok) throw new Error('HTTP ' + res.status)
-  const blob = await res.blob()
-  if (!navigator.clipboard || typeof window.ClipboardItem === 'undefined') {
-    throw new Error('当前浏览器不支持图片剪贴板写入')
-  }
-  await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })])
+export function copyImageToClipboardImg(src, name) {
+  return copyImageUrl(assetFileUrl(src, name))
 }
 
 // ---------- 授权：设备流 ----------
 export async function startDeviceFlowApi() {
-  return await gwRequest('/__gw/auth/device/start', 'POST', {}).catch(() => null)
+  return await authRequest('/__gw/auth/device/start', 'POST', {})
 }
 export async function pollDeviceFlowApi(payload = {}) {
-  return await gwRequest('/__gw/auth/device/poll', 'POST', payload).catch(() => null)
+  return await authRequest('/__gw/auth/device/poll', 'POST', payload)
+}
+export async function cancelDeviceFlowApi() {
+  return await authRequest('/__gw/auth/device/cancel', 'POST', {})
 }
 
 // ---------- 授权：浏览器回调 ----------
 export async function startBrowserLoginApi() {
-  return await gwRequest('/__gw/auth/browser/start', 'POST', {}).catch(() => null)
+  return await authRequest('/__gw/auth/browser/start', 'POST', {})
 }
 export async function pollBrowserLoginApi(payload = {}) {
-  return await gwRequest('/__gw/auth/browser/poll', 'POST', payload).catch(() => null)
+  return await authRequest('/__gw/auth/browser/poll', 'POST', payload)
 }
 export async function submitBrowserCallbackApi(callbackUrl, payload = {}) {
-  return await gwRequest('/__gw/auth/browser/callback', 'POST', { ...payload, callbackUrl }).catch(() => null)
+  return await authRequest('/__gw/auth/browser/callback', 'POST', { ...payload, callbackUrl })
 }
 export async function cancelBrowserLoginApi() {
-  return await gwRequest('/__gw/auth/browser/cancel', 'POST', {}).catch(() => null)
+  return await authRequest('/__gw/auth/browser/cancel', 'POST', {})
 }
 
 // ---------- 授权：Token·JSON 保存 / 模式切换 ----------
 export async function setAuthMode(mode, apiKey, baseUrl) {
-  return await gwRequest('/__gw/auth/mode', 'POST', { mode, apiKey, baseUrl }).catch(() => null)
+  return await authRequest('/__gw/auth/mode', 'POST', { mode, apiKey, baseUrl })
 }
 
 // ---------- 官方客户端临时登录（6 步骤流程） ----------
 export async function officialLoginStart() {
-  return await gwRequest('/__gw/codex-official-login/start', 'POST', {}).catch(() => null)
+  return await authRequest('/__gw/codex-official-login/start', 'POST', {})
 }
 export async function officialLoginStatus(sessionId) {
-  return await gwRequest('/__gw/codex-official-login/status?sessionId=' + encodeURIComponent(sessionId || ''), 'GET').catch(() => null)
+  return await authRequest('/__gw/codex-official-login/status?sessionId=' + encodeURIComponent(sessionId || ''), 'GET')
 }
 export async function officialLoginFinish(sessionId, name) {
-  return await gwRequest('/__gw/codex-official-login/finish', 'POST', { sessionId, name }).catch(() => null)
+  return await authRequest('/__gw/codex-official-login/finish', 'POST', { sessionId, name })
 }
 export async function officialLoginCancel(sessionId) {
-  return await gwRequest('/__gw/codex-official-login/cancel', 'POST', { sessionId }).catch(() => null)
+  return await authRequest('/__gw/codex-official-login/cancel', 'POST', { sessionId })
 }
 
 // ---------- Token / JSON 多格式文本导入 ----------
 export async function importTokenText(text, name) {
-  return await gwRequest('/__gw/accounts/import-text', 'POST', { text, name }).catch(() => null)
+  return await authRequest('/__gw/accounts/import-text', 'POST', { text, name })
 }
 
 // ---------- 已保存供应商（API Key 快选） ----------
@@ -363,10 +367,10 @@ export async function getAccounts() {
   return await gwRequest('/__gw/accounts', 'GET').catch(() => null)
 }
 export async function addAccount({ name, provider, json }) {
-  return await gwRequest('/__gw/accounts', 'POST', { name, provider, json }).catch(() => null)
+  return await authRequest('/__gw/accounts', 'POST', { name, provider, json })
 }
 export async function addPendingAccount({ name, email, note, provider }) {
-  return await gwRequest('/__gw/accounts/pending', 'POST', { name, email, note, provider }).catch(() => null)
+  return await authRequest('/__gw/accounts/pending', 'POST', { name, email, note, provider })
 }
 export async function activateAccount(id) {
   return await gwRequest('/__gw/accounts/activate', 'POST', { id }).catch(() => null)
@@ -381,11 +385,11 @@ export async function renameAccount(id, { name, note } = {}) {
 // ---------- 本机 Codex CLI 登录无感导入 ----------
 // 探测 ~/.codex/auth.json（CODEX_HOME 可覆盖）；返回 { exists, error, email, ... }
 export async function inspectCodexLocal() {
-  return await gwRequest('/__gw/codex-local', 'GET').catch(() => null)
+  return await authRequest('/__gw/codex-local', 'GET')
 }
 // 一键注册为本机网关账号并切激活；返回 { ok, accountId, email, isExisting }
 export async function importCodexLocal() {
-  return await gwRequest('/__gw/codex-local/import', 'POST', {}).catch(() => null)
+  return await authRequest('/__gw/codex-local/import', 'POST', {})
 }
 
 // ---------- API Key 管理 ----------

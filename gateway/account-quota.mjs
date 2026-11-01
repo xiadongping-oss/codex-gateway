@@ -24,12 +24,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { jwtClaims, loadAccounts, accountAuthPath } from './auth-core.mjs'
 import { writeJsonAtomic } from './atomic-write.mjs'
-import { resolveDataRoot } from './data-root.mjs'
+import { resolveStoragePaths } from './storage-paths.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DATA_DIR = path.join(resolveDataRoot(process.env, __dirname), 'data')
 // CGW_QUOTA_FILE 让测试与沙盒指到临时文件，避免写坏真实数据目录
-const QUOTA_FILE = process.env.CGW_QUOTA_FILE || path.join(DATA_DIR, 'account-quota.json')
+const QUOTA_FILE = resolveStoragePaths(process.env, __dirname).quota
 
 const ACCOUNT_TYPES = ['标准', '优先', '团队', '企业']
 
@@ -136,6 +135,9 @@ const RT_FRESH_MS = 24 * 3600 * 1000
 const RT_STALE_MS = 30 * 60 * 1000 // 超 30 分钟没观测到就标 stale：仍展示，但提示可能过期
 
 async function fetchRealtimeQuota(port, { since = 0 } = {}) {
+  // Explicit null means the managed gateway owns no running bridge. Do not
+  // fall back to a well-known port that may belong to another local instance.
+  if (port === null) return null
   const p = Number(port) || Number(process.env.BRIDGE_PORT || 10531)
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 1200)

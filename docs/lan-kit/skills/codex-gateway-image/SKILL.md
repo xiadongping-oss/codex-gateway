@@ -23,10 +23,10 @@ agent_created: true
 
 - `generate_image({ prompt, size?, quality?, reference_paths? })`
   - `prompt`：具体描述（主体 / 风格 / 构图 / 色调）
-  - `size`：`1024x1024` | `1024x1536`（竖版）| `1536x1024`（横版）| `auto`（缺省，按内容选比例）
+  - `size`：`1024x1024` | `1024x1536`（竖版）| `1536x1024`（横版）| `auto`（缺省，由上游选择）。这是请求尺寸，实际像素可能不同；交付时依据工具结果或下载原图核对，不把请求值当成实际值。网关不会自动缩放
   - `quality`：`low` | `medium` | `high`（缺省）| `auto`
   - `reference_paths`：参考图路径数组（≤8 张）。**注意：路径以「网关主机」磁盘视角解析**——本机网关传本机路径；局域网网关必须传网关主机上的路径，传你本机路径无效。且本地路径**必须位于网关的参考图目录**（默认 `gateway/references/`）内，目录外路径会被拒绝；URL 与 data-URL 不受限制
-  - 返回：本机模式给 `文件（local_path）` + `链接（url）`；局域网模式给可直达的 `链接（url）`（浏览器可打开）+ 主机侧路径
+  - 返回：本机模式给 `文件（local_path）` + `链接（url）`；局域网模式给下载链接 + 主机侧路径；MCP 返回的鉴权下载链接需携带当前 API Key 的 Bearer 请求头，浏览器用户可在素材站输入 Key 查看
 - `list_generated_images({ limit? })`：列出**你当前 Key 自己生成**的图（新→旧）。远程 MCP（HTTP 端点）由网关主机代读、远程可用；本机 stdio 版读本机图库（宿主机视角=全部）
 - `delete_generated_image({ name })`（仅远程 HTTP 端点提供）：删除一张**你自己生成的**图片，按 list 返回的 `name`
 
@@ -50,7 +50,7 @@ curl -s -X POST <CGW_BASE>/v1/images/generations \
   -d '{"prompt":"...","size":"1024x1024","quality":"high"}'
 ```
 
-响应 `data[0]` 含 `b64_json`、`url`（跟随访问地址，局域网下可直接打开）、`local_path`（网关主机磁盘路径）、`revised_prompt`。
+响应 `data[0]` 含 `b64_json`、兼容旧版的 `url`、带 Key 请求时的 `download_url`、`local_path`（网关主机磁盘路径）和可选 `revised_prompt`。优先使用 `download_url` 并携带同一个 Bearer Key；不要把 Key 拼到网址中。
 
 ## 结果处理
 

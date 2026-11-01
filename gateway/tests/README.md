@@ -8,7 +8,7 @@
 npm test
 ```
 
-等价于 `bash gateway/tests/run.sh`，会依次完成：同步 `gateway/` 源码到沙盒 → 起独立实例（端口 4199，独立 HOME 与数据目录）→ 跑全套回归 → 汇总。退出码非 0 即失败。
+执行跨平台 `run-audit.mjs`：复制源码和依赖到独立临时目录，使用随机空闲端口、隔离 HOME 和本地 bridge 夹具，运行 69 项回归后等待自建进程退出并清理。不会按端口杀进程或调用真实上游；bridge 本体完整性由补丁专项覆盖。退出码非 0 即失败。旧 `run.sh` 仅保留兼容入口。
 
 **只读模式**（不动任何数据，直接打运行中的网关）：
 
@@ -16,16 +16,22 @@ npm test
 bash gateway/tests/run.sh --live
 ```
 
-## 十三个脚本各管什么
+## 测试脚本各管什么
 
 | 命令 | 脚本 | 作用 |
 |---|---|---|
-| `npm test` | `run.sh` + `audit.mjs` | 69 例功能与安全回归，覆盖 API Key 生命周期、`/v1` 鉴权、远程 MCP、素材归属、文件伺服、控制面隔离、管理鉴权、多账号实例池架构、lan-kit 客户端分发 |
+| `npm test` | `run-audit.mjs` + `audit-harness.mjs` + `audit.mjs` | 69 例功能与安全回归，覆盖 API Key 生命周期、`/v1` 鉴权、远程 MCP、素材归属、文件伺服、控制面隔离、管理鉴权、多账号实例池架构、lan-kit 客户端分发 |
 | `npm run test:unit` | `bridge-pool.test.mjs` + `quota.test.mjs` + `failover.test.mjs` + `lan-addr.test.mjs` + `hardening.test.mjs` | bridge 实例池语义（启动互斥 / 一账号一端口 / 空闲回收 / 池满淘汰 / 崩溃自愈）+ **账号额度**（上游限流头解析、按账号隔离缓存、无数据不编数字、主动探测不拿旧头冒充新结果）+ **429/401 账号降级**（哪些状态码可降级、按状态码分开冷却、选路不打转）+ **局域网地址分类**（Tailscale 100.64/10 边界、虚拟网卡不误伤真内网、排序让内网同事拿到的那个排最前）+ **本轮加固**（原子落盘的 tmp 唯一性 / 原子替换 / 失败必须抛出 / 残留清理 / SSRF 的 IPv4-mapped IPv6 归一化 / 参考图路径白名单的归一化与越界拒绝 / 凭据文件 ACL 收紧） |
 | `npm run test:client` | `setup-client.test.mjs` | **局域网客户端脚本回归**：`setup-client.mjs` 的 14 例（mcp.json 合并幂等 / 坏 JSON 不覆盖 / dry-run 不写盘 / 缺参数报错 / skill 降级 / 注入锚点契约）。临时 HOME + 临时 cwd，不碰真实 `~/.workbuddy` |
-| `npm run test:build` | `build-release.test.mjs` | **打包闸门回归**：`--verify-zip` / `--verify-build` / 运行时锁 / 复制黑名单 / **换行符与可复现性**。25 例，在临时「假仓库」里跑同一份 `build-release.mjs`，不碰真产物 |
-| `npm run test:mutate` | `mutate.mjs` | **变异测试**：往沙盒代码注入 22 个真实缺陷，验证回归能否逐个抓住。存活 = 测试盲区 |
-| `npm run test:mutate:build` | `mutate-build.mjs` | 打包闸门的变异测试：注入 12 种「闸门失效」，验证 `test:build` 能把它们逐个抓住 |
+| `npm run test:bridge-patches` | `bridge-patches.test.mjs` | **补丁准备与只读校验**：21 例，覆盖缺失、损坏、版本漂移、换行、外部入口、只读文件、真实快照组装及实际启动函数的进程创建边界；已纳入 `test:unit`，临时目录隔离，不启动真实网关 |
+| `npm run test:runtime` | `runtime-resources.test.mjs` | 三目标运行时锁、归档/二进制/许可证哈希、PE/Mach-O 架构、有界提取、缓存拒绝、资源白名单与完整性；离线夹具 |
+| `npm run test:prepared -- --resources=<目录>` | `prepared-resources-smoke.mjs` | 在匹配平台以随包 Node 实际启动准备后的资源，用临时数据验证控制闭环和资源不变 |
+| `npm run test:desktop` | `desktop.test.mjs` + `desktop-integration.test.mjs` | 控制帧/背压、握手前零写入、票据隔离、端口冲突、管道退出、请求排空、刷盘失败重试/强制、真实子进程退出与流式用量落盘；隔离数据与本地上游 |
+| `npm run test:desktop:regression` | `desktop-regression.test.mjs` | F06：从当前源码生成完整资源，以随包 Node 在真实只读权限及中文/空格/特殊字符路径下运行；目录竞争、异常锁、协议故障、断开/停止读取管道、真实 30 秒排空及继续/强制退出；仅隔离数据，无真实账号或上游 |
+| `npm run test:storage` | `storage.test.mjs` + `storage-integration.test.mjs` | **F03 数据路径**：16 例，含 Windows 实际 ACL/junction、跨进程写入锁、版本/迁移拒绝、严格凭据、真实 launcher 的图库/素材/下载/删除与本机 MCP；临时数据隔离，bridge 图片事件使用夹具，无真实 OAuth/上游调用 |
+| `npm run test:build` | `build-release.test.mjs` | **打包闸门回归**：`--verify-zip` / `--verify-build` / 运行时锁 / 复制黑名单 / **换行符与可复现性** / bridge 补丁固化。35 例，在临时「假仓库」里跑同一份 `build-release.mjs`，不碰真产物 |
+| `npm run test:mutate` | `mutate.mjs` | **变异测试**：在隔离临时目录注入 22 个场景，验证 20 个缺陷被检测、2 个单层防线变异仍被其他防线挡住；仅清理自建进程 |
+| `npm run test:mutate:build` | `mutate-build.mjs` | 打包闸门的变异测试：注入 13 种「闸门失效」（含跳过 bridge 补丁准备），验证 `test:build` 能把它们逐个抓住 |
 | `npm run test:mutate:client` | `mutate-client.mjs` | 客户端脚本的变异测试：注入 5 种真实退化（覆盖坏 JSON / 抹掉他人条目 / dry-run 写盘 / 缺参数静默 / 锚点变双引号），验证 `test:client` 能逐个抓住 |
 | `npm run test:unix` | `service-unix.test.mjs` | **macOS / Linux 启动与开机自启**：launchd plist / systemd unit 生成、守护优先停止、pid 复用不误杀、日志轮转、非目标平台拒绝。用 PATH 前置的 shell shim 模拟 `launchctl`/`systemctl`，临时 HOME，不碰真实系统配置 |
 | `npm run test:mutate:unix` | `mutate-unix.mjs` | 上一套的变异测试：注入 7 种「静默失效」（ExecStart 丢引号 / 不 enable / 平台闸门放行 / 停不干净 / 误杀 pid / 不轮转日志 / CRLF），验证 `test:unix` 能逐个抓住 |
@@ -36,6 +42,12 @@ bash gateway/tests/run.sh --live
 | `npm run test:bench` | `bench-concurrency.mjs` | 并发吞吐量化对比（修复前 vs 修复后） |
 
 ## 什么时候必须重跑
+
+F06 依赖匹配当前系统/架构的官方 Node 归档已进入 `release/runtime-cache`；测试本身离线运行、每次重新组装当前源码，不复用旧资源副本。首次准备可运行 `npm run prepare:runtime -- --target=win32-x64 --out=<新的临时输出目录>`，Mac 分别使用 `darwin-arm64` 或 `darwin-x64`。准备完成后运行 `npm run test:desktop:regression`，约需一分钟。
+
+测试会对自建资源副本设置 Windows ACL（Unix 为只读权限），并实际尝试改写/新建文件，确认权限生效；使用可绕过权限的 Unix root 身份会失败，不能据此标记通过。最后复核完整清单和文件修改时间、恢复测试副本权限并清理。HOME 中允许系统工具创建空目录，但不允许落入任何凭据或图库文件。控制端停止读取的用例必须在恢复读取之前观察到 Node 已退出。
+
+修改桌面入口、存储所有权或退出管理时，运行 `test:desktop`、`test:storage` 和 `test:desktop:regression`；Windows 通过不代表 Mac 实测通过。完整业务登录、Tauri/WebView、原生进程树归后续桌面验收。
 
 改了以下任一文件后，**跑 `npm test` + `npm run test:mutate`**：
 
@@ -126,3 +138,20 @@ JS 侧的判定统一在 **`lib/health.mjs`**（`isReady` 用于启动探测，`
 ## 沙盒与真实环境的边界
 
 沙盒在 `gateway/tests/sandbox/`（已 gitignore），拥有独立的数据目录、端口和 HOME。变异测试只改沙盒副本，**绝不触碰 `gateway/` 下的真实源码**。`audit-report.html` 含漏洞细节，同样不入库（仓库为 public）。
+
+
+## Tauri 外壳验证（A01 / D01–D03）
+
+R03 迁移回归：`npm run test:migration` 使用同机同用户的隔离目录与虚构数据，覆盖便携/原地导入、图库索引、密钥原字节、备份私有权限、六个中断检查点、立即回退及源/目标变化拒绝；不停止真实服务。桌面集成另验证 `DATA_MIGRATION_PENDING` 在业务加载前返回，且不创建空数据根。迁移测试已纳入统一验证入口，但本轮 Mac 和正式迁移界面尚未验收，详见 [操作说明](../../docs/DESKTOP-MIGRATION.md)。
+
+`npm run desktop:test` 从当前源码准备资源后运行 Rust 测试；已缓存依赖时可附加 `-- --offline`。覆盖有界/严格帧、请求关联、实例/PID/challenge/版本/路径、来源约束、资源校验及随包 Node 的真实启动和退出。
+
+`npm run desktop:build` 后运行 `npm run desktop:smoke`，会创建真实原生窗口，使用隔离数据/HOME/WebView，加载 Vue 控制台并检查会话、HttpOnly、干净地址、原生命令拒绝和外链拦截，然后退出检查锁与资源。附加 `-- --port-conflict` 验证占用端口时失败且假服务收到零连接；`-- --case=session-loss` / `-- --case=channel-loss` 验证会话失效重开和控制通道断开后的启动页。构建/测试会复制资源，不得与窗口检查同时运行。交互与重试流程见 [桌面开发说明](../../desktop/README.md)。未登录真实账号或调用真实上游，这些结果不能替代 D05/D06。存储集成另覆盖 managed 控制台的状态、模型、账号状态及额度不得访问其他实例占用的 bridge 基准端口。
+
+D03 增加 `-- --case=desktop`，检查后台启动、关窗驻留、第二实例转交后退出、原窗口恢复及原 Node PID 保持，并用独立测试标识验证真实自启动项开启/撤销和启动参数。`-- --interactive --case=tray-menu` 调出托盘使用的同一份原生菜单供界面检查。关闭窗口不再结束交互检查，必须选择“退出应用”。测试不会修改正式自启动项；未实际注销/登录系统，Mac 验收仍归 D06。
+
+生图尺寸回归：`npm run test:image-size` 使用本地固定 PNG、真实网关与 bridge 生图引擎，检查参数透传、原图字节、HTTP/两种 stdio MCP 尺寸提示、未知/损坏 PNG 头。无真实账号或外部请求；也已纳入桌面统一验证入口。
+
+MCP 图库回归：`npm run test:mcp-gallery` 用空账号 managed 桌面进程、两枚临时 Key 和固定图片检查 HTTP MCP 协议、列表/下载/删除隔离、宿主机 stdio 数据目录及正常退出重开。设置 `CGW_MCP_TEST_RESOURCES` 为已准备资源的绝对路径，可用该资源内的 Node/网关重跑；不使用真实账号或外部服务。
+
+MCP 客户端兼容：`npm run test:mcp-client` 使用已随依赖锁定的官方 `@modelcontextprotocol/sdk` 客户端，验证 HTTP、managed stdio 与 lan-kit stdio 的握手、工具发现、调用及错误回复。可同样设置 `CGW_MCP_TEST_RESOURCES` 以验证准备资源内的两份服务；仅使用固定图片与空账号。

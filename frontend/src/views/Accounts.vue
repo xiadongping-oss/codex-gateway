@@ -5,8 +5,8 @@ import SetupModal from '../components/SetupModal.vue'
 import AccountQuotaCard from '../components/AccountQuotaCard.vue'
 import { useLiveData } from '../composables/useLiveData'
 
-// 网关运行控制（自原「网关控制」页并入）
-const { gw, gwBusy, gwStart, gwStop, gwRestart } = useLiveData()
+// 账号相关的模型代理诊断；启停操作统一在概览页。
+const { gw } = useLiveData()
 const gwUptime = computed(() => {
   const s = gw.value.uptimeSec || 0
   const h = String(Math.floor(s / 3600)).padStart(2, '0')
@@ -20,10 +20,10 @@ const gwCfg = computed(() => gw.value.config || {})
 // 健康检查失败原因：/health 透传 bridge 的错误体（/__gw/status 的 health.data.error）
 // 常见失败是上游地区限制（未配代理直连），这时给出可操作的指引而不是干巴巴的「失败」。
 const gwHealthReason = computed(() => {
-  if (gwHealthOk.value) return null
+  if (mode.value !== 'bridge' || gwHealthOk.value) return null
   const h = gw.value.health || {}
   if (h.timeout) return { text: '健康检查超时（bridge 无响应）', hint: '' }
-  if (h.status === 0) return { text: 'bridge 端口无响应，实例可能启动失败', hint: '查看「API 日志」里的启动报错' }
+  if (h.status === 0) return gw.value.running ? { text: '模型代理端口无响应', hint: '查看「调用日志」里的运行日志' } : null
   const detail = String(h.data?.error || h.error || '').trim()
   if (!detail) return null
   const regionBlock = /unsupported_country_region_territory|region_territory/i.test(detail)
@@ -41,7 +41,14 @@ const health = ref(null)
 const loading = ref(false)
 const error = ref('')
 const showSetup = ref(false)
-const mode = ref('bridge')
+const mode = ref('')
+const hasApiKey = ref(false)
+const bridgeDiagnostic = computed(() => {
+  if (!gw.value.running) return { ok: null, text: account.value.loggedIn ? '模型代理未启动' : '尚未配置账号' }
+  if (health.value?.ok !== true) return { ok: false, text: '模型代理连接异常' + (health.value?.error ? '：' + String(health.value.error).slice(0, 120) : '') }
+  if (!account.value.loggedIn) return { ok: false, text: '模型代理已启动，账号尚未登录' }
+  return { ok: true, text: '模型代理连接正常 · 账号登录有效' }
+})
 const accounts = ref([])
 const activeId = ref(null)
 const editingId = ref(null)
@@ -81,29 +88,23 @@ async function diagnose(seq = null) {
   loading.value = true
   error.value = ''
   try {
-    const h = await api.diagnose()
-    const acc = await api.getAccount()
-    const s = await api.getAuthState().catch(() => null)
+    const s = await api.getAuthState()
+    if (!s || !['bridge', 'openai'].includes(s.mode)) throw new Error('无法读取连接配置，请检查本地服务与控制台登录状态')
+    const [acc, h] = await Promise.all([api.getAccount(), s.mode === 'bridge' ? api.diagnose() : Promise.resolve(null)])
     if (isStale(seq)) return
     health.value = h
     account.value = acc
-    if (s?.mode) mode.value = s.mode
-    const bridgeOk = health.value?.ok === true
-    const parts = []
-    if (health.value?.version) parts.push('bridge v' + health.value.version)
-    parts.push(account.value?.loggedIn ? '账号登录有效' : '账号未登录')
-    if (bridgeOk && account.value?.loggedIn && gwHealthOk.value) parts.push('上游健康检查通过')
-    diagResult.value = {
-      ok: bridgeOk && !!account.value?.loggedIn,
-      text: bridgeOk
-        ? '连接正常 · ' + parts.join(' · ')
-        : '桥接进程异常' + (health.value?.error ? '：' + String(health.value.error).slice(0, 120) : '')
-    }
+    mode.value = s.mode
+    hasApiKey.value = !!s.hasApiKey
+    diagResult.value = s.mode === 'openai'
+      ? { ok: null, text: hasApiKey.value ? 'API Key 已配置 · 上游连接未测试' : 'API Key 尚未配置' }
+      : bridgeDiagnostic.value
     clearTimeout(diagTimer)
     diagTimer = setTimeout(() => (diagResult.value = null), 10000)
   } catch (e) {
     if (isStale(seq)) return
     error.value = e?.message || '诊断失败'
+    mode.value = ''
     fetchErr.value = error.value
     diagResult.value = { ok: false, text: '检测失败：' + (e?.message || '网关控制接口无响应') }
     clearTimeout(diagTimer)
@@ -208,7 +209,7 @@ onUnmounted(() => {
 
 <template>
   <div class="content">
-    <!-- 顶部双列：账号（状态头+列表） | 网关运行控制 -->
+    <!-- 账号列表与补充诊断 -->
     <div class="grid-top">
     <div class="card">
       <div class="acc-title-row">
@@ -220,13 +221,17 @@ onUnmounted(() => {
       </div>
 
       <!-- 检测连接结果横条：显式反馈，10 秒后自动淡出 -->
-      <div v-if="diagResult" class="diag-result" :class="diagResult.ok ? 'ok' : 'bad'">
-        <span class="status-dot" :class="{ off: !diagResult.ok }"></span>
+      <div v-if="diagResult" class="diag-result" :class="diagResult.ok === true ? 'ok' : diagResult.ok === false ? 'bad' : 'neutral'">
+        <span class="status-dot" :class="{ off: diagResult.ok === false, neutral: diagResult.ok === null }"></span>
         <span class="diag-text">{{ diagResult.text }}</span>
       </div>
 
       <!-- 仅异常 / 特殊模式显示状态条；正常登录态由当前账号行直接呈现，避免重复 -->
-      <div v-if="mode === 'openai' || !account.loggedIn || !accounts.length" class="conn-state" :class="account.loggedIn ? 'ok' : 'bad'">
+      <div v-if="mode === 'openai'" class="conn-state">
+        <span class="status-dot neutral"></span>
+        <div class="conn-main"><div class="cs-name">API Key 模式</div><div class="cs-mail">{{ hasApiKey ? '密钥已配置，上游连接未测试' : '尚未配置，点击「添加账号」设置供应商与密钥' }}</div></div>
+      </div>
+      <div v-else-if="mode === 'bridge' && (!account.loggedIn || !accounts.length)" class="conn-state" :class="account.loggedIn ? 'ok' : 'bad'">
         <span class="status-dot" :class="{ off: !account.loggedIn }"></span>
         <div class="conn-main">
           <div class="cs-name">
@@ -293,28 +298,17 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div class="card">
-      <div class="gw-head">
-        <div class="card-title">
-          网关运行控制
-          <span class="gw-badge" :class="gw.running ? 'on' : 'off'">
-            <span class="gw-dot"></span>{{ gw.running ? '运行中' : '已停止' }}
-          </span>
-        </div>
-        <div class="gw-actions">
-          <button v-if="!gw.running" class="btn-primary" :disabled="gwBusy" @click="gwStart">启动网关</button>
-          <button v-else class="btn-ghost" :disabled="gwBusy" @click="gwStop">停止网关</button>
-          <button class="btn-ghost" :disabled="gwBusy" @click="gwRestart">重启网关</button>
-        </div>
-      </div>
+    <div v-if="mode === 'bridge'" class="account-proxy-diagnostics">
+      <details class="help-details"><summary>模型代理诊断信息</summary>
       <div class="gw-state">
         <span>PID <b class="mono">{{ gw.pid || '—' }}</b></span>
         <span>运行时长 <b class="mono">{{ gw.running ? gwUptime : '—' }}</b></span>
         <span>健康检查 <b :class="gwHealthOk ? 'ok' : 'bad'">{{ gwHealthOk ? '通过' : (gw.running ? '失败' : '—') }}</b></span>
         <span>Bridge 端口 <b class="mono">{{ gwCfg.bridgePort || '—' }}</b></span>
-        <span>开机自启 <b :class="gwCfg.autoStart ? 'ok' : 'bad'">{{ gwCfg.autoStart ? '是' : '否' }}</b></span>
+        <span>随网关启动模型代理 <b :class="gwCfg.autoStart ? 'ok' : 'bad'">{{ gwCfg.autoStart ? '是' : '否' }}</b></span>
       </div>
-      <div v-if="gwHealthReason" class="gw-health-reason">
+      </details>
+      <div v-if="gwHealthReason" class="gw-health-reason" role="status">
         <div class="reason-text">{{ gwHealthReason.text }}</div>
         <div v-if="gwHealthReason.hint" class="reason-hint">{{ gwHealthReason.hint }}</div>
       </div>
@@ -324,10 +318,15 @@ onUnmounted(() => {
     <div class="grid2">
       <AccountQuotaCard />
 
-      <div class="card" v-if="health">
+      <div class="card" v-if="mode === 'openai'">
         <div class="card-title">连接诊断</div>
-        <div class="health-status" :class="health.ok === true ? 'ok' : 'bad'">
-          {{ health.ok === true ? '✓ 桥接进程正常' : '✗ 桥接进程异常' }}
+        <div class="health-status">{{ hasApiKey ? 'API Key 已配置' : '尚未配置 API Key' }}</div>
+        <div class="h-detail">{{ hasApiKey ? '上游连接未测试。可通过客户端调用验证。' : '添加供应商与密钥后即可使用。' }}</div>
+      </div>
+      <div class="card" v-else-if="mode === 'bridge' && health">
+        <div class="card-title">连接诊断</div>
+        <div class="health-status" :class="bridgeDiagnostic.ok === true ? 'ok' : bridgeDiagnostic.ok === false ? 'bad' : ''">
+          {{ bridgeDiagnostic.text }}
           <span v-if="health.version">· bridge v{{ health.version }}</span>
         </div>
         <div v-if="health.error" class="health-row">
@@ -368,11 +367,13 @@ onUnmounted(() => {
 
 <style scoped>
 /* 顶部双列：账号 | 网关运行控制（分栏比例与下方 .grid2 一致，保证上下两行沟壑对齐） */
-.grid-top { display: grid; grid-template-columns: 1.05fr 1fr; gap: 18px; align-items: stretch; }
+.grid-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-items: stretch; }
 @media (max-width: 1100px) { .grid-top { grid-template-columns: 1fr; } }
 
 /* 双列卡片网格：额度 | 连接诊断 */
 .grid2 { display: grid; grid-template-columns: 1.05fr 1fr; gap: 18px; align-items: start; }
+.grid2 > * { min-width: 0; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
 
 /* ---- 账号卡标题行：标题 + 操作按钮同行 ---- */
 .acc-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -381,10 +382,11 @@ onUnmounted(() => {
 .diag-result {
   display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
   padding: 9px 14px; border-radius: 10px; font-size: 13px;
-  border: 1px solid var(--border); background: var(--card-2, rgba(16,185,129,0.06));
+  border: 1px solid var(--border); background: var(--card-2, rgba(139,107,214,0.06));
 }
-.diag-result.ok { border-color: rgba(16,185,129,0.35); }
+.diag-result.ok { border-color: rgba(139,107,214,0.35); }
 .diag-result.bad { border-color: rgba(244,63,94,0.4); background: rgba(244,63,94,0.07); }
+.status-dot.neutral { background: var(--text-3); animation: none; }
 .diag-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2, var(--text)); }
 .conn-state {
   display: flex; align-items: center; gap: 12px; padding: 12px 16px; min-width: 0; flex: 1;
@@ -395,8 +397,8 @@ onUnmounted(() => {
 .cs-name { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .cs-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mode-badge {
-  font-size: 11px; font-weight: 600; color: #34d399; flex-shrink: 0;
-  background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.3);
+  font-size: 11px; font-weight: 600; color: var(--primary); flex-shrink: 0;
+  background: rgba(139,107,214, 0.12); border: 1px solid rgba(139,107,214, 0.3);
   border-radius: 6px; padding: 1px 7px;
 }
 .cs-mail { font-size: 12px; color: var(--text-3); font-family: var(--mono); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -428,6 +430,16 @@ onUnmounted(() => {
 .acc-auth.bad { color: var(--amber); }
 .acc-note { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acc-actions { display: flex; gap: 8px; flex: none; }
+@media (max-width: 680px) {
+  .acc-row { flex-wrap: wrap; }
+  .acc-main { flex-basis: calc(100% - 24px); }
+  .acc-actions { margin-left: 21px; flex-wrap: wrap; }
+  .acc-name-row { flex-wrap: wrap; }
+  .acc-name { flex-basis: 100%; }
+  :deep(.q-head) { flex-wrap: wrap; }
+  :deep(.q-head .card-title) { white-space: nowrap; }
+  :deep(.q-head button) { white-space: nowrap; }
+}
 .btn-ghost.sm { padding: 6px 10px; font-size: 11.5px; }
 
 /* 行内编辑：名称 / 备注横排 + 按钮右侧 */
@@ -445,11 +457,11 @@ onUnmounted(() => {
   font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 6px; flex-shrink: 0;
   color: #9aa0a8; background: rgba(154, 160, 168, 0.12); border: 1px solid rgba(154, 160, 168, 0.25);
 }
-.prov-oauth { color: #34d399; background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.3); }
+.prov-oauth { color: var(--primary); background: rgba(139,107,214, 0.12); border-color: rgba(139,107,214, 0.3); }
 .prov-apikey { color: #60a5fa; background: rgba(96, 165, 250, 0.12); border-color: rgba(96, 165, 250, 0.3); }
 .cur {
-  font-size: 10.5px; font-weight: 600; color: #34d399; flex-shrink: 0;
-  background: rgba(16, 185, 129, 0.18); border: 1px solid rgba(16, 185, 129, 0.4);
+  font-size: 10.5px; font-weight: 600; color: var(--primary); flex-shrink: 0;
+  background: rgba(139,107,214, 0.18); border: 1px solid rgba(139,107,214, 0.4);
   border-radius: 6px; padding: 1px 6px;
 }
 .btn-del {

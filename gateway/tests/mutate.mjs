@@ -2,25 +2,18 @@
 // codex-gateway · 上线前 AI 安全审计 —— 变异测试（指南第四步）
 //
 // 目的：证明 audit.mjs 是真测试，不是「永远显示通过」的假测试。
-// 做法：往沙盒代码里注入真实缺陷（变异体），重跑测试——
+// 做法：往沙盒代码里注入真实缺陷（变异体），重跑离线测试——
 //         测试失败  = 变异被杀死 = 这套测试确实在保护这块逻辑 ✓
 //         测试仍然通过 = 变异存活 = 这块逻辑处于测试盲区，需要补 ✗
-// 约定：只改沙盒副本（sandbox/），绝不触碰真实源码。
+// 约定：只改独立临时副本，绝不触碰真实源码。
 //
 //   node mutate.mjs
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawn, execSync } from 'node:child_process'
-import { isReady } from './lib/health.mjs'
-
-const ROOT = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'))
-const SB = path.join(ROOT, 'sandbox')
-const GEN = path.join(SB, 'home', '.chatgpt-bridge', 'gen-images')
-const TOKEN_FILE = path.join(SB, 'admin-token.json')
-const PORT = 4199
-const BASE = `http://127.0.0.1:${PORT}`
-const NODE = process.execPath
+import { createAuditHarness } from './audit-harness.mjs'
+const harness = await createAuditHarness()
+const SB = harness.sandbox
 
 const C = { g: '\x1b[32m', r: '\x1b[31m', y: '\x1b[33m', d: '\x1b[2m', b: '\x1b[1m', x: '\x1b[0m' }
 
@@ -91,13 +84,13 @@ const MUTANTS = [
   {
     id: 'M7', cat: '权限', desc: '整个控制面来源守卫被摘除（Host + CSRF 全失效）',
     file: 'launcher.mjs',
-    from: '    if (controlPlaneGuard(req, res)) return',
-    to: '    if (false) return'
+    from: '    } else if (controlPlaneGuard(req, res)) {',
+    to: '    } else if (false) {'
   },
   {
     id: 'M8', cat: '权限', desc: 'Host 白名单被绕过（DNS rebinding 面重新打开）',
     file: 'launcher.mjs',
-    from: '  if (h && !LOCAL_HOSTS.has(h)) {',
+    from: '  if (h && !LOCAL_HOSTS.has(h) && !EXTRA_ALLOWED_HOSTS.has(h)) {',
     to: '  if (false) {'
   },
   {
@@ -177,93 +170,6 @@ const MUTANTS = [
   },
 ]
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-
-// 沙盒代码必须与 gateway/ 一致，否则「变异杀死率」测的是上个月的代码
-function syncSandbox() {
-  const SRC = path.join(ROOT, '..')   // gateway/tests/.. = gateway
-  for (const f of fs.readdirSync(SRC)) {
-    if (f.endsWith('.mjs') || f.endsWith('.html')) {
-      fs.copyFileSync(path.join(SRC, f), path.join(SB, f))
-    }
-  }
-  // lan-kit 也要同步：K9 测的是分发端点，沙盒里没有这批文件会全 404，
-  // 那时用例「失败」的原因是环境而非变异，会被误记成「变异被杀死」。
-  const LANKIT = path.join(SRC, '..', 'docs', 'lan-kit')
-  if (fs.existsSync(LANKIT)) {
-    fs.cpSync(LANKIT, path.join(SB, 'lan-kit'), { recursive: true, force: true })
-  }
-}
-
-function killPort() {
-  try {
-    const out = execSync(`netstat -ano | grep ":${PORT}" | grep LISTENING`, { shell: 'bash' }).toString()
-    for (const pid of new Set(out.trim().split('\n').map((l) => l.trim().split(/\s+/).pop()).filter(Boolean))) {
-      try { execSync(`taskkill //F //PID ${pid}`, { stdio: 'ignore' }) } catch {}
-    }
-  } catch {}
-}
-
-function resetSandbox() {
-  // 为什么不用 rm -rf：这条套件要跑十几个变异体，每个都递归删图库会撞上
-  // 本机的批量删除保护（单回合 50 条），第 7 个变异体起直接"执行异常"，
-  // 结论就变成一堆假存活。改用「覆盖写」把状态清零：
-  // 图库索引清空 == 对上层不可见，物理图残留不影响任何断言。
-  fs.mkdirSync(GEN, { recursive: true })
-  fs.mkdirSync(path.join(SB, 'data'), { recursive: true })
-  fs.writeFileSync(path.join(GEN, 'index.json'), '{}')
-  fs.writeFileSync(path.join(SB, 'accounts.json'), '{"activeId":null,"accounts":[]}')
-  fs.writeFileSync(path.join(SB, 'api-keys.json'), '{"keys":[]}')
-  fs.writeFileSync(path.join(SB, 'data', 'asset-sources.json'), '{"sources":[]}')
-  // 金丝雀配置：真实值只在沙盒存在。任何穿越/泄露路径读到它，测试必须报警。
-  fs.writeFileSync(path.join(SB, '.gw-config.json'), JSON.stringify({
-    mode: 'bridge', strictAuth: false, proxy: '',
-    openaiApiKey: 'CANARY-SECRET-DO-NOT-LEAK',
-    authFilePath: String(path.join(SB, 'home', '.chatgpt-bridge', 'auth.json'))
-  }))
-}
-
-async function waitReady() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      const r = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(1500) })
-      // 只要拿到 HTTP 响应就算起来了。**不能只认 200**：沙盒里没有账号，
-      // v1.3.0 起 /health 明确返回 503 bridge_not_running（502 是更早的语义）。
-      // 按 200 判定会让整个变异框架一个都跑不起来，还把「框架崩了」误报成「全部盲区」。
-      if (isReady(r.status)) return true
-    } catch {}
-    await sleep(250)
-  }
-  return false
-}
-
-async function startGateway() {
-  const p = spawn(NODE, ['launcher.mjs', '--lan'], {
-    cwd: SB,
-    env: { ...process.env, USERPROFILE: path.join(SB, 'home'), HOME: path.join(SB, 'home'), LAUNCHER_PORT: String(PORT), BRIDGE_PORT: '10999', DISABLE_AUTOSTART: '1' },
-    stdio: ['ignore', 'pipe', 'pipe']
-  })
-  // 留一段 stderr 尾巴：启动失败时能直接看到原因，而不是只有一句「网关未能启动」。
-  let tail = ''
-  p.stderr.on('data', (d) => { tail = (tail + d).slice(-800) })
-  p.stdout.on('data', () => {})
-  if (!(await waitReady())) {
-    p.kill('SIGKILL')
-    throw new Error('网关未能启动' + (tail ? `：${tail.trim().split('\n').slice(-3).join(' / ')}` : ''))
-  }
-  return p
-}
-
-function runAudit() {
-  return new Promise((resolve) => {
-    const a = spawn(NODE, [path.join(ROOT, 'audit.mjs'), '--base=' + BASE, '--gendir=' + GEN, '--tokenfile=' + TOKEN_FILE, '--lankit=' + path.join(SB, 'lan-kit')], { stdio: ['ignore', 'pipe', 'pipe'] })
-    let out = ''
-    a.stdout.on('data', (d) => (out += d))
-    a.stderr.on('data', (d) => (out += d))
-    a.on('close', (code) => resolve({ code, out }))
-  })
-}
-
 function applyMutation(m) {
   const file = path.join(SB, m.file)
   const orig = fs.readFileSync(file, 'utf8')
@@ -290,7 +196,15 @@ function failedTests(out) {
 
 // ---------------- 主流程 ----------------
 // 先把 gateway/ 的最新源码同步进沙盒 —— 否则会拿旧代码做变异，结论不可信。
-syncSandbox()
+harness.reset()
+const baseline = await harness.start()
+const baselineResult = await harness.audit()
+await harness.stop(baseline)
+if (baselineResult.code !== 0) {
+  process.stderr.write(baselineResult.out)
+  await harness.close()
+  process.exit(1)
+}
 console.log(`${C.b}变异测试 · 验证 audit.mjs 是否真能抓到缺陷${C.x}`)
 console.log(`${C.d}每个变异体都是一处真实事故；测试必须失败，否则说明该逻辑在测试盲区${C.x}\n`)
 
@@ -303,10 +217,9 @@ for (const m of MUTANTS) {
   let proc = null
   try {
     applyMutation(m)
-    killPort(); await sleep(300)
-    resetSandbox()
-    proc = await startGateway()
-    const r = await runAudit()
+    harness.reset()
+    proc = await harness.start()
+    const r = await harness.audit()
     const thed = r.code !== 0            // 测试是否失败 = 变异是否被杀死
     failures = failedTests(r.out)
     detail = failures.slice(0, 3).join(' | ') || '（无任何用例失败）'
@@ -318,8 +231,7 @@ for (const m of MUTANTS) {
     var died = false
   } finally {
     fs.writeFileSync(file, backup)          // 无论成败都还原，不污染沙盒
-    if (proc) try { proc.kill('SIGKILL') } catch {}
-    killPort(); await sleep(200)
+    await harness.stop(proc)
   }
   // 判定：
   //   expect=kill    必须 died=true  → 否则是测试盲区
@@ -355,4 +267,5 @@ if (blind.length) {
 }
 console.log(`${C.d}标「被兜住」的变异体刻意保留：它们证明同一条攻击面存在多层独立防线。${C.x}`)
 
+await harness.close()
 process.exit(okCount === rows.length ? 0 : 1)

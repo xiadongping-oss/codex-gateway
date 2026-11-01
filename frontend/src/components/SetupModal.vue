@@ -1,8 +1,9 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import * as api from '../api/gateway'
 import { PROVIDER_PRESETS, CUSTOM_PROVIDER_ID } from '../api/providerPresets'
 import { copyText as writeClipboard } from '../api/client'
+import { vModalFocus } from '../composables/modalFocus'
 
 const emit = defineEmits(['close', 'changed'])
 const tabs = [
@@ -16,6 +17,9 @@ const active = ref('oauth')
 const loading = ref(false)
 const error = ref('')
 const okMsg = ref('')
+let disposed = false
+let actionGeneration = 0
+const actionCurrent = generation => !disposed && generation === actionGeneration
 
 const mode = ref('bridge')
 const hasApiKey = ref(false)
@@ -30,9 +34,12 @@ const pendingId = ref('')
 const authMode = ref('browser')
 const browser = ref(null)
 const device = ref(null)
+const pendingOAuthImport = computed(() => !!(browser.value?.pendingImport || device.value?.pendingImport))
+let startingOAuthSource = ''
 const callbackUrl = ref('')
 const polling = ref(false)
 let pollTimer = null
+let authPollGeneration = 0
 
 // Token·JSON（多格式文本，见 parseAuthTokenText）
 const jsonText = ref('')
@@ -56,7 +63,7 @@ const TEMP_STEPS = [
   { key: 'waiting-login', label: '等待登录完成' },
   { key: 'closing', label: '关闭官方客户端' },
   { key: 'importing', label: '读取登录信息' },
-  { key: 'cleaning', label: '清理临时配置' }
+  { key: 'cleaning', label: '完成导入' }
 ]
 const tempSession = ref(null) // { sessionId, clientPath }
 const tempPhase = ref('idle') // idle | running | completed | failed
@@ -65,6 +72,10 @@ const tempDoneSteps = ref(0) // 已完成的步骤数（0-6）
 const tempHint = ref('')
 const tempRunning = computed(() => tempPhase.value === 'running')
 let tempTimer = null
+let tempGeneration = 0
+let tempPolling = false
+const tempImporting = ref(false)
+const tempRetryable = ref(false)
 
 function tempStepState(i) {
   // i: 0-5；已完成 = index < tempDoneSteps；当前活跃 = index === tempDoneSteps && running
@@ -74,20 +85,33 @@ function tempStepState(i) {
 }
 
 async function startTempLogin() {
+  if (tempImporting.value || loading.value) return
+  loading.value = true
+  error.value = ''; tempError.value = ''; okMsg.value = ''
+  if (tempSession.value?.sessionId && !await cancelTempLogin()) { loading.value = false; return }
+  if (disposed) return
+  const generation = ++tempGeneration
   error.value = ''
   okMsg.value = ''
   tempError.value = ''
   tempDoneSteps.value = 0
   tempHint.value = ''
+  tempRetryable.value = false
   loading.value = true
   try {
     const r = await api.officialLoginStart()
-    if (!r?.ok) return setError(r?.detail || '启动失败')
+    if (generation !== tempGeneration) {
+      if (r?.sessionId) api.officialLoginCancel(r.sessionId).catch(() => {})
+      return
+    }
+    if (!r?.ok || !r.sessionId) return setError(r?.detail || '启动失败：未获得登录会话')
     tempSession.value = r
     tempPhase.value = 'running'
     tempDoneSteps.value = 2 // preparing + launching 已由后端完成
-    tempHint.value = '已发出启动命令：请在打开的官方客户端里完成 OpenAI 登录（若客户端已在后台运行，直接切换到那个窗口登录即可）。'
+    tempHint.value = '已发出启动命令，等待官方客户端登录。'
     pollTempLogin()
+  } catch (e) {
+    if (generation === tempGeneration) setError(e)
   } finally {
     loading.value = false
   }
@@ -96,15 +120,21 @@ async function startTempLogin() {
 function pollTempLogin() {
   stopTempPoll()
   tempTimer = setInterval(async () => {
+    if (tempPolling) return
     if (!tempSession.value?.sessionId) return stopTempPoll()
+    const generation = tempGeneration
+    tempPolling = true
+    try {
     const st = await api.officialLoginStatus(tempSession.value.sessionId)
+    if (generation !== tempGeneration) return
+    tempError.value = ''
     if (!st) return // 网络抖动，下轮再看
     if (st.phase === 'waiting-login') {
       tempDoneSteps.value = 2
       // 桌面版是常驻单实例：新进程交接退出后，登录发生在已打开的客户端里，
       // 凭据写进默认 profile —— 提示用户去那个窗口操作，而不是干等
       tempHint.value = st.watchDefaultProfile
-        ? `官方客户端已在后台运行（${st.elapsedSec || 0}s）。请切换到已打开的 Codex/ChatGPT 客户端完成登录；凭据变化后这里会自动读取。`
+        ? `等待官方客户端登录（${st.elapsedSec || 0}s）。已登录的账号可选择「从本地导入」。`
         : `等待登录中…（${st.elapsedSec || 0}s）在打开的官方客户端里完成 OpenAI 登录。`
     } else if (st.phase === 'logged-in') {
       tempDoneSteps.value = 3
@@ -114,53 +144,104 @@ function pollTempLogin() {
     } else if (st.phase === 'ready') {
       stopTempPoll()
       await finishTempLogin()
-    } else if (st.phase === 'failed') {
+    } else if (st.phase === 'importing') {
+      tempDoneSteps.value = 4
+      tempHint.value = '正在导入账号，请稍候…'
+    } else if (['failed', 'cancelled', 'unknown'].includes(st.phase)) {
       stopTempPoll()
       tempPhase.value = 'failed'
-      tempError.value = st.error || '登录流程失败'
+      tempRetryable.value = false
+      tempError.value = st.error || (st.phase === 'unknown' ? '登录会话不存在或已过期，请重新开始' : st.phase === 'cancelled' ? '本次登录已取消，请重新开始' : '登录流程失败')
     }
+    } catch (e) {
+      if (generation !== tempGeneration) return
+      tempError.value = e?.message || '无法获取登录进度，请检查网关。'
+      if ([400, 401, 403, 404, 410].includes(e?.status)) {
+        stopTempPoll()
+        tempPhase.value = 'failed'
+        tempRetryable.value = false
+      }
+    } finally { tempPolling = false }
   }, 2000)
 }
 function stopTempPoll() {
   if (tempTimer) { clearInterval(tempTimer); tempTimer = null }
 }
 async function finishTempLogin() {
+  const sessionId = tempSession.value?.sessionId
+  if (!sessionId || tempImporting.value) return
+  const generation = tempGeneration
+  tempImporting.value = true
+  tempRetryable.value = false
   tempDoneSteps.value = 4
   tempHint.value = '正在读取登录信息…'
   try {
-    const r = await api.officialLoginFinish(tempSession.value.sessionId)
+    const r = await api.officialLoginFinish(sessionId)
+    if (disposed || generation !== tempGeneration) return
     if (!r?.ok) {
       tempPhase.value = 'failed'
+      tempRetryable.value = true
       tempError.value = r?.detail || '导入失败（登录信息已保留，可点击重试导入）'
       return
     }
     tempDoneSteps.value = 6
     tempPhase.value = 'completed'
+    tempSession.value = null
+    tempHint.value = r.cleaned
+      ? '登录信息已导入，临时配置已清理。'
+      : '登录信息已导入。临时配置可能仍由客户端使用，已保留；可自行关闭官方客户端。'
     okMsg.value = `官方登录导入成功${r.email ? '（' + r.email + '）' : ''}${r.isExisting ? '，已有账号凭据已更新' : ''}`
     emit('changed')
   } catch (e) {
+    if (disposed || generation !== tempGeneration) return
     tempPhase.value = 'failed'
     tempError.value = e?.message || '导入失败'
+    tempRetryable.value = ![400, 401, 403, 404, 410].includes(e?.status)
+    if (e?.status === 400) {
+      // Both an expired session and a failed persistence operation use HTTP 400.
+      // Only a retained server session can safely offer retry with the same credentials.
+      try {
+        const st = await api.officialLoginStatus(sessionId)
+        if (disposed || generation !== tempGeneration) return
+        tempRetryable.value = ['ready', 'logged-in', 'importing'].includes(st?.phase)
+      } catch {}
+    }
+  } finally {
+    if (generation === tempGeneration) tempImporting.value = false
   }
 }
 async function retryTempImport() {
+  if (!tempRetryable.value || tempImporting.value) return
   tempPhase.value = 'running'
   tempError.value = ''
   await finishTempLogin()
 }
-async function cancelTempLogin() {
+async function cancelTempLogin({ detaching = false } = {}) {
+  const generation = ++tempGeneration
   stopTempPoll()
-  if (tempSession.value?.sessionId) {
-    await api.officialLoginCancel(tempSession.value.sessionId).catch(() => {})
+  const sessionId = tempSession.value?.sessionId
+  if (sessionId) {
+    try { await api.officialLoginCancel(sessionId) }
+    catch (e) {
+      if (!detaching && !disposed && generation === tempGeneration) {
+        tempError.value = e?.message || '无法取消本次登录，请重试'
+        if (tempRunning.value) pollTempLogin()
+        return false
+      }
+    }
   }
+  if (generation !== tempGeneration) return true
   tempSession.value = null
   tempPhase.value = 'idle'
   tempDoneSteps.value = 0
   tempHint.value = ''
+  tempRetryable.value = false
+  tempImporting.value = false
+  return true
 }
 function closeTempLogin() {
   // 登录进行中关闭弹窗：先取消会话，避免留下无人接管的临时配置
-  if (tempRunning.value) cancelTempLogin()
+  cancelTempLogin({ detaching: true })
   emit('close')
 }
 
@@ -212,13 +293,17 @@ onMounted(() => {
   }
 })
 onUnmounted(() => {
+  disposed = true
+  ++actionGeneration
+  cancelTempLogin({ detaching: true })
   stopPoll()
   stopTempPoll()
-  api.cancelBrowserLoginApi().catch(() => {})
+  cancelActiveOAuth().catch(() => {})
   if (window.api?.closeOAuthWindow) window.api.closeOAuthWindow()
 })
 
 function setError(e) {
+  if (disposed) return
   let msg = ''
   if (e instanceof Error) msg = e.message
   else if (e && typeof e === 'object') msg = e.detail || e.error || e.message || JSON.stringify(e)
@@ -227,6 +312,7 @@ function setError(e) {
   okMsg.value = ''
 }
 function setOk(m) {
+  if (disposed) return
   okMsg.value = m
   error.value = ''
 }
@@ -249,6 +335,7 @@ function currentPayload() {
 
 // ---------- 待授权卡片 ----------
 async function savePendingCard() {
+  const generation = actionGeneration
   if (!email.value.trim() && !note.value.trim()) {
     return setError('请至少填写账号邮箱或备注')
   }
@@ -260,12 +347,13 @@ async function savePendingCard() {
       email: email.value.trim(),
       note: note.value.trim()
     })
+    if (!actionCurrent(generation)) return
     if (r?.ok) {
       pendingId.value = r.accountId
       setOk('待授权卡片已保存，授权完成后会自动归档到该账号')
     } else setError(r)
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
@@ -277,26 +365,35 @@ async function savePendingCard() {
 // 运行时直接 TypeError: api.startBrowserLogin is not a function，
 // 被 catch 吞成一句「操作失败」—— OAuth 与设备授权两条路一度完全不可用。
 async function startAuth() {
+  const generation = actionGeneration
+  const source = authMode.value
+  startingOAuthSource = source
   loading.value = true
   error.value = ''
   try {
-    if (authMode.value === 'device') {
+    if (source === 'device') {
       const r = await api.startDeviceFlowApi()
-      if (r?.ok || r?.verification_uri || r?.user_code) { device.value = r; setOk('设备授权已发起：打开链接并输入用户码') }
+      if (!actionCurrent(generation)) { cancelOAuthSource(source).catch(() => {}); return }
+      if (r?.ok || r?.verification_uri || r?.user_code) { device.value = r; setOk(r.pendingImport ? '' : '设备授权已发起：打开链接并输入用户码') }
       else setError(r)
     } else {
       const r = await api.startBrowserLoginApi()
+      if (!actionCurrent(generation)) {
+        cancelOAuthSource(source).catch(() => {})
+        return
+      }
       if (r?.ok || r?.hostedUrl) {
         browser.value = r
-        setOk('浏览器授权已发起，请在打开的页面完成登录')
+        setOk(r.pendingImport ? '' : '浏览器授权已发起，请在打开的页面完成登录')
         // 自动检测回调。此前 pollTimer 从未被赋值，界面上「正在等待回调…
         // （每 2 秒检测一次）」是一句假提示 —— 实际没有任何轮询在跑。
-        startPolling()
+        if (!r.pendingImport) startPolling()
       } else setError(r)
     }
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
+    if (startingOAuthSource === source) startingOAuthSource = ''
     loading.value = false
   }
 }
@@ -305,11 +402,16 @@ async function startAuth() {
 // 上一轮没回来就跳过这一轮，避免慢响应时请求叠加。
 function startPolling() {
   stopPoll()
+  const generation = actionGeneration
+  const pollGeneration = authPollGeneration
+  let inFlight = false
   polling.value = true
   pollTimer = setInterval(async () => {
-    if (loading.value || !polling.value) return
+    if (loading.value || !polling.value || inFlight) return
+    inFlight = true
     try {
       const r = await api.pollBrowserLoginApi(currentPayload())
+      if (!actionCurrent(generation) || pollGeneration !== authPollGeneration || !polling.value || active.value !== 'oauth') return
       if (r?.ok) {
         stopPoll()
         browser.value = null
@@ -322,42 +424,58 @@ function startPolling() {
         setError(r)
       }
     } catch (e) {
+      if (!actionCurrent(generation) || pollGeneration !== authPollGeneration || !polling.value || active.value !== 'oauth') return
       stopPoll()
       setError(e)
-    }
+    } finally { inFlight = false }
   }, 2000)
 }
 function stopPoll() {
+  ++authPollGeneration
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
   polling.value = false
+}
+function cancelOAuthSource(source) {
+  return source === 'device' ? api.cancelDeviceFlowApi() : api.cancelBrowserLoginApi()
+}
+function cancelActiveOAuth() {
+  const source = startingOAuthSource || (device.value ? 'device' : browser.value ? 'browser' : '')
+  return source ? cancelOAuthSource(source) : Promise.resolve()
 }
 async function openBrowserLogin() {
   if (browser.value?.hostedUrl) api.openBrowser(browser.value.hostedUrl)
 }
 async function submitCallback() {
+  const generation = actionGeneration
+  stopPoll()
   loading.value = true
   error.value = ''
   try {
     // 签名是 (callbackUrl, payload)，不是 ({ callbackUrl, pendingId })
     const r = await api.submitBrowserCallbackApi(callbackUrl.value, { pendingId: pendingId.value || undefined, name: email.value.trim() || undefined })
+    if (!actionCurrent(generation)) return
     if (r?.ok) {
       stopPoll()
+      browser.value = null
       setOk('授权完成，账号已就绪')
       emit('changed')
     } else setError(r)
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
 }
 async function continueAuth() {
+  const generation = actionGeneration
+  stopPoll()
   loading.value = true
   error.value = ''
   try {
     const r = authMode.value === 'device'
       ? await api.pollDeviceFlowApi(currentPayload())
       : await api.pollBrowserLoginApi(currentPayload())
+    if (!actionCurrent(generation)) return
     // 后端成功时返回的是 { ok: true, accountId, path }，**没有** done 字段。
     // 此前判 `r?.ok && r.done` 恒为假，于是即使授权真的完成了也走不到成功分支 ——
     // 用户点「我已授权，继续」永远只会看到「还没检测到授权完成」。
@@ -368,10 +486,10 @@ async function continueAuth() {
       setOk('授权完成，账号已就绪')
       emit('changed')
     } else if (r?.pending) {
-      setOk('还没检测到授权完成，完成授权后稍等片刻再点一次')
+      setOk(pendingOAuthImport.value ? '授权正在保存，请稍后重试' : '还没检测到授权完成，完成授权后稍等片刻再点一次')
     } else setError(r)
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
@@ -382,26 +500,31 @@ async function onFile(e) {
   const f = e.target.files?.[0]
   if (!f) return
   importFile.value = f
+  const generation = actionGeneration
   const reader = new FileReader()
   reader.onload = () => {
+    if (!actionCurrent(generation)) return
     jsonText.value = String(reader.result || '')
     active.value = 'json'
   }
+  reader.onerror = () => { if (actionCurrent(generation)) setError('无法读取所选文件，请重试') }
   reader.readAsText(f)
 }
 async function importSave() {
+  const generation = actionGeneration
   if (!jsonText.value.trim()) return setError('请先粘贴凭据内容或选择文件')
   loading.value = true
   error.value = ''
   try {
     const r = await api.importTokenText(jsonText.value, email.value.trim() || undefined)
+    if (!actionCurrent(generation)) return
     if (r?.ok) {
       setOk((r.warning ? r.warning + '；' : '') + '已导入并添加为账号（设为当前）')
       jsonText.value = ''
       emit('changed')
     } else setError(r)
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
@@ -409,25 +532,37 @@ async function importSave() {
 
 // ---------- 本机登录导入 ----------
 const localBusy = ref(false)
+async function importExistingLocal() {
+  loading.value = true
+  if (!await cancelTempLogin()) { loading.value = false; return }
+  if (disposed) return
+  active.value = 'import'
+  await nextTick()
+  loading.value = false
+  if (!disposed) await getLocalAccount()
+}
 async function getLocalAccount() {
+  const generation = actionGeneration
   localBusy.value = true
   error.value = ''
   try {
     const info = await api.inspectCodexLocal()
+    if (!actionCurrent(generation)) return
     if (!info || info.error === 'not_found') {
-      return setError('本机未检测到 Codex 登录（~/.codex/auth.json 不存在）。请先安装 Codex CLI 并 codex login，或改用浏览器授权。')
+      return setError('未找到可导入的本地登录文件。若官方客户端已登录，可改用 OAuth 或 Token / JSON。')
     }
     if (info.error) {
       const text = { parse_error: '本机 auth.json 无法解析（文件损坏）', read_error: '本机 auth.json 无法读取（权限不足）', unsupported: '本机登录缺少续期凭据（refresh_token），请重新 codex login' }[info.error] || info.detail || info.error
       return setError(text)
     }
     const r = await api.importCodexLocal()
+    if (!actionCurrent(generation)) return
     if (r?.ok) {
       setOk(`已导入本机登录${r.email ? '（' + r.email + '）' : ''}${r.isExisting ? '，凭据已更新' : '并设为当前账号'}`)
       emit('changed')
     } else setError(r?.detail || r?.error || '导入失败')
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     localBusy.value = false
   }
@@ -440,6 +575,7 @@ function selectPreset(id) {
   if (p) providerBaseUrl.value = p.baseUrl
 }
 async function saveApiKey() {
+  const generation = actionGeneration
   if (!apiKey.value.trim()) return setError('请输入 API Key')
   const baseUrl = providerBaseUrl.value.trim()
   if (providerPresetId.value === CUSTOM_PROVIDER_ID && !baseUrl) return setError('自定义供应商需要填写接口地址（BaseUrl）')
@@ -448,42 +584,82 @@ async function saveApiKey() {
   try {
     const presetName = activePreset.value?.name
     const r = await api.setAuthMode('openai', apiKey.value.trim(), baseUrl || undefined)
+    if (!actionCurrent(generation)) return
     if (r?.ok) {
       mode.value = 'openai'
       hasApiKey.value = true
       // 记住这个供应商供下次快选（失败不影响切换）
       if (baseUrl) {
         await api.saveProvider(presetName || baseUrl.replace(/^https?:\/\//, '').split('/')[0], baseUrl).catch(() => {})
+        if (!actionCurrent(generation)) return
         loadProviders()
       }
       setOk(`已切换为 API Key 模式${baseUrl ? '（上游：' + baseUrl + '）' : '（直连 api.openai.com）'}`)
       emit('changed')
     } else setError(r)
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
 }
 async function switchToBridge() {
+  const generation = actionGeneration
   loading.value = true
   error.value = ''
   try {
     const r = await api.setAuthMode('bridge', '')
+    if (!actionCurrent(generation)) return
     if (r?.ok) {
       mode.value = 'bridge'
       setOk('已切换回 Bridge（Codex 登录）模式')
       emit('changed')
     } else setError(r)
   } catch (e) {
-    setError(e)
+    if (actionCurrent(generation)) setError(e)
   } finally {
     loading.value = false
   }
 }
 
 // 切到 apikey 标签时刷新已保存供应商
-watch(active, (v) => { if (v === 'apikey') loadProviders() })
+let revertingTab = false
+watch(active, async (v, previous) => {
+  if (revertingTab) { revertingTab = false; return }
+  ++actionGeneration
+  if (previous === 'tempLogin' && tempSession.value) cancelTempLogin()
+  error.value = ''; okMsg.value = ''; tempError.value = ''
+  if (v !== 'oauth') {
+    stopPoll()
+    if (previous === 'oauth') {
+      loading.value = true
+      try { await cancelActiveOAuth() }
+      catch (e) {
+        if (!disposed) { revertingTab = true; active.value = previous; setError(e) }
+        return
+      } finally { loading.value = false }
+    }
+    browser.value = null
+    device.value = null
+  }
+  if (v === 'apikey') loadProviders()
+})
+let revertingAuthMode = false
+watch(authMode, async (_, previous) => {
+  if (revertingAuthMode) { revertingAuthMode = false; return }
+  ++actionGeneration
+  stopPoll()
+  loading.value = true
+  try { await cancelActiveOAuth() }
+  catch (e) {
+    if (!disposed) { revertingAuthMode = true; authMode.value = previous; setError(e) }
+    return
+  } finally { loading.value = false }
+  browser.value = null
+  device.value = null
+  callbackUrl.value = ''
+  error.value = ''; okMsg.value = ''
+})
 
 // 图标（内联 SVG，零依赖）
 const icons = {
@@ -509,11 +685,11 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
 </script>
 
 <template>
-  <div class="modal-mask" @click.self="tempRunning ? closeTempLogin() : emit('close')">
-    <div class="modal">
+  <div class="modal-mask" @click.self="closeTempLogin">
+    <div class="modal" role="dialog" aria-modal="true" aria-label="添加 Codex 账号" v-modal-focus="closeTempLogin">
       <div class="modal-head">
         <div class="modal-title">添加 Codex 账号</div>
-        <button class="x" @click="tempRunning ? closeTempLogin() : emit('close')" aria-label="关闭">×</button>
+        <button class="x" @click="closeTempLogin" aria-label="关闭">×</button>
       </div>
 
       <div class="tabs">
@@ -522,7 +698,7 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
           :key="t.key"
           class="tab"
           :class="{ active: active === t.key }"
-          :disabled="tempRunning"
+          :disabled="tempRunning || loading || localBusy"
           @click="active = t.key"
         >
           <span class="tab-icon" v-html="tabIcon(t.key)"></span>
@@ -559,17 +735,21 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
             <span v-html="icons.monitor"></span>
             打开官方客户端并登录
           </button>
-          <button v-if="tempRunning" class="btn-outline wide" @click="cancelTempLogin">
+          <button v-if="tempRunning" class="btn-outline wide" :disabled="tempImporting" @click="cancelTempLogin">
             取消本次官方登录
           </button>
-          <button v-if="tempPhase === 'failed' && tempDoneSteps >= 4" class="btn-primary" @click="retryTempImport">
+          <button v-if="tempRetryable" class="btn-primary" @click="retryTempImport">
             <span v-html="icons.rotate"></span>
             重试导入登录信息
           </button>
+          <button v-if="tempPhase !== 'completed'" class="btn-outline wide" :disabled="loading || localBusy || tempImporting" @click="importExistingLocal">
+            从本地导入
+          </button>
 
-          <p class="hint dim">
-            成功导入后会清理临时配置与运行目录；最终导入失败时保留凭据供重试。你已登录的账号不受影响。
-          </p>
+          <details class="examples"><summary>未弹出客户端或已登录？</summary><p class="hint dim">
+            可自行打开官方客户端完成新登录；已有本机登录可点「从本地导入」。
+            取消只停止本次导入，不会关闭已打开的官方客户端。无法确认客户端已退出时会保留临时配置；导入失败时保留凭据供重试。
+          </p></details>
         </div>
 
         <!-- OAuth -->
@@ -590,14 +770,15 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
 
           <input v-if="showNote" v-model="note" class="inp" placeholder="备注（选填，便于区分多个账号）" />
 
-          <p class="hint">点击下方按钮，在浏览器中完成 OpenAI 账号 OAuth 授权。</p>
+          <p class="hint">{{ pendingOAuthImport ? '授权已完成，继续保存即可添加账号。' : '点击下方按钮，在浏览器中完成 OpenAI 账号 OAuth 授权。' }}</p>
+          <p v-if="pendingOAuthImport" class="hint live" role="status">上次授权待保存</p>
 
           <div class="seg">
-            <button class="seg-item" :class="{ on: authMode === 'browser' }" @click="authMode = 'browser'">
+            <button class="seg-item" :disabled="loading" :class="{ on: authMode === 'browser' }" @click="authMode = 'browser'">
               <span v-html="icons.globe"></span>
               浏览器授权
             </button>
-            <button class="seg-item" :class="{ on: authMode === 'device' }" @click="authMode = 'device'">
+            <button class="seg-item" :disabled="loading" :class="{ on: authMode === 'device' }" @click="authMode = 'device'">
               <span v-html="icons.terminal"></span>
               设备授权
             </button>
@@ -609,7 +790,7 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
           </button>
 
           <!-- 浏览器授权 -->
-          <div v-if="browser" class="auth-box">
+          <div v-if="browser && !browser.pendingImport" class="auth-box">
             <div class="sec-label">授权链接</div>
             <div class="link-row">
               <input type="text" readonly :value="browser.hostedUrl" class="url-input" />
@@ -649,7 +830,7 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
           </div>
 
           <!-- 设备授权 -->
-          <div v-if="device" class="auth-box">
+          <div v-if="device && !device.pendingImport" class="auth-box">
             <div class="sec-label">授权链接</div>
             <div class="link-row">
               <input type="text" readonly :value="device.verification_uri_complete || device.verification_uri" class="url-input" />
@@ -674,9 +855,9 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
             <p class="hint">在浏览器打开上方链接并输入此用户码完成授权。</p>
           </div>
 
-          <button v-if="device || browser" class="btn-outline wide" :disabled="loading || polling" @click="continueAuth">
+          <button v-if="device || browser" :class="pendingOAuthImport ? 'btn-primary wide' : 'btn-outline wide'" :disabled="loading || polling" @click="continueAuth">
             <span v-html="icons.check"></span>
-            我已授权，继续
+            {{ pendingOAuthImport ? '继续保存' : '我已授权，继续' }}
           </button>
 
           <p class="hint dim">
@@ -684,7 +865,7 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
             授权流量走「设置 → 出网代理」里配置的代理；需要弹窗登录时可在设置里临时清空代理。
           </p>
 
-          <p class="warn" v-if="mode !== 'bridge'">当前为 API Key 模式，OAuth 写入后仍会保持 Bridge 模式并重启代理。</p>
+          <p class="hint dim" v-if="mode !== 'bridge'">当前为 API Key 模式；保存账号不会自动切换连接模式。</p>
         </div>
 
         <!-- Token / JSON -->
@@ -813,43 +994,43 @@ at-xxxxxxxxxxxxxxxx
 }
 .modal {
   width: 620px; max-width: 94vw; max-height: 88vh; overflow-y: auto;
-  background: #14161a; border: 1px solid #2a2e36;
+  background: var(--card); border: 1px solid var(--border-strong);
   border-radius: 16px; padding: 24px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
-.modal-title { font-size: 20px; font-weight: 600; color: #f0f1f5; }
-.x { background: none; border: none; color: #9ca3af; font-size: 20px; cursor: pointer; line-height: 1; }
+.modal-title { font-size: 20px; font-weight: 600; color: var(--text); }
+.x { background: none; border: none; color: var(--text-2); font-size: 20px; cursor: pointer; line-height: 1; }
 
 .tabs { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
 .tab {
-  background: none; border: none; color: #9ca3af; padding: 12px; height: 40px;
+  background: none; border: none; color: var(--text-2); padding: 12px; height: 40px;
   cursor: pointer; font-size: 13px; font-weight: 500; border-radius: 8px;
   display: inline-flex; align-items: center; gap: 6px;
 }
-.tab:hover { color: #f0f1f5; }
-.tab.active { background: #1a1d23; color: #f0f1f5; }
+.tab:hover { color: var(--text); }
+.tab.active { background: var(--card-2); color: var(--text); }
 .tab:disabled { opacity: 0.5; cursor: not-allowed; }
 .tab-icon { display: flex; align-items: center; }
 
 .pane { display: flex; flex-direction: column; gap: 16px; }
-.sec-label { font-size: 13px; font-weight: 500; color: #9ca3af; }
+.sec-label { font-size: 13px; font-weight: 500; color: var(--text-2); }
 /* 说明文字必须用块级流式排版。
    此前用 display:flex：纯文本段与 <code> 各自成为独立 flex 项且不可换行拆分，
    一行放不下时每个文字段被压到 min-content 宽（中文 = 1 个字宽），
    整段说明就变成「一列一个字」的竖排——Token/JSON 等长文案标签页首当其冲。 */
-.hint { font-size: 13px; color: #9ca3af; line-height: 1.6; margin: 0; }
-.hint code, .warn code { font-family: var(--mono, monospace); color: #34d399; }
+.hint { font-size: 13px; color: var(--text-2); line-height: 1.6; margin: 0; }
+.hint code, .warn code { font-family: var(--mono, monospace); color: var(--primary); }
 .hint > span:first-child { display: inline-flex; vertical-align: -3px; margin-right: 6px; }
 .hint.dim { color: #6b7280; font-size: 12.5px; }
-.hint.live { color: #34d399; }
-.hint.err-hint { color: #fda4af; }
-.hint.warn { color: #fbbf24; }
+.hint.live { color: var(--primary); }
+.hint.err-hint { color: var(--rose); }
+.hint.warn { color: var(--amber); }
 
 /* 官方登录 6 步骤条 */
 .steps { display: flex; flex-direction: column; gap: 8px; }
 .step {
   display: flex; align-items: center; gap: 10px; padding: 10px 14px;
-  border: 1px solid #2a2e36; border-radius: 10px; font-size: 13px; color: #6b7280;
+  border: 1px solid var(--border-strong); border-radius: 10px; font-size: 13px; color: #6b7280;
 }
 .step-num {
   width: 20px; height: 20px; border-radius: 50%; flex: none;
@@ -857,87 +1038,87 @@ at-xxxxxxxxxxxxxxxx
   font-size: 11px; font-family: var(--mono, monospace);
   border: 1px solid #3a3f48; color: #6b7280;
 }
-.step.active { color: #f0f1f5; border-color: #34d399; }
-.step.active .step-num { border-color: #34d399; color: #34d399; }
-.step.done { color: #9ca3af; }
-.step.done .step-num { background: rgba(16,185,129,0.15); border-color: #34d399; color: #34d399; }
+.step.active { color: var(--text); border-color: var(--primary); }
+.step.active .step-num { border-color: var(--primary); color: var(--primary); }
+.step.done { color: var(--text-2); }
+.step.done .step-num { background: rgba(139,107,214,0.15); border-color: var(--primary); color: var(--primary); }
 
 /* 供应商 chip 墙 */
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip {
-  background: #1a1d23; border: 1px solid #2a2e36; color: #c3c8d2;
+  background: var(--card-2); border: 1px solid var(--border-strong); color: var(--text-2);
   padding: 6px 12px; border-radius: 999px; font-size: 12.5px; cursor: pointer;
   display: inline-flex; align-items: center; gap: 6px;
 }
 .chip:hover { border-color: #3a3f48; }
-.chip.active { border-color: #34d399; color: #34d399; background: rgba(16,185,129,0.08); }
+.chip.active { border-color: var(--primary); color: var(--primary); background: rgba(139,107,214,0.08); }
 .chip-x { color: #6b7280; font-size: 14px; line-height: 1; }
-.chip-x:hover { color: #fda4af; }
+.chip-x:hover { color: var(--rose); }
 
 /* Token/JSON 示例折叠 */
-.examples { border: 1px solid #2a2e36; border-radius: 10px; padding: 10px 14px; }
-.examples summary { cursor: pointer; font-size: 13px; color: #9ca3af; user-select: none; }
+.examples { border: 1px solid var(--border-strong); border-radius: 10px; padding: 10px 14px; }
+.examples summary { cursor: pointer; font-size: 13px; color: var(--text-2); user-select: none; }
 .examples-body { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
 .code-block {
-  margin: 0; padding: 12px; background: #101216; border: 1px solid #2a2e36;
+  margin: 0; padding: 12px; background: var(--bg); border: 1px solid var(--border-strong);
   border-radius: 8px; font-family: var(--mono, monospace); font-size: 12px;
-  color: #a7f3d0; white-space: pre-wrap; word-break: break-all; line-height: 1.55;
+  color: var(--primary); white-space: pre-wrap; word-break: break-all; line-height: 1.55;
 }
 
 .field { display: flex; flex-direction: column; gap: 6px; }
 .row-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .inp {
   width: 100%; box-sizing: border-box; padding: 10px 12px; font-size: 13px;
-  color: #f0f1f5; background: #101216; border: 1px solid #2a2e36; border-radius: 10px;
+  color: var(--text); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 10px;
 }
-.inp:focus { outline: none; border-color: #34d399; }
+.inp:focus { outline: none; border-color: var(--primary); }
 .ta {
   min-height: 120px; resize: vertical; padding: 12px; font-size: 12.5px;
-  font-family: var(--mono, monospace); color: #f0f1f5; background: #101216;
-  border: 1px solid #2a2e36; border-radius: 10px; line-height: 1.5;
+  font-family: var(--mono, monospace); color: var(--text); background: var(--bg);
+  border: 1px solid var(--border-strong); border-radius: 10px; line-height: 1.5;
 }
-.ta:focus { outline: none; border-color: #34d399; }
-.seg { display: flex; background: #101216; border: 1px solid #2a2e36; border-radius: 10px; overflow: hidden; }
+.ta:focus { outline: none; border-color: var(--primary); }
+.seg { display: flex; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 10px; overflow: hidden; }
 .seg-item {
-  flex: 1; background: none; border: none; color: #9ca3af; padding: 11px;
+  flex: 1; background: none; border: none; color: var(--text-2); padding: 11px;
   font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
-.seg-item.on { color: #34d399; background: rgba(16,185,129,0.08); }
-.auth-box { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid #2a2e36; border-radius: 12px; }
+.seg-item.on { color: var(--primary); background: rgba(139,107,214,0.08); }
+.auth-box { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--border-strong); border-radius: 12px; }
 .link-row { display: flex; gap: 8px; align-items: center; }
 .url-input {
   flex: 1; min-width: 0; padding: 9px 12px; font-size: 12px; font-family: var(--mono, monospace);
-  color: #9ca3af; background: #101216; border: 1px solid #2a2e36; border-radius: 10px;
+  color: var(--text-2); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 10px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .code {
   flex: 1; padding: 9px 12px; font-family: var(--mono, monospace); font-size: 14px;
-  letter-spacing: 2px; color: #34d399; background: #101216; border: 1px solid #2a2e36; border-radius: 10px;
+  letter-spacing: 2px; color: var(--primary); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 10px;
 }
-.file-name { font-size: 12.5px; color: #9ca3af; }
+.file-name { font-size: 12.5px; color: var(--text-2); }
 .btn-primary {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  background: #10b981; border: none; color: #06281d; font-weight: 600; font-size: 14px;
+  background: var(--primary); border: none; color: var(--on-primary); font-weight: 600; font-size: 14px;
   padding: 12px 16px; border-radius: 12px; cursor: pointer;
 }
-.btn-primary:hover { background: #34d399; }
+.btn-primary:hover { background: var(--primary); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-outline {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  background: none; border: 1px solid #2a2e36; color: #e5e7eb; font-size: 13.5px;
+  background: none; border: 1px solid var(--border-strong); color: var(--text); font-size: 13.5px;
   padding: 11px 16px; border-radius: 12px; cursor: pointer;
 }
 .btn-outline:hover { border-color: #3a3f48; }
 .btn-outline:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-ghost {
-  background: none; border: none; color: #9ca3af; font-size: 13px; cursor: pointer;
+  background: none; border: none; color: var(--text-2); font-size: 13px; cursor: pointer;
   display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px;
 }
-.btn-ghost:hover { color: #f0f1f5; background: #1a1d23; }
+.btn-ghost:hover { color: var(--text); background: var(--card-2); }
 .btn-ghost.sm { padding: 6px 10px; font-size: 12px; }
 .wide { width: 100%; }
 .msg { padding: 10px 14px; border-radius: 10px; font-size: 13px; line-height: 1.5; }
-.msg.err { background: rgba(244,63,94,0.1); border: 1px solid rgba(244,63,94,0.3); color: #fda4af; }
-.msg.ok { background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); color: #6ee7b7; }
-.warn { font-size: 12.5px; color: #fbbf24; margin: 0; line-height: 1.5; }
+.msg.err { background: rgba(244,63,94,0.1); border: 1px solid rgba(244,63,94,0.3); color: var(--rose); }
+.msg.ok { background: rgba(139,107,214,0.1); border: 1px solid rgba(139,107,214,0.3); color: var(--primary); }
+.warn { font-size: 12.5px; color: var(--amber); margin: 0; line-height: 1.5; }
 </style>

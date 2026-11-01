@@ -29,6 +29,17 @@ const C = { g: '\x1b[32m', r: '\x1b[31m', y: '\x1b[33m', d: '\x1b[2m', b: '\x1b[
 // 每一条都对应「闸门失效」的一种具体方式，不是随便改个符号。
 const MUTANTS = [
   {
+    id: 'MB14', desc: '依赖清理把运行 source map 也剔掉（安装版崩溃栈还原不出真实行号）',
+    file: 'dependency-resources.mjs',
+    from: "  '.markdown', '.md'",
+    to: "  '.markdown', '.md',\n  '.map'"
+  },
+  {
+    id: 'MB13', desc: '构建不再写入或校验 bridge 补丁（原始依赖流入发行包）',
+    from: "const bridgePrepared = prepareBridge(path.join(STAGING, 'gateway'))",
+    to: "const bridgePrepared = { manifest: { version: '0.3.0', files: {} }, addedFiles: 0, bytesDelta: 0 }"
+  },
+  {
     id: 'MB1', desc: 'zip 层不再要求「顶层恰好一个目录」（v1.1.0 双目录坏包即可发出）',
     from: "  const tops = [...new Set(names.map((n) => n.split('/')[0]))]\n  if (tops.length !== 1) {",
     to: "  const tops = [NAME]\n  if (false) {"
@@ -93,16 +104,28 @@ const MUTANTS = [
   }
 ]
 
-// ---------- 夹具：只拷三个文件就能跑测试 ----------
-// 测试用 REPO = 测试文件的「上上层」，因此最小仓库 = package.json + build-release.mjs
-// + gateway/tests/build-release.test.mjs。不必复制 292MB 的整个仓库。
-function makeRepo(mutatedSource) {
+// ---------- 夹具：复制构建入口、补丁准备器和只读校验器 ----------
+// 测试用 REPO = 测试文件的「上上层」，复制最小构建依赖即可，不必复制整个仓库。
+function makeRepo(mutatedSource, mutatedRel = 'build-release.mjs') {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cgw-mut-'))
   fs.mkdirSync(path.join(dir, 'gateway', 'tests'), { recursive: true })
   fs.copyFileSync(PKG, path.join(dir, 'package.json'))
   fs.copyFileSync(TEST_FILE, path.join(dir, 'gateway', 'tests', 'build-release.test.mjs'))
-  fs.writeFileSync(path.join(dir, 'build-release.mjs'), mutatedSource)
+  fs.copyFileSync(path.join(REPO, 'runtime-lock.mjs'), path.join(dir, 'runtime-lock.mjs'))
+  fs.copyFileSync(path.join(REPO, 'prepare-bridge.mjs'), path.join(dir, 'prepare-bridge.mjs'))
+  fs.copyFileSync(path.join(REPO, 'dependency-resources.mjs'), path.join(dir, 'dependency-resources.mjs'))
+  fs.copyFileSync(path.join(REPO, 'gateway', 'bridge-patches.mjs'), path.join(dir, 'gateway', 'bridge-patches.mjs'))
+  const entry = mutatedRel === 'build-release.mjs' ? mutatedSource : readSource('build-release.mjs')
+  fs.writeFileSync(path.join(dir, 'build-release.mjs'), entry)
+  if (mutatedRel !== 'build-release.mjs') fs.writeFileSync(path.join(dir, mutatedRel), mutatedSource)
   return dir
+}
+
+// 变异体可以指向参与构建的任意一个文件，不只是入口。默认仍是 build-release.mjs。
+const SOURCES = new Map()
+function readSource(rel) {
+  if (!SOURCES.has(rel)) SOURCES.set(rel, fs.readFileSync(path.join(REPO, rel), 'utf-8'))
+  return SOURCES.get(rel)
 }
 
 function runTests(dir) {
@@ -147,14 +170,16 @@ try {
 // ---------- 逐个注入 ----------
 const rows = []
 for (const m of MUTANTS) {
-  if (!source.includes(m.from)) {
+  const rel = m.file || 'build-release.mjs'
+  const target = readSource(rel)
+  if (!target.includes(m.from)) {
     rows.push({ ...m, result: 'anchor-missing' })
-    console.log(`${C.y}? ${m.id}${C.x} 锚点未命中 —— 源码已变，请更新变异体`)
+    console.log(`${C.y}? ${m.id}${C.x} 锚点未命中 —— ${rel} 已变，请更新变异体`)
     continue
   }
-  const dir = makeRepo(source.replace(m.from, m.to))
+  const dir = makeRepo(target.replace(m.from, m.to), rel)
   try {
-    if (!parses(path.join(dir, 'build-release.mjs'))) {
+    if (!parses(path.join(dir, rel))) {
       rows.push({ ...m, result: 'syntax-error' })
       console.log(`${C.y}! ${m.id} 变异后语法不合法${C.x}  ${m.desc} —— 该变异体无效，请改写法`)
       continue

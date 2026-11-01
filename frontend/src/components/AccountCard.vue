@@ -78,7 +78,7 @@ function initials(name) {
   padding: 1px 6px; border-radius: 6px;
   color: #9aa0a8; background: rgba(154,160,168,0.12); border: 1px solid rgba(154,160,168,0.25);
 }
-.prov-oauth   { color: #34d399; background: rgba(16,185,129,0.12);  border-color: rgba(16,185,129,0.3); }
+.prov-oauth   { color: var(--primary); background: rgba(139,107,214,0.12);  border-color: rgba(139,107,214,0.3); }
 .prov-apikey  { color: #60a5fa; background: rgba(96,165,250,0.12);  border-color: rgba(96,165,250,0.3); }
 .prov-token   { color: #f59e0b; background: rgba(245,158,11,0.12);  border-color: rgba(245,158,11,0.3); }
 .prov-import  { color: #a78bfa; background: rgba(167,139,250,0.12); border-color: rgba(167,139,250,0.3); }

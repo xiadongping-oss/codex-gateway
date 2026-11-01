@@ -1,4 +1,7 @@
 <script setup>
+import { vModalFocus } from '../composables/modalFocus'
+import { usePagination } from '../composables/usePagination'
+import Pagination from '../components/Pagination.vue'
 import { ref, computed, reactive, onMounted, onBeforeUnmount } from 'vue'
 import * as api from '../api/gateway'
 import { copyText } from '../api/client'
@@ -7,6 +10,7 @@ import { copyText } from '../api/client'
 const sources = ref([])
 const active = ref('generated')
 const assets = ref([])
+const {page,pages,visible}=usePagination(assets)
 const loaded = ref(false)
 const manageMode = ref(false)
 
@@ -50,6 +54,7 @@ onMounted(load)
 function switchTab(id) {
   if (active.value === id) return
   active.value = id
+  page.value = 1
   loaded.value = false
   assets.value = []
   selected.value = new Set()
@@ -75,12 +80,20 @@ async function copyImg(img) {
   try {
     await api.copyImageToClipboardImg(active.value, img.name)
     copiedName.value = img.name
+    if (/\.gif$/i.test(img.name)) flashTip('GIF 首帧已复制；保留动画请下载原文件。')
+    else if (/\.svg$/i.test(img.name)) flashTip('SVG 已复制为 PNG 图片；保留矢量格式请下载原文件。')
     setTimeout(() => { if (copiedName.value === img.name) copiedName.value = '' }, 1800)
   } catch (e) {
     tip.value = '复制失败：' + (e?.message || '剪贴板不可用')
   } finally {
     busyCopy.value = ''
   }
+}
+
+function copyLabel(img) {
+  if (/\.gif$/i.test(img.name)) return '复制首帧'
+  if (/\.svg$/i.test(img.name)) return '复制为图片'
+  return '复制图片'
 }
 
 async function copyLink(url) {
@@ -437,14 +450,14 @@ const emptyText = computed(() => {
       @dragleave="dragOver = false"
       @drop.prevent="onDrop"
     >
-      <div class="card" v-for="img in assets" :key="img.name" :class="{ sel: manageMode && isBatchable && selected.has(img.name) }">
+      <div class="card" v-for="img in visible" :key="img.name" :class="{ sel: manageMode && isBatchable && selected.has(img.name) }">
         <div class="thumb">
-          <img :src="thumbUrl(img)" :alt="img.name" draggable="true" loading="lazy" @click="onCardImgClick(img)" />
+          <img :src="thumbUrl(img)" :alt="img.name" role="button" tabindex="0" :aria-label="'预览 ' + img.name" draggable="true" loading="lazy" @click="onCardImgClick(img)" @keydown.enter.prevent="onCardImgClick(img)" @keydown.space.prevent="onCardImgClick(img)" />
           <div class="sel-dot" v-if="manageMode && isBatchable" :class="{ on: selected.has(img.name) }">✓</div>
           <div class="overlay" v-if="!manageMode">
             <template v-if="!img.remote">
-              <button class="act primary" :class="{ done: copiedName === img.name }" @click="copyImg(img)" :disabled="busyCopy === img.name">
-                {{ busyCopy === img.name ? '复制中…' : copiedName === img.name ? '✓ 已复制' : '复制图片' }}
+              <button class="act primary" :class="{ done: copiedName === img.name }" @click="copyImg(img)" :disabled="busyCopy === img.name" title="复制为静态图片；保留原始格式和元数据请下载原文件">
+                {{ busyCopy === img.name ? '复制中…' : copiedName === img.name ? '✓ 已复制' : copyLabel(img) }}
               </button>
               <a class="act" :href="thumbUrl(img)" :download="img.name" @click.stop>下载</a>
               <button
@@ -497,9 +510,10 @@ const emptyText = computed(() => {
       <div class="ok-tip" v-if="okTip">{{ okTip }}</div>
     </div>
 
+    <Pagination v-model="page" :pages="pages" :total="assets.length" />
     <!-- 添加素材源弹窗 -->
     <div class="modal-mask" v-if="showAdd" @click.self="showAdd = false">
-      <div class="modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="添加素材源" v-modal-focus="() => showAdd = false">
         <div class="card-title">添加素材源</div>
         <div class="type-row">
           <button
@@ -552,7 +566,7 @@ const emptyText = computed(() => {
           <input class="f-input mono" type="password" v-model="form.token" />
         </template>
 
-        <div class="form-err" v-if="formErr">{{ formErr }}</div>
+        <div class="form-err" v-if="formErr" role="alert">{{ formErr }}</div>
         <div :class="testResult?.ok ? 'test-ok' : 'form-err'" v-if="testResult">{{ testResult.ok ? '✓ ' : '✗ ' }}{{ testResult.message }}</div>
         <div class="modal-actions">
           <button class="refresh" @click="showAdd = false">取消</button>
@@ -563,7 +577,7 @@ const emptyText = computed(() => {
     </div>
 
     <!-- 图片查看器（页面内 Lightbox，Esc 关闭 / ←→ 切换；两侧空白点击同样翻页） -->
-    <div class="lightbox" v-if="viewerOpen && viewerImg" @wheel.prevent>
+    <div class="lightbox" v-if="viewerOpen && viewerImg" @wheel.prevent role="dialog" aria-modal="true" aria-label="图片预览" v-modal-focus="closeViewer">
       <button class="lb-close" title="关闭 (Esc)" @click="closeViewer">✕</button>
       <button v-if="assets.length > 1" class="lb-nav prev" title="上一张 (←)" @click="viewerStep(-1)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
@@ -578,8 +592,8 @@ const emptyText = computed(() => {
           </div>
           <div class="lb-actions">
             <template v-if="!viewerImg.remote">
-              <button class="act primary" :class="{ done: copiedName === viewerImg.name }" @click="copyImg(viewerImg)" :disabled="busyCopy === viewerImg.name">
-                {{ busyCopy === viewerImg.name ? '复制中…' : copiedName === viewerImg.name ? '✓ 已复制' : '复制图片' }}
+              <button class="act primary" :class="{ done: copiedName === viewerImg.name }" @click="copyImg(viewerImg)" :disabled="busyCopy === viewerImg.name" title="复制为静态图片；保留原始格式和元数据请下载原文件">
+                {{ busyCopy === viewerImg.name ? '复制中…' : copiedName === viewerImg.name ? '✓ 已复制' : copyLabel(viewerImg) }}
               </button>
               <a class="act" :href="thumbUrl(viewerImg)" :download="viewerImg.name">下载</a>
               <button
@@ -610,6 +624,7 @@ const emptyText = computed(() => {
 </template>
 
 <style scoped>
+img[role="button"]:focus-visible { outline: 3px solid var(--primary); outline-offset: -3px; }
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .live-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--emerald-light); font-family: var(--mono); }
 .live-tag .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald-light); animation: pulse 1.5s infinite; }
@@ -623,7 +638,7 @@ const emptyText = computed(() => {
   border-radius: 7px; padding: 5px 14px; font-size: 12px; cursor: pointer; transition: all 0.15s ease;
 }
 .refresh:hover { color: var(--text); border-color: var(--emerald); }
-.refresh.primary { background: var(--emerald); color: #04130d; font-weight: 550; border-color: transparent; }
+.refresh.primary { background: var(--emerald); color: var(--on-primary); font-weight: 550; border-color: transparent; }
 .refresh.warn { color: var(--amber); border-color: var(--amber); }
 
 .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 14px; }
@@ -632,15 +647,15 @@ const emptyText = computed(() => {
   background: var(--card); color: var(--text-2); border: 1px solid var(--border);
   border-radius: 999px; padding: 6px 14px; font-size: 12.5px; cursor: pointer; transition: all 0.15s ease;
 }
-.tab:hover { color: var(--text); border-color: rgba(16, 185, 129, 0.4); }
-.tab.on { background: var(--emerald-dim); color: var(--emerald-light); border-color: rgba(16, 185, 129, 0.5); }
+.tab:hover { color: var(--text); border-color: rgba(139,107,214, 0.4); }
+.tab.on { background: var(--emerald-dim); color: var(--emerald-light); border-color: rgba(139,107,214, 0.5); }
 .ttag { font-size: 10px; padding: 1px 6px; border-radius: 6px; background: rgba(154, 160, 168, 0.12); color: var(--text-3); }
-.tab.on .ttag { background: rgba(16, 185, 129, 0.16); color: var(--emerald-light); }
+.tab.on .ttag { background: rgba(139,107,214, 0.16); color: var(--emerald-light); }
 .tdelete { font-size: 11px; color: var(--rose); padding: 0 2px; }
 .tdelete:hover { text-decoration: underline; }
 .new-badge {
   font-size: 10px; padding: 1px 7px; border-radius: 999px;
-  background: var(--emerald); color: #04130d; font-weight: 600;
+  background: var(--emerald); color: var(--on-primary); font-weight: 600;
   animation: pulse 1.5s infinite;
 }
 
@@ -651,15 +666,15 @@ const emptyText = computed(() => {
   content: '松开导入到「' attr(data-srcname) '」';
   position: absolute; inset: 0; z-index: 5; pointer-events: none;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(4, 19, 13, 0.72); color: var(--emerald-light);
+  background: rgba(40, 23, 75, 0.82); color: var(--emerald-light);
   font-size: 14px; font-weight: 550; border-radius: 12px;
 }
 .card {
   background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
   transition: border-color 0.15s ease;
 }
-.card:hover { border-color: rgba(16, 185, 129, 0.45); }
-.card.sel { border-color: var(--emerald); box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.35); }
+.card:hover { border-color: rgba(139,107,214, 0.45); }
+.card.sel { border-color: var(--emerald); box-shadow: 0 0 0 2px rgba(139,107,214, 0.35); }
 .sel-dot {
   position: absolute; top: 8px; left: 8px; z-index: 3;
   width: 22px; height: 22px; border-radius: 50%;
@@ -667,7 +682,7 @@ const emptyText = computed(() => {
   color: transparent; font-size: 12px; font-weight: 700; line-height: 19px; text-align: center;
   transition: all 0.12s ease;
 }
-.sel-dot.on { background: var(--emerald); border-color: var(--emerald); color: #04130d; }
+.sel-dot.on { background: var(--emerald); border-color: var(--emerald); color: var(--on-primary); }
 .thumb { position: relative; height: 168px; background: #0b0d10; }
 .thumb img {
   width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in;
@@ -687,9 +702,9 @@ const emptyText = computed(() => {
   transition: all 0.15s ease; backdrop-filter: blur(4px); white-space: nowrap;
 }
 .act:hover { background: rgba(255, 255, 255, 0.22); }
-.act.primary { background: var(--emerald); color: #04130d; font-weight: 550; }
+.act.primary { background: var(--emerald); color: var(--on-primary); font-weight: 550; }
 .act.primary:hover { background: var(--emerald-light); }
-.act.primary.done { background: #059669; color: #fff; }
+.act.primary.done { background: #7053c1; color: #fff; }
 .act.up { background: rgba(96, 165, 250, 0.85); color: #0a1626; font-weight: 550; }
 .act.up:hover { background: #60a5fa; }
 .act.danger:hover { background: rgba(244, 63, 94, 0.85); }
@@ -739,7 +754,7 @@ const emptyText = computed(() => {
 .test-ok { margin-top: 10px; font-size: 12px; color: var(--emerald-light); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 .btn-primary {
-  background: var(--emerald); color: #04130d; font-weight: 600; border: none;
+  background: var(--emerald); color: var(--on-accent); font-weight: 600; border: none;
   border-radius: 8px; padding: 8px 18px; font-size: 12.5px; cursor: pointer;
 }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -754,7 +769,7 @@ const emptyText = computed(() => {
 /* 两侧空白热区：点击即翻页，不再误触退出 */
 .lb-zone { flex: 1; align-self: stretch; cursor: default; }
 .lb-zone.multi { cursor: pointer; }
-.lb-zone.multi:hover { background: rgba(16, 185, 129, 0.05); }
+.lb-zone.multi:hover { background: rgba(139,107,214, 0.05); }
 .lb-close {
   position: absolute; top: 16px; right: 18px;
   width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--border-strong);
@@ -772,7 +787,7 @@ const emptyText = computed(() => {
 }
 .lb-nav.prev { left: 22px; }
 .lb-nav.next { right: 22px; }
-.lb-nav:hover { color: var(--text); background: rgba(255, 255, 255, 0.16); border-color: rgba(16, 185, 129, 0.5); }
+.lb-nav:hover { color: var(--text); background: rgba(255, 255, 255, 0.16); border-color: rgba(139,107,214, 0.5); }
 .lb-nav:active { transform: translateY(-50%) scale(0.94); }
 .lb-nav svg { width: 20px; height: 20px; }
 .lb-stage {
@@ -798,9 +813,9 @@ const emptyText = computed(() => {
 .lb-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .lb-actions .act { background: rgba(255, 255, 255, 0.08); color: var(--text-2); border: 1px solid var(--border); }
 .lb-actions .act:hover { background: rgba(255, 255, 255, 0.16); color: var(--text); }
-.lb-actions .act.primary { background: var(--emerald); color: #04130d; font-weight: 550; border-color: transparent; }
+.lb-actions .act.primary { background: var(--emerald); color: var(--on-primary); font-weight: 550; border-color: transparent; }
 .lb-actions .act.primary:hover { background: var(--emerald-light); }
-.lb-actions .act.primary.done { background: #059669; color: #fff; }
+.lb-actions .act.primary.done { background: #7053c1; color: #fff; }
 .lb-actions .act.up { background: rgba(96, 165, 250, 0.85); color: #0a1626; font-weight: 550; border-color: transparent; }
 .lb-actions .act.up:hover { background: #60a5fa; }
 .lb-actions .act.danger:hover { background: rgba(244, 63, 94, 0.85); color: #fff; }

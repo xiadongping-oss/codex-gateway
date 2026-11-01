@@ -1,0 +1,2 @@
+<script setup>defineProps({modelValue:Number,pages:Number,total:Number});const emit=defineEmits(['update:modelValue'])</script>
+<template><nav v-if="pages>1" class="pager" aria-label="分页"><span>共 {{total}} 项 · {{modelValue}} / {{pages}}</span><button :disabled="modelValue<=1" @click="emit('update:modelValue',modelValue-1)">上一页</button><button :disabled="modelValue>=pages" @click="emit('update:modelValue',modelValue+1)">下一页</button></nav></template>

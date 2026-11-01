@@ -71,7 +71,7 @@ onMounted(async () => {
 .ls-left { flex: none; min-width: 170px; }
 .ls-title { font-size: 12px; color: var(--text-3); display: flex; align-items: center; gap: 7px; }
 .ls-badge { font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; }
-.ls-badge.on { color: #34d399; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.35); }
+.ls-badge.on { color: var(--primary); background: rgba(139,107,214,0.1); border: 1px solid rgba(139,107,214,0.35); }
 .ls-badge.off { color: var(--text-3); background: rgba(255,255,255,0.05); border: 1px solid var(--border); }
 .ls-sub { font-size: 13px; font-weight: 600; margin-top: 3px; }
 .ls-addr {
@@ -83,10 +83,10 @@ onMounted(async () => {
   color: var(--text-3); background: rgba(255,255,255,0.05); border: 1px solid var(--border);
   white-space: nowrap;
 }
-.ls-kind.lan { color: #34d399; background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.3); }
+.ls-kind.lan { color: var(--primary); background: rgba(139,107,214,0.1); border-color: rgba(139,107,214,0.3); }
 .ls-kind.tailscale { color: #a5b4fc; background: rgba(129,140,248,0.12); border-color: rgba(129,140,248,0.35); }
 .ls-actions { display: flex; gap: 8px; flex: none; }
 .btn-ghost.sm { padding: 6px 12px; font-size: 12px; }
-.btn-ghost.sm.accent { color: var(--emerald-light); border-color: rgba(16,185,129,0.35); }
+.btn-ghost.sm.accent { color: var(--emerald-light); border-color: rgba(139,107,214,0.35); }
 .ls-err { font-size: 12px; color: var(--rose); margin-top: -10px; }
 </style>
