@@ -10,16 +10,9 @@
 
 ## 图标
 
-唯一源图是 `src-tauri/icons/icon-master.png`（1024×1024，本项目自行生成，圆角外透明）。运行 `npm run desktop:branding` 会重建全部平台资产：先用锁定的 Tauri CLI 生成 `icon.png` / `icon.ico` / `icon.icns`，再把其中的**小尺寸条目**替换成 `icon-compact.mjs` 的输出，最后从同一张源图绘制安装器横幅。
+品牌源图为 `desktop/brand-master.png`，提示词记录在 `desktop/branding-prompt.txt`。运行 `npm run desktop:branding` 会从同一张源图生成 Windows 图标、macOS 图标、托盘、安装器横幅、网页图标与侧栏素材，再运行 `npm run build` 更新控制台产物。
 
-为什么要替换小尺寸：源图里有两套细白线（占满画布的宝石描边 + 内部的 `<>`），笔画只有画布的 3.3%。缩到 32px 时笔画只剩 1px，整枚符号塌成一根横向亮条；缩到 16px 时两个尖括号中缝被吃掉，还会被读成「X／叉」而不是 `<>`。这是**墨量**问题，锐化救不了，只能换几何。`tauri icon` 只能给一张源图，所以由本模块接管：
-
-- `<= 128px` 使用简化版本——保留源图的轮廓与紫色对角渐变，只画一组粗 `<>`；`<= 24px` 再启用更宽更矮的一套笔画并收窄抗锯齿过渡带，让 16px 的笔画是实心的而不是一摊灰。
-- `256px` 及以上保留源图本体，那些尺寸能看清棱面，完整构图更好看。
-- 托盘图标 `tray.png` 固定用简化版本的 64×64，编译期嵌入二进制。
-- `icon.icns` 里的历史 PackBits 条目（`is32` / `il32` / `s8mk` / `l8mk`）未改动——手写 RLE 编码器在本机无法验证，刻意不作为。
-
-改了这套逻辑要同时过 `npm run desktop:test:icons`（28 例）和 `npm run test:mutate:icons`（11 个变异体）；后者已证明这些用例不是永久通过。
+Windows ICO 包含 16、20、24、32、40、48、64、96、128、256 像素条目，覆盖标题栏、任务栏与快捷方式的常用尺寸。`icon-compact.mjs` 保留为旧版图案的独立工具，新品牌构建不再使用它。完整资产说明见 `src-tauri/icons/README.md`。
 
 ## 构建与验证
 
@@ -98,7 +91,7 @@ npm run desktop:package:windows
 
 结果在 `release/desktop-preview/<run>/`：`*-Setup.exe`、免安装 ZIP、`SHA256SUMS.txt` 和分阶段 `report.json` / 日志（未设签名凭据时产物未签名；设凭据则两者均签名并在报告标注）。ZIP 只含桌面 EXE、校验过的网关资源和使用说明；压缩后逐文件重新校验 SHA-256，并检查多余及缺失文件。构建报告与本机路径不放入 ZIP。ZIP 先完成，再生成 NSIS；如果安装器工具下载失败，报告仍明确失败，但保留已校验 ZIP 的 `artifacts` 条目和哈希清单。只有 `status=packaged` 才表示整轮打包完成，不能据此认定安装或业务验收通过。
 
-NSIS 使用已有项目图标、中英文向导、当前用户安装及 WebView2 下载引导；ZIP 要求系统已有 WebView2。两种形式都使用 `%LOCALAPPDATA%/CodexGateway` 保存账号和配置，`%LOCALAPPDATA%/CodexGatewayDesktop` 保存窗口缓存及桌面日志，免安装不等于数据随身。卸载钩子只撤销指向当前安装目录的自启动命令，更新模式保留该设置，业务数据保留。安装/卸载、旧版迁移、缺少 WebView2 的干净机器、签名和升级中断仍须分别验收；此入口不发布文件或更新远端仓库。
+NSIS 使用已有项目图标、中英文向导、当前用户安装及 WebView2 下载引导；ZIP 要求系统已有 WebView2。两种形式都使用 `%LOCALAPPDATA%/CodexGatewayWorkspace-v1` 保存账号和配置，`%LOCALAPPDATA%/CodexGatewayDesktop` 保存窗口缓存及桌面日志，免安装不等于数据随身。卸载钩子只撤销指向当前安装目录的自启动命令，更新模式保留该设置，业务数据保留。安装/卸载、旧版迁移、缺少 WebView2 的干净机器、签名和升级中断仍须分别验收；此入口不发布文件或更新远端仓库。
 
 `src-tauri/installer/template.nsi` 基于锁定的 Tauri CLI 2.12.4 官方模板，来源和改动记录在 `UPSTREAM.json`，保留 MIT 许可并随包附带。定制仅移除按产品名直接删除 Run 项的默认行为，以及不适用于本项目数据目录的删除数据复选框和递归删除；自启动清理由 `hooks.nsh` 校验完整命令后执行。升级 CLI 时须同步审阅模板，不能直接覆盖。安装包禁用版本降级；完整迁移仍归 R03。
 
