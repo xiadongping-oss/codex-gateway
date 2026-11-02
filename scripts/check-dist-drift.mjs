@@ -10,8 +10,11 @@
 //
 // 依赖：需要 frontend/node_modules 已安装（首次请 `npm --prefix frontend install`）。
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
 
 const DIST = 'frontend/dist/index.html'
+const VITE = path.join('frontend', 'node_modules', 'vite', 'bin', 'vite.js')
 
 function git(args, allowFail = false) {
   try {
@@ -28,12 +31,16 @@ if (git(['cat-file', '-e', `HEAD:${DIST}`], true) === null) {
   process.exit(0)
 }
 
-// 2) 重建前端
-console.log('→ 构建前端（npm --prefix frontend run build）...')
+// 2) 重建前端（绕过 npm：Windows 下 spawn npm 需要 npm.cmd，直接用 node 调 vite）
+console.log('→ 构建前端（node frontend/node_modules/vite/bin/vite.js build）...')
+if (!fs.existsSync(VITE)) {
+  console.error('✗ 未找到 vite，请先 `npm --prefix frontend install`。')
+  process.exit(2)
+}
 try {
-  execFileSync('npm', ['--prefix', 'frontend', 'run', 'build'], { stdio: 'inherit' })
+  execFileSync(process.execPath, [path.resolve(VITE), 'build'], { stdio: 'inherit', cwd: 'frontend' })
 } catch {
-  console.error('✗ 前端构建失败，无法验证 dist 漂移。若依赖未装，请先 `npm --prefix frontend install`。')
+  console.error('✗ 前端构建失败，无法验证 dist 漂移。')
   process.exit(2)
 }
 
