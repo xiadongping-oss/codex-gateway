@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Codex Gateway · 状态面板（实时查看器）</title>
+<!--
+  Codex Gateway 状态查看器 — 独立 HTML，把 /__gw/status 的内部字段翻成用户可读面板。
+  用法：
+    1. 网关已启动（默认 http://127.0.0.1:4173）。
+    2. 填入「管理令牌」（node launcher.mjs admin-token 查看），点「连接」。
+    3. 连不上会自动回退到演示数据，并在顶部说明原因（多为浏览器 CORS 限制）。
+  注意：网关对 /__gw/status 刻意不带 CORS 头，所以本页用 file:// 直接打开时浏览器会拦跨域读取。
+        能连上真实数据的几种姿势：① 通过桌面控制台同源打开；② 用同端口反向代理；
+        ③ 把本文件放到网关 frontend 目录由它同源托管。连不上不影响评审——演示数据就是真实结构。
+-->
+<style>
+  :root{
+    --bg:#18181b; --panel:#27272a; --panel-2:#1f1f23; --line:#3f3f46;
+    --text:#f4f4f5; --muted:#a1a1aa; --faint:#71717a;
+    --emerald:#10b981; --emerald-dim:#064e3b; --emerald-lt:#6ee7b7;
+    --violet:#8b5cf6; --violet-dim:#4c1d95;
+    --amber:#f59e0b; --red:#ef4444; --radius:14px;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px}
+  a{color:var(--emerald-lt)}
+  .wrap{max-width:1040px;margin:0 auto;padding:22px 20px 60px}
+
+  /* 顶栏 */
+  header.top{position:sticky;top:0;z-index:5;background:rgba(24,24,27,.92);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);padding:14px 0;margin-bottom:18px}
+  .top-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:.2px;margin-right:6px}
+  .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--emerald);box-shadow:0 0 10px var(--emerald)}
+  .field{display:flex;flex-direction:column;gap:3px}
+  .field label{font-size:10.5px;color:var(--faint);letter-spacing:.3px}
+  input.in{background:var(--panel-2);border:1px solid var(--line);color:var(--text);
+    border-radius:9px;padding:7px 10px;font-family:var(--mono);font-size:12.5px;width:230px;outline:none}
+  input.in:focus{border-color:var(--emerald)}
+  .btn{background:var(--emerald);color:#04150f;border:none;border-radius:9px;padding:8px 14px;
+    font-weight:700;cursor:pointer;font-size:13px}
+  .btn.ghost{background:transparent;border:1px solid var(--line);color:var(--muted);font-weight:600}
+  .btn:active{transform:translateY(1px)}
+  .toggle{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:12.5px;cursor:pointer;user-select:none}
+  .pill{font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;display:inline-flex;align-items:center;gap:6px}
+  .pill .d{width:7px;height:7px;border-radius:50%;background:currentColor}
+  .pill.ok{background:var(--emerald-dim);color:var(--emerald-lt)}
+  .pill.warn{background:rgba(245,158,11,.16);color:var(--amber)}
+  .pill.bad{background:rgba(239,68,68,.16);color:var(--red)}
+  .pill.idle{background:rgba(255,255,255,.06);color:var(--faint)}
+  .spacer{flex:1}
+
+  .banner{border-radius:10px;padding:10px 13px;font-size:12.5px;margin-bottom:16px;line-height:1.5;
+    border:1px solid var(--line);background:var(--panel-2);color:var(--muted)}
+  .banner.demo{border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.08);color:#fcd34d}
+  .banner.err{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.08);color:#fca5a5}
+  .banner b{color:var(--text)}
+
+  .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:15px 16px}
+  .card h3{margin:0 0 3px;font-size:13px;letter-spacing:.3px}
+  .card .sub{font-size:11.5px;color:var(--faint);margin-bottom:12px;line-height:1.45}
+  .col-12{grid-column:span 12}.col-8{grid-column:span 8}.col-6{grid-column:span 6}
+  .col-4{grid-column:span 4}.col-7{grid-column:span 7}.col-5{grid-column:span 5}
+
+  .kv{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px dashed rgba(255,255,255,.06)}
+  .kv:last-child{border-bottom:none}
+  .kv .k{color:var(--muted);font-size:12.5px}
+  .kv .v{font-family:var(--mono);font-size:12.5px;text-align:right}
+  .v.ok{color:var(--emerald-lt)}.v.warn{color:var(--amber)}.v.bad{color:var(--red)}.v.vio{color:#c4b5fd}
+
+  /* 实例池 */
+  .inst{display:flex;align-items:center;gap:12px;padding:9px 11px;border-radius:10px;
+    background:var(--panel-2);border:1px solid var(--line);margin-bottom:8px}
+  .inst.active{border-color:rgba(16,185,129,.45);box-shadow:inset 3px 0 0 var(--emerald)}
+  .inst .st{font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:999px;display:inline-flex;gap:6px;align-items:center;flex:none}
+  .inst .st .d{width:6px;height:6px;border-radius:50%;background:currentColor}
+  .st.ready{background:var(--emerald-dim);color:var(--emerald-lt)}
+  .st.starting,.st.stopping{background:rgba(245,158,11,.14);color:var(--amber)}
+  .st.failed{background:rgba(239,68,68,.12);color:var(--red)}
+  .inst .name{flex:1;min-width:0;font-weight:600;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .inst .cur{font-size:10px;font-weight:700;margin-left:6px;padding:1px 6px;border-radius:5px;color:#04150f;background:var(--emerald)}
+  .inst .cell{font-family:var(--mono);font-size:11.5px;color:var(--muted);flex:none;min-width:64px;text-align:right}
+  .inst .pid{color:var(--faint);min-width:84px}
+
+  /* failover */
+  .fo{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 11px;
+    border-radius:10px;background:var(--panel-2);border:1px solid rgba(245,158,11,.3);margin-bottom:8px}
+  .fo .who{font-weight:600;font-size:12.5px}
+  .fo .why{font-size:11px;color:var(--faint)}
+  .fo .cd{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--amber);min-width:64px;text-align:right}
+  .fo-empty{font-size:12px;color:var(--faint);padding:6px 2px}
+  .stat-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+  .stat{background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:7px 11px;flex:1;min-width:90px}
+  .stat b{display:block;font-family:var(--mono);font-size:16px;color:var(--text)}
+  .stat span{font-size:10.5px;color:var(--faint)}
+
+  .addr{font-family:var(--mono);font-size:12px;padding:4px 9px;border-radius:7px;background:var(--panel-2);
+    border:1px solid var(--line);margin:4px 6px 4px 0;display:inline-block}
+  .addr.pref{border-color:var(--emerald);color:var(--emerald-lt)}
+  .tag{font-size:10px;padding:1px 6px;border-radius:5px;background:rgba(139,92,246,.18);color:#c4b5fd;margin-left:6px}
+  .foot{margin-top:26px;font-size:11px;color:var(--faint);line-height:1.6;border-top:1px solid var(--line);padding-top:14px}
+  .bar{display:flex;height:7px;border-radius:999px;overflow:hidden;background:var(--panel-2);margin-top:8px;border:1px solid var(--line)}
+  .bar i{display:block;height:100%}
+  .bar .ok{background:var(--emerald)}.bar .bad{background:var(--red)}
+  @media(max-width:860px){.col-8,.col-6,.col-4,.col-7,.col-5{grid-column:span 12}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap" style="padding-top:0;padding-bottom:0">
+    <div class="top-row">
+      <div class="brand"><span class="dot"></span>Codex Gateway · 状态面板</div>
+      <div class="field">
+        <label>网关地址</label>
+        <input class="in" id="base" value="http://127.0.0.1:4173" spellcheck="false" />
+      </div>
+      <div class="field">
+        <label>管理令牌（admin-token）</label>
+        <input class="in" id="token" type="password" placeholder="留空用演示数据" spellcheck="false" />
+      </div>
+      <button class="btn" id="connect">连接</button>
+      <label class="toggle"><input type="checkbox" id="auto" checked /> 自动刷新 3s</label>
+      <span class="spacer"></span>
+      <span class="pill idle" id="conn"><span class="d"></span>未连接</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div id="banner" class="banner demo" style="display:none"></div>
+
+  <div class="grid" id="app">
+    <!-- 渲染区，由 JS 填充 -->
+  </div>
+
+  <div class="foot">
+    实时查看器 · 数据来自网关 <code>/__gw/status</code>（bridgeInstances / bridgePool / activeAccountId / failover / metrics / lan / config）。<br/>
+    连不上真实网关时会显示<b>演示数据</b>（结构 1:1 对齐真实接口，可直接当产品规格评审）。原因多为浏览器同源策略：网关对 /__gw/status 刻意不带 CORS 头。
+  </div>
+</div>
+
+<script>
+// ---------- 演示数据（结构对齐真实 /__gw/status）----------
+const DEMO = {
+  version: "1.12.2", running: true, pid: 48213, startedAt: Date.now() - 3712000,
+  uptimeSec: 3712, qps: 0.4,
+  health: { ok: true, version: "chatgpt-bridge@0.3.0" },
+  bridgeInstances: [
+    { key: "acc_personal", label: "个人主号 · OpenAI", port: 10531, state: "ready", inflight: 1, idleSec: 3, pid: 48231 },
+    { key: "acc_work",     label: "工作号 · OpenAI",   port: 10541, state: "ready", inflight: 0, idleSec: 142, pid: 48255 },
+    { key: "acc_backup",   label: "备用号 · OpenAI",   port: 10551, state: "starting", inflight: 0, idleSec: 0, pid: 48299 }
+  ],
+  bridgePool: { maxInstances: 4, idleTimeoutMs: 600000, evictions: 0, failures: 0, starts: 3 },
+  activeAccountId: "acc_personal",
+  metrics: { requests: 1284, rateLimited: 9, tokensTotal: 1843200, ok: 1275, failed: 9 },
+  failover: { degraded: [ { accountId: "acc_work", remainSec: 213 } ], stats: { attempts: 11, succeeded: 2, exhausted: 0, skippedNoAuth: 0, skippedDegraded: 1 }, maxAttempts: 2 },
+  mode: "openai", imageModel: "gpt-image-2", imageModelVia: "gpt-image-2 + image_generation 工具",
+  config: {
+    launcherPort: 4173, bridgePort: 10531, bridgeUrl: "http://127.0.0.1:10531",
+    bridgeBasePort: 10531, bridgePoolMax: 4, bridgeIdleMs: 600000, autoStart: true,
+    proxy: "", proxyEnabled: false, proxyAvailable: true
+  },
+  lan: {
+    enabled: false, listenHost: "127.0.0.1", port: 4173, addresses: [],
+    authRequired: false, controlPlaneLocalOnly: true
+  },
+  apiKeys: [ { id: "cgw_a1", name: "WorkBuddy 本机", prefix: "cgw_a1***", lastUsed: "2 分钟前" },
+             { id: "cgw_b7", name: "局域网同事", prefix: "cgw_b7***", lastUsed: "昨天" } ]
+};
+
+// ---------- 状态 ----------
+let state = { data: null, live: false, timer: null, failReason: "" };
+const $ = (s) => document.querySelector(s);
+
+function setConn(kind, text){
+  const el = $("#conn");
+  el.className = "pill " + kind;
+  el.innerHTML = '<span class="d"></span>' + text;
+}
+
+function fmtUptime(s){
+  s = Math.floor(Number(s)||0);
+  const h=String(Math.floor(s/3600)).padStart(2,'0');
+  const m=String(Math.floor((s%3600)/60)).padStart(2,'0');
+  const sec=String(s%60).padStart(2,'0');
+  return `${h}:${m}:${sec}`;
+}
+function esc(x){ return String(x==null?'':x).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+const STATE_TEXT = { ready:"就绪", starting:"启动中", stopping:"停止中", failed:"失败" };
+const STATE_CLASS = { ready:"ready", starting:"starting", stopping:"stopping", failed:"failed" };
+const FO_REASON = { 429:"额度窗口耗尽（冷却 5 分钟）", 401:"凭据失效（冷却 15 分钟）" };
+
+// ---------- 渲染 ----------
+function render(d, isLive){
+  const acc = (d.bridgeInstances||[]).find(i => i.key === d.activeAccountId);
+  const accName = acc ? (acc.label||acc.key) : (d.activeAccountId || "—");
+  const m = d.metrics||{};
+  const limitTotal = (m.requests||0);
+  const rl = (m.rateLimited||0);
+  const ratio = limitTotal ? Math.min(100, Math.round(rl/limitTotal*1000)/10) : 0;
+  const pressure = !rl ? "正常" : ratio<5 ? "轻微" : ratio<20 ? "偏高" : "高频限流";
+  const pressureCls = !rl ? "ok" : ratio<5 ? "warn" : "bad";
+
+  const instHtml = (d.bridgeInstances||[]).map(i=>`
+    <div class="inst ${i.key===d.activeAccountId?'active':''}">
+      <span class="st ${STATE_CLASS[i.state]||'ready'}"><span class="d"></span>${STATE_TEXT[i.state]||i.state||'就绪'}</span>
+      <span class="name">${esc(i.label||i.key||'未绑定账号')}${i.key===d.activeAccountId?'<span class="cur">当前</span>':''}</span>
+      <span class="cell">:${esc(i.port)}</span>
+      <span class="cell">${Number(i.inflight)||0} 在途</span>
+      <span class="cell">空闲 ${fmtIdle(i.idleSec)}</span>
+      <span class="cell pid">${i.pid?'PID '+i.pid:'—'}</span>
+    </div>`).join('') || '<div class="fo-empty">还没有运行中的实例。授权账号后网关会按账号自动拉起。</div>';
+
+  const fo = d.failover||{};
+  const degraded = (fo.degraded||[]);
+  const foHtml = degraded.length ? degraded.map(x=>`
+    <div class="fo" data-cd="${x.remainSec||0}">
+      <div><div class="who">${esc(x.accountId)}</div><div class="why">${FO_REASON[detectStatus(x)]||'降级中'}</div></div>
+      <div class="cd" data-base="${x.remainSec||0}">${fmtCd(x.remainSec||0)}</div>
+    </div>`).join('')
+    : '<div class="fo-empty">✓ 当前无账号处于降级冷却，所有账号健康。</div>';
+
+  const st = fo.stats||{};
+  const statHtml = `
+    <div class="stat-row">
+      <div class="stat"><b>${st.attempts??0}</b><span>降级尝试</span></div>
+      <div class="stat"><b>${st.succeeded??0}</b><span>换号成功</span></div>
+      <div class="stat"><b>${st.exhausted??0}</b><span>全部耗尽</span></div>
+      <div class="stat"><b>${st.skippedDegraded??0}</b><span>跳过(冷却中)</span></div>
+    </div>`;
+
+  const lan = d.lan||{};
+  const addrs = (lan.addresses||[]).map(a=>`<span class="addr ${a.preferred?'pref':''}">${esc(a.address)}${a.kind?`<span class="tag">${esc(a.kind)}</span>`:''}${a.preferred?' · 首选':''}</span>`).join('') || '仅本机 (127.0.0.1)';
+  const cfg = d.config||{};
+  const proxy = cfg.proxyEnabled ? esc(cfg.proxy) : '未配置';
+
+  $("#app").innerHTML = `
+    <div class="card col-8">
+      <h3>网关概览</h3>
+      <div class="sub">网关自身进程状态 · 来自 /__gw/status 根字段</div>
+      <div class="kv"><span class="k">版本</span><span class="v vio">v${esc(d.version||'?')}</span></div>
+      <div class="kv"><span class="k">运行状态</span><span class="v ${d.running?'ok':'bad'}">${d.running?'运行中':'已停止'}</span></div>
+      <div class="kv"><span class="k">进程 PID</span><span class="v">${esc(d.pid??'—')}</span></div>
+      <div class="kv"><span class="k">已运行</span><span class="v">${fmtUptime(d.uptimeSec)}</span></div>
+      <div class="kv"><span class="k">实时 QPS</span><span class="v">${fmtNum(d.qps)}</span></div>
+      <div class="kv"><span class="k">Bridge 版本</span><span class="v">${esc((d.health&&d.health.version)||'chatgpt-bridge')}</span></div>
+    </div>
+
+    <div class="card col-4">
+      <h3>当前激活账号</h3>
+      <div class="sub">正在对外服务的账号（标「当前」的实例）</div>
+      <div style="font-size:15px;font-weight:700;color:var(--emerald-lt);margin:6px 0 4px">${esc(accName)}</div>
+      <div class="kv"><span class="k">账号 ID</span><span class="v">${esc(d.activeAccountId||'—')}</span></div>
+      <div class="kv"><span class="k">模式</span><span class="v">${esc(d.mode||'—')}</span></div>
+      <div class="kv"><span class="k">生图模型</span><span class="v">${esc(d.imageModel||'—')}</span></div>
+    </div>
+
+    <div class="card col-7">
+      <h3>Bridge 实例池</h3>
+      <div class="sub">一个账号一个独立进程，切换账号＝切端口。当前服务中的实例用左侧绿边标出。</div>
+      ${instHtml}
+      <div class="kv" style="margin-top:8px"><span class="k">池容量 / 空闲回收</span>
+        <span class="v">${cfg.bridgePoolMax??'—'} 个 · ${(cfg.bridgeIdleMs/60000)||0} 分钟</span></div>
+    </div>
+
+    <div class="card col-5">
+      <h3>降级（failover）状态</h3>
+      <div class="sub">哪些账号正在冷却、还剩多久。排障时直接看出「为什么没换过去」。</div>
+      ${foHtml}
+      ${statHtml}
+    </div>
+
+    <div class="card col-6">
+      <h3>用量 / 限流</h3>
+      <div class="sub">来自 metrics —— 真实请求计数，非硬编码。</div>
+      <div class="kv"><span class="k">总请求</span><span class="v">${fmtNum(m.requests)}</span></div>
+      <div class="kv"><span class="k">被限流 (429/401)</span><span class="v ${rl?'warn':'ok'}">${fmtNum(rl)}</span></div>
+      <div class="kv"><span class="k">累计 Token</span><span class="v">${fmtNum(m.tokensTotal)}</span></div>
+      <div class="kv"><span class="k">压力档位</span><span class="v ${pressureCls}">${pressure} (${ratio}%)</span></div>
+      <div class="bar"><i class="ok" style="width:${100-ratio}%"></i><i class="bad" style="width:${ratio}%"></i></div>
+    </div>
+
+    <div class="card col-6">
+      <h3>网络 / 代理 / 局域网</h3>
+      <div class="sub">出网代理与 LAN 共享密钥接入状态。</div>
+      <div class="kv"><span class="k">出网代理</span><span class="v ${cfg.proxyEnabled?'warn':'ok'}">${proxy}</span></div>
+      <div class="kv"><span class="k">代理可用</span><span class="v ${cfg.proxyAvailable?'ok':'bad'}">${cfg.proxyAvailable?'是':'否'}</span></div>
+      <div class="kv"><span class="k">局域网接入</span><span class="v ${lan.enabled?'vio':'ok'}">${lan.enabled?'已开启':'关闭'}</span></div>
+      <div class="kv"><span class="k">控制面限定本机</span><span class="v">${lan.controlPlaneLocalOnly?'是':'否'}</span></div>
+      <div style="margin-top:8px">${addrs}</div>
+    </div>
+
+    <div class="card col-12">
+      <h3>API Key 概览</h3>
+      <div class="sub">密钥永不返回明文，只显示前缀与最近使用。</div>
+      <div class="stat-row">
+        ${(d.apiKeys||[]).map(k=>`<div class="stat"><b style="font-size:13px">${esc(k.prefix||k.id)}</b><span>${esc(k.name||'')} · ${esc(k.lastUsed||'从未')}</span></div>`).join('') || '<span class="fo-empty">尚未创建 API Key。</span>'}
+      </div>
+    </div>`;
+
+  // 标注数据来源
+  $("#banner").dataset.live = isLive ? "1" : "0";
+}
+
+// 演示数据里没有原始状态码，用 remainSec 粗略推断原因文案（真实接口里 degraded 只带 accountId+remainSec，
+// 具体原因由前端按账号最近一次失败状态映射；这里仅演示用）。
+function detectStatus(x){ return x.remainSec>600 ? 401 : 429; }
+function fmtIdle(s){ s=Number(s)||0; if(s<5)return '刚刚'; if(s<60)return s+'s'; if(s<3600)return Math.floor(s/60)+'m'; return Math.floor(s/3600)+'h'; }
+function fmtCd(s){ s=Math.max(0,Math.floor(s)); const m=String(Math.floor(s/60)).padStart(2,'0'); const sec=String(s%60).padStart(2,'0'); return m+':'+sec; }
+function fmtNum(n){ n=Number(n)||0; if(n>=1e6)return (n/1e6).toFixed(1)+'M'; if(n>=1e3)return (n/1e3).toFixed(1)+'K'; return String(n); }
+
+// 冷却倒计时：基于抓取时刻的 remainSec，本地每秒递减（不重新请求）
+let cdBase = 0, cdStart = 0;
+function tickCountdown(){
+  document.querySelectorAll('.fo .cd').forEach(el=>{
+    const base = Number(el.dataset.base)||0;
+    if(!cdStart) cdStart = Date.now();
+    const elapsed = (Date.now()-cdStart)/1000;
+    el.textContent = fmtCd(Math.max(0, base - elapsed));
+  });
+}
+
+// ---------- 拉取 ----------
+async function fetchStatus(){
+  const base = ($("#base").value||"").replace(/\/+$/,'');
+  const token = $("#token").value.trim();
+  if(!base){ showBanner('demo','请填写网关地址。当前显示演示数据。'); return; }
+  setConn('warn','连接中…');
+  try{
+    const headers = {};
+    if(token) headers['Authorization'] = 'Bearer ' + token;
+    headers['Origin'] = base;
+    const ctrl = new AbortController();
+    const t = setTimeout(()=>ctrl.abort(), 4000);
+    const r = await fetch(base + '/__gw/status', { headers, signal: ctrl.signal, cache:'no-store' });
+    clearTimeout(t);
+    if(r.status === 401){
+      state.live = false;
+      showBanner('err','网关返回 401：管理令牌不正确或已过期。请用 <code>node launcher.mjs admin-token</code> 查看最新令牌，或清空令牌看演示数据。');
+      setConn('bad','令牌错误');
+      return;
+    }
+    if(!r.ok){ throw new Error('HTTP '+r.status); }
+    const data = await r.json();
+    state.data = data; state.live = true;
+    render(data, true);
+    showBanner('ok', `已连接真实网关 · v${esc(data.version||'?')} · PID ${esc(data.pid??'—')}`);
+    setConn('ok','已连接');
+  }catch(e){
+    state.live = false;
+    const msg = (e && e.name==='AbortError') ? '请求超时（4s）' : (e && e.message ? e.message : '未知错误');
+    showBanner('demo',
+      `<b>演示数据模式</b> · 无法连接真实网关（${msg}）。<br/>` +
+      `最常见原因：浏览器同源策略——网关对 /__gw/status 刻意<b>不带 CORS 头</b>，用 file:// 直接打开会被拦。` +
+      `可改用：① 桌面控制台同源打开；② 同端口反向代理；③ 把本文件放到网关 frontend 目录同源托管。`);
+    if(!state.data){ state.data = DEMO; }
+    render(state.data, false);
+    setConn('idle','演示模式');
+  }
+}
+
+function showBanner(kind, html){
+  const b = $("#banner");
+  b.style.display = 'block';
+  b.className = 'banner ' + kind;
+  b.innerHTML = html;
+}
+
+// ---------- 事件 ----------
+$("#connect").addEventListener('click', ()=>{ cdStart=0; fetchStatus(); });
+$("#auto").addEventListener('change', e=>{
+  if(state.timer){ clearInterval(state.timer); state.timer=null; }
+  if(e.target.checked && state.live){ state.timer = setInterval(fetchStatus, 3000); }
+});
+// 回车即连接
+$("#base").addEventListener('keydown',e=>{ if(e.key==='Enter'){cdStart=0;fetchStatus();} });
+$("#token").addEventListener('keydown',e=>{ if(e.key==='Enter'){cdStart=0;fetchStatus();} });
+
+// 首次进入：先渲染演示数据，便于直接评审
+state.data = DEMO;
+render(DEMO, false);
+showBanner('demo','<b>演示数据模式</b> · 填入网关地址与管理令牌后点「连接」即可拉取实时状态。连不上会自动回退到这里（结构 1:1 对齐真实接口）。');
+setInterval(tickCountdown, 1000);
+</script>
+</body>
+</html>
