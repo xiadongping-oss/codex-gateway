@@ -16,7 +16,10 @@ import http from 'node:http'
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'cgw-quota-'))
 const QUOTA_FILE = path.join(TMP, 'account-quota.json')
+// 数据根也一并隔离：loadAccounts() 读 DATA_ROOT/accounts.json，
+// 不隔离的话测试会吃到开发机残留的激活账号（本机过、干净机器挂）。
 process.env.CGW_QUOTA_FILE = QUOTA_FILE
+process.env.CGW_DATA_DIR = path.join(TMP, 'data-root')
 
 const q = await import('../account-quota.mjs')
 
@@ -214,6 +217,21 @@ test('实时快照会按账号落盘，下次换端口读缓存也拿得回同�
   const again = await q.getAccountQuota({ bridgePort: 1 })
   assert.equal(again.weekly.usedPercent, 55)
   assert.equal(again.source, 'realtime')
+})
+
+test('readCachedRealtime：无激活账号时回退 __shared 键，与落盘键对称', () => {
+  reset()
+  writeFile({
+    _realtime: {
+      version: 2,
+      byAccount: {
+        __shared: { weekly: { usedPercent: 7 }, syncedAt: new Date().toISOString() }
+      }
+    }
+  })
+  const snap = q.readCachedRealtime(null)
+  assert.ok(snap, '无激活账号时应读到 __shared 缓存而不是 null')
+  assert.equal(snap.weekly.usedPercent, 7)
 })
 
 

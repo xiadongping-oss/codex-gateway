@@ -249,7 +249,9 @@ export function readCachedRealtime(accountId) {
   const raw = readJsonSafe(QUOTA_FILE) || {}
   const cache = realtimeCacheOf(raw)
   if (!cache) return null
-  return freshSnapshot(accountId ? cache.byAccount[accountId] : null)
+  // 与 persistRealtimeSnapshot 的键逻辑对称：无激活账号时读 __shared，
+  // 否则全新安装（尚未登录任何账号）的实时快照永远读不回来。
+  return freshSnapshot(cache.byAccount[accountId || '__shared'] ?? null)
 }
 
 // 旧扁平快照没有账号归属：第一次读到时就落到当前账号名下，顺带把结构升级掉。
