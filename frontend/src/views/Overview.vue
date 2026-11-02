@@ -10,6 +10,7 @@ import LogsCard from '../components/LogsCard.vue'
 import QuotaMiniCard from '../components/QuotaMiniCard.vue'
 import LanMiniCard from '../components/LanMiniCard.vue'
 import BridgePoolCard from '../components/BridgePoolCard.vue'
+import FailoverCard from '../components/FailoverCard.vue'
 import SetupModal from '../components/SetupModal.vue'
 
 const { status, account, logs, capabilities, capabilitiesBase, gw, gwBusy, gwRestart, gwStart, gwStop, gwConnected, gwActionError, lastError, toggleCapability } =
@@ -106,6 +107,7 @@ const authOk = computed(() => account.value?.loggedIn !== false)
       <div class="detail-content">
         <div class="row"><StatusCard :status="status" /><AccountCard :account="account" @manage="showSetup = true" /></div>
         <BridgePoolCard :instances="gw.bridgeInstances || []" :pool="gw.bridgePool || {}" :active-account-id="gw.activeAccountId || ''" />
+        <FailoverCard :failover="gw.failover || {}" />
         <div class="row"><ModelsCard :capabilities="capabilities" :supported="capabilitiesBase" @toggle="toggleCapability" /><LogsCard :logs="logs" /></div>
       </div>
     </details>

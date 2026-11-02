@@ -27,6 +27,8 @@ export function isFailoverStatus(status) {
 
 export function createFailoverPolicy({ maxAttempts = DEFAULT_MAX_ATTEMPTS, degradeMs = DEFAULT_DEGRADE_MS, now = () => Date.now() } = {}) {
   const degradedUntil = new Map()
+  // 触发降级的状态码（429 / 401），随冷却项一起记，供状态面板告诉用户「为什么在冷却」
+  const reasons = new Map()
   const stats = { attempts: 0, succeeded: 0, exhausted: 0, skippedNoAuth: 0, skippedDegraded: 0 }
 
   function isDegraded(accountId) {
@@ -45,6 +47,7 @@ export function createFailoverPolicy({ maxAttempts = DEFAULT_MAX_ATTEMPTS, degra
     const ttl = degradeMs[Number(status)]
     if (!ttl) return false
     degradedUntil.set(accountId, now() + ttl)
+    reasons.set(accountId, Number(status))
     return true
   }
 
@@ -89,12 +92,13 @@ export function createFailoverPolicy({ maxAttempts = DEFAULT_MAX_ATTEMPTS, degra
     const t = now()
     const degraded = [...degradedUntil.entries()]
       .filter(([, until]) => until > t)
-      .map(([accountId, until]) => ({ accountId, remainSec: Math.max(0, Math.round((until - t) / 1000)) }))
+      .map(([accountId, until]) => ({ accountId, remainSec: Math.max(0, Math.round((until - t) / 1000)), reason: reasons.get(accountId) ?? null }))
     return { degraded, stats: { ...stats }, maxAttempts }
   }
 
   function reset() {
     degradedUntil.clear()
+    reasons.clear()
     for (const k of Object.keys(stats)) stats[k] = 0
   }
 
