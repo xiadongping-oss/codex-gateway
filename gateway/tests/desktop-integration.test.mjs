@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createBridgePool } from '../bridge-pool.mjs'
 import { migrationGuardPath } from '../storage-paths.mjs'
+import { accountFingerprint } from '../auth-core.mjs'
 
 const GW = fileURLToPath(new URL('..', import.meta.url))
 const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -80,6 +81,46 @@ test('desktop handshake does not initialize storage; wrong version cannot start 
   await r.wait(x => x.type === 'fatal')
   assert.equal((await r.exited)[0], 5)
   assert.equal(fs.existsSync(r.root), false)
+})
+
+test('desktop local import preserves a newer saved login without changing credentials or selection', async t => {
+  const r = await fixture(t), ready = await r.start()
+  const snapshot = (iat, refresh) => ({ auth_mode: 'chatgpt', last_refresh: new Date(iat * 1000).toISOString(),
+    tokens: { account_id: 'synthetic-local-import', refresh_token: refresh,
+      access_token: `e30.${Buffer.from(JSON.stringify({ iat })).toString('base64url')}.synthetic` } })
+  const saved = snapshot(200, 'synthetic-newer'), incoming = snapshot(100, 'synthetic-older')
+  fs.mkdirSync(path.join(r.root, 'accounts'), { recursive: true })
+  fs.mkdirSync(path.join(r.home, '.codex'), { recursive: true })
+  const authPath = path.join(r.root, 'accounts', 'acc_saved.json')
+  const registryPath = path.join(r.root, 'accounts.json')
+  const authBytes = JSON.stringify(saved), registryBytes = JSON.stringify({ activeId: 'acc_saved',
+    accounts: [{ id: 'acc_saved', name: 'Saved login', provider: 'oauth', mode: 'bridge', fingerprint: accountFingerprint(saved) }] })
+  fs.writeFileSync(authPath, authBytes)
+  fs.writeFileSync(registryPath, registryBytes)
+  fs.writeFileSync(path.join(r.home, '.codex', 'auth.json'), JSON.stringify(incoming))
+  const readConfig = () => fs.existsSync(path.join(r.root, '.gw-config.json')) ? fs.readFileSync(path.join(r.root, '.gw-config.json'), 'utf8') : null
+  const configBytes = readConfig()
+  const login = await fetch((await r.command('bootstrap')).payload.url, { redirect: 'manual' })
+  const headers = { Cookie: login.headers.get('set-cookie').split(';')[0], 'Content-Type': 'application/json' }
+  const response = await fetch(ready.origin + '/__gw/codex-local/import', { method: 'POST', headers, body: '{}' })
+  assert.equal(response.status, 200)
+  const result = await response.json()
+  assert.equal(result.preservedExistingAuth, true)
+  assert.equal(result.preservationReason, 'newer')
+  assert.equal(result.activeId, 'acc_saved')
+  assert.equal(fs.readFileSync(authPath, 'utf8'), authBytes, 'saved refresh token must not be overwritten')
+  assert.equal(fs.readFileSync(registryPath, 'utf8'), registryBytes)
+  assert.equal(readConfig(), configBytes)
+  assert.deepEqual(fs.readdirSync(path.join(r.root, 'accounts')), ['acc_saved.json'])
+  assert.equal((await (await fetch(ready.origin + '/__gw/status', { headers })).json()).bridgeInstances.length, 0, 'preserving login must not restart the bridge')
+  const inactiveRegistry = JSON.stringify({ ...JSON.parse(registryBytes), activeId: null })
+  fs.writeFileSync(registryPath, inactiveRegistry)
+  const inactive = await fetch(ready.origin + '/__gw/codex-local/import', { method: 'POST', headers, body: '{}' })
+  assert.equal(inactive.status, 409)
+  assert.equal((await inactive.json()).error, 'local_auth_older_than_saved')
+  assert.equal(fs.readFileSync(authPath, 'utf8'), authBytes)
+  assert.equal(fs.readFileSync(registryPath, 'utf8'), inactiveRegistry, 'import must not silently switch accounts')
+  await r.command('shutdown', { reason: 'user_exit' }); await r.exited
 })
 
 test('desktop LAN: live management, authentication, rollback, persistence and shutdown', async t => {

@@ -71,6 +71,11 @@ test('本机导入失败不报告成功，也不通知账号更新', async () =>
  await c.getLocalAccount();assert.match(c.error.value,/失效令牌/);assert.equal(c.okMsg.value,'');assert.equal(c.emitted.length,0);c.unmount()
 })
 
+test('本机导入保留已保存授权时，明确说明没有覆盖凭据', async () => {
+ const c=component({inspectCodexLocal:async()=>({exists:true}),importCodexLocal:async()=>({ok:true,preservedExistingAuth:true})})
+ await c.getLocalAccount();assert.equal(c.error.value,'');assert.match(c.okMsg.value,/已保留现有凭据/);assert.match(c.okMsg.value,/未用旧本机文件覆盖/);assert.equal(c.emitted.length,1);c.unmount()
+})
+
 
 test('浏览器登录默认使用标准授权入口，已有会话需显式选择', async () => {
  const opened=[]

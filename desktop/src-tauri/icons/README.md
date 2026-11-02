@@ -1,8 +1,8 @@
 # 图标资产
 
-源文件：`desktop/brand-master.png`，使用内置 ImageGen 以 Codex 云形轮廓为基础改绘的网关图案；提示词见 `desktop/branding-prompt.txt`。
+源文件：`desktop/brand-master.png`，使用内置 ImageGen 独立设计的折带回环标识：石墨紫底、珍珠白与浅玉绿带面表达连接和信息流转；提示词见 `desktop/branding-prompt.txt`。
 
-- `icon-master.png`：1024px，圆角外透明。
+- `icon-master.png`：1024px，圆角外透明；底板有效宽高约占画布 97%，避免任务栏图标偏小。
 - `icon.png`：512px，原生窗口默认图标。
 - `icon.ico`：16 / 20 / 24 / 32 / 40 / 48 / 64 / 96 / 128 / 256px，覆盖标题栏、任务栏、桌面快捷方式和安装器。
 - `icon.icns`：macOS 图标；现代 PNG 条目从同一原稿生成。

@@ -170,7 +170,9 @@ async function pollOnce() {
     setClass(document.querySelector('.status-dot'), ['failed', 'unresponsive'].includes(s.phase) ? 'status-dot failed' : 'status-dot')
     if (s.phase === 'ready') setVisible($('nav-notice'), false)
     setText($('sidebar-state'), s.phase === 'ready' ? '服务运行中' : s.phase === 'stopping' ? '正在停止' : '本机服务')
-    setText($('address'), s.port ? `127.0.0.1:${s.port}` : '等待连接')
+    const endpoint = s.port ? `127.0.0.1:${s.port}` : '等待连接'
+    setText($('sidebar-endpoint'), endpoint)
+    setText($('address'), endpoint)
     const taskCount = Number(s.active || 0) + Number(s.background || 0)
     setText($('tasks'), taskCount ? `${taskCount} 项进行中` : '暂无任务')
     const migration = ['DATA_MIGRATION_REQUIRED', 'DATA_MIGRATION_PENDING'].includes(s.code)

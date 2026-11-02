@@ -51,6 +51,8 @@ import {
   writeAuthFile,
   normalizeAuthJson,
   isKnownInvalidLocalAuth,
+  preserveSavedLocalAuth,
+  findAccountByFingerprint,
   startDeviceFlow,
   pollDeviceFlow,
   clearDeviceFlow,
@@ -2844,6 +2846,18 @@ async function handleHttpRequest(req, res) {
         const health = await fetchBridgeHealth()
         if (isKnownInvalidLocalAuth(data, current, health)) {
           return sendJson(res, 409, { error: 'local_auth_reauthorization_required', detail: '本地文件与当前账号使用同一份已失效的刷新令牌。重复导入不会更新授权，请通过「OAuth 授权」或「官方登录」重新登录。' })
+        }
+        const registry = loadAccounts()
+        const existing = findAccountByFingerprint(registry, data)
+        const saved = existing && fs.existsSync(accountAuthPath(existing.id))
+          ? normalizeAuthJson(JSON.parse(fs.readFileSync(accountAuthPath(existing.id), 'utf-8'))) : null
+        const preserved = preserveSavedLocalAuth(data, saved, existing?.id === registry.activeId && gwConfig.mode === 'bridge' ? health : null)
+        if (preserved) {
+          if (existing.id !== registry.activeId) return sendJson(res, 409, {
+            error: 'local_auth_older_than_saved', detail: '网关已保存此账号更新的授权，未使用旧本机凭据覆盖。请切换到已保存的账号，或重新授权。'
+          })
+          return sendJson(res, 200, { ok: true, accountId: existing.id, activeId: registry.activeId,
+            isExisting: true, email: existing.email || info.email, preservedExistingAuth: true, preservationReason: preserved })
         }
         const acct = await addAccount({
           name: body.name || (info.email ? info.email : '本机 Codex 导入'),

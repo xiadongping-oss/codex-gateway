@@ -374,6 +374,22 @@ export function isKnownInvalidLocalAuth(incoming, current, health) {
   return /invalid_refresh_token|refresh_token_reused|refresh_token_expired|Token refresh failed \(HTTP 401\)/i.test(detail)
 }
 
+// Importing a CLI snapshot must not replace a newer or already-working login
+// for the same account. A refresh token copied earlier can have been rotated.
+export function preserveSavedLocalAuth(incoming, saved, health) {
+  if (!incoming?.tokens?.refresh_token || !saved?.tokens?.refresh_token) return null
+  const fingerprint = accountFingerprint(saved)
+  if (!fingerprint || !findAccountByFingerprint({ accounts: [{ fingerprint }] }, incoming)) return null
+  if (health?.ok === true) return 'working'
+  const issuedAt = auth => {
+    const iat = jwtClaims(auth.tokens.access_token)?.iat
+    if (typeof iat === 'number' && Number.isFinite(iat) && iat > 0) return iat * 1000
+    return typeof auth.last_refresh === 'string' ? Date.parse(auth.last_refresh) : NaN
+  }
+  const incomingAt = issuedAt(incoming), savedAt = issuedAt(saved)
+  return Number.isFinite(incomingAt) && Number.isFinite(savedAt) && savedAt > incomingAt ? 'newer' : null
+}
+
 export function inspectCodexCliAuth(env = process.env, readFile) {
   const read = typeof readFile === 'function' ? readFile : (p) => fs.readFileSync(p, 'utf-8')
   const authPath = codexCliAuthPath(env)

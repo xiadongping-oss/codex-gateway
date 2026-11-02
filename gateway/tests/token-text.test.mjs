@@ -3,7 +3,7 @@
 // refresh_token 联网换取（注入 fetch，不外联）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeAuthJson, parseAuthTokenText, exchangeRefreshToken, looksLikeJwt, isKnownInvalidLocalAuth } from '../auth-core.mjs'
+import { normalizeAuthJson, parseAuthTokenText, exchangeRefreshToken, looksLikeJwt, isKnownInvalidLocalAuth, preserveSavedLocalAuth } from '../auth-core.mjs'
 
 // ---------- normalizeAuthJson 扩展形态 ----------
 
@@ -150,4 +150,29 @@ test('本机导入拒绝同一份已被上游判为失效的刷新令牌', () =>
  assert.equal(isKnownInvalidLocalAuth(old,old,{ok:true}),false)
  assert.equal(isKnownInvalidLocalAuth(old,old,{data:{error:'unsupported_country_region_territory'}}),false)
  assert.equal(isKnownInvalidLocalAuth({},{},failed),false)
+})
+
+const localSnapshot = (account, iat, refresh = 'synthetic-refresh') => ({
+  tokens: { account_id: account, refresh_token: refresh,
+    access_token: `e30.${Buffer.from(JSON.stringify({ iat })).toString('base64url')}.synthetic` }
+})
+
+test('本机导入保留同账号已确认可用的授权，不因不同令牌重复刷新', () => {
+  assert.equal(preserveSavedLocalAuth(localSnapshot('same', 200), localSnapshot('same', 100), { ok: true }), 'working')
+  assert.equal(preserveSavedLocalAuth(localSnapshot('other', 50), localSnapshot('same', 100), { ok: true }), null)
+})
+
+test('本机导入不能用旧快照覆盖更新的授权，即使网络错误掩盖授权状态', () => {
+  const regionError = { ok: false, data: { error: 'unsupported_country_region_territory' } }
+  assert.equal(preserveSavedLocalAuth(localSnapshot('same', 100, 'old'), localSnapshot('same', 200, 'new'), regionError), 'newer')
+  assert.equal(preserveSavedLocalAuth(localSnapshot('same', 300, 'fresh'), localSnapshot('same', 200), regionError), null)
+  assert.equal(preserveSavedLocalAuth(localSnapshot('same', 200), localSnapshot('same', 200), regionError), null)
+})
+
+test('本机导入兼容没有 JWT 签发时间的刷新日期，但不猜测缺失或损坏的日期', () => {
+  const snapshot = date => ({ tokens: { account_id: 'same', refresh_token: 'synthetic', access_token: 'opaque' }, last_refresh: date })
+  assert.equal(preserveSavedLocalAuth(snapshot('2026-10-27T08:00:00Z'), snapshot('2026-11-02T08:00:00Z')), 'newer')
+  assert.equal(preserveSavedLocalAuth(snapshot('invalid'), snapshot('2026-11-02T08:00:00Z')), null)
+  assert.equal(preserveSavedLocalAuth(snapshot(undefined), snapshot('2026-11-02T08:00:00Z')), null)
+  assert.equal(preserveSavedLocalAuth({}, snapshot('2026-11-02T08:00:00Z'), { ok: true }), null)
 })

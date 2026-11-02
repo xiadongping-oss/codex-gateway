@@ -572,7 +572,9 @@ async function getLocalAccount() {
     const r = await api.importCodexLocal()
     if (!actionCurrent(generation)) return
     if (r?.ok) {
-      setOk(`已读取本机凭据${r.email ? '（' + r.email + '）' : ''}。这不会重新授权，连接状态请以账号页检测结果为准。`)
+      setOk(r.preservedExistingAuth
+        ? '网关已保存此账号更新或可用的授权，已保留现有凭据，未用旧本机文件覆盖。连接状态请以账号页检测结果为准。'
+        : `已读取本机凭据${r.email ? '（' + r.email + '）' : ''}。这不会重新授权，连接状态请以账号页检测结果为准。`)
       emit('changed')
     } else setError(r?.detail || r?.error || '导入失败')
   } catch (e) {
