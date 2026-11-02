@@ -56,7 +56,7 @@ function writeJson(file, value) {
   try { fs.writeFileSync(fd, JSON.stringify(value, null, 2) + '\n'); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
   fs.renameSync(temp, file)
 }
-function noWriter(root) {
+export function noWriter(root) {
   if (exists(path.join(root, 'runtime/owner.lock'))) fail('MIGRATION_DATA_IN_USE')
   const loginPending = path.join(root, 'tmp/codex-temp-login')
   if (exists(loginPending) && fs.readdirSync(loginPending).length) fail('MIGRATION_PENDING_LOGIN')

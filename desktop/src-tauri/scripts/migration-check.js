@@ -17,10 +17,10 @@
     throw new Error('check deadline')
   }
   const set = (id, value) => { $(id).value = value; $(id).dispatchEvent(new Event('input', { bubbles: true })); $(id).dispatchEvent(new Event('change', { bubbles: true })) }
-  // 手动指定目录：填好路径后点「使用这个目录」，它就成为当前选中的候选。
-  // auth 是旧配置里指向目录外的凭据文件，必须在这一步重新指定，否则核对通不过。
+  // 手动指定目录：表单常驻（不再折叠），填好路径后点「检查并选用这个目录」，
+  // 它就成为当前选中的候选。auth 是旧配置里指向目录外的凭据文件，必须在这一步
+  // 重新指定，否则核对通不过。
   const choose = (source, gallery, auth) => {
-    $('migration-manual').open = true
     set('migration-source', source)
     set('migration-gallery', gallery || '')
     set('migration-auth-map', auth || '')

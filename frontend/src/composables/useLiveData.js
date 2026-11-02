@@ -219,13 +219,19 @@ function createLiveData() {
     }
   }
 
+  // 隐藏的控制台停止轮询；返回前台立即补齐状态。
+  const whenVisible = task => () => { if (!document.hidden) task() }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) { refresh(); refreshGateway(); refreshLogs() }
+  })
+
   // 首屏拉一次 → 后续定时刷新
   refresh()
   refreshGateway()
   refreshLogs()
-  setInterval(refresh, 1500)
-  setInterval(refreshGateway, 3000)
-  setInterval(refreshLogs, 2000)
+  setInterval(whenVisible(refresh), 1500)
+  setInterval(whenVisible(refreshGateway), 3000)
+  setInterval(whenVisible(refreshLogs), 2000)
 
   return {
     status, account, capabilities, capabilitiesBase, models, health, logs,

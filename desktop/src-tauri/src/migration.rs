@@ -17,6 +17,10 @@ pub enum Request {
     History {},
     Detect {},
     AutoImport {},
+    Discard {
+        #[serde(rename = "sourceRoot")]
+        source_root: String,
+    },
     BackupReview {
         #[serde(rename = "archiveId")]
         archive_id: String,
@@ -84,6 +88,16 @@ impl Wizard {
             Request::Context {} => json!({"operation":"context"}),
             Request::History {} => json!({"operation":"history"}),
             Request::Detect {} => return invoke(settings, &json!({"operation":"detect"}), cancel),
+            Request::Discard { source_root } => {
+                // Deletion itself is authorized and executed inside the worker
+                // (workspace markers, no writer, no overlap). The native layer
+                // only forwards the path; it owns no discovery rules.
+                return invoke(
+                    settings,
+                    &json!({"operation":"discard", "sourceRoot":source_root}),
+                    cancel,
+                );
+            }
             Request::AutoImport {} => {
                 // Nothing here can name a source: discovery rules live in the
                 // worker, and the target must still be untouched. A successful
@@ -287,6 +301,7 @@ mod tests {
             json!({"operation":"context","targetRoot":"elsewhere"}),
             json!({"operation":"detect","targetRoot":"elsewhere"}),
             json!({"operation":"auto_import","sourceRoot":"elsewhere"}),
+            json!({"operation":"discard","sourceRoot":"elsewhere","command":"rm -rf"}),
             json!({"operation":"apply","fingerprint":"x","sourceStopped":true,"selection":{}}),
             json!({"operation":"rollback","sourceStopped":true,"archive":"elsewhere"}),
             json!({"operation":"history","targetRoot":"elsewhere"}),

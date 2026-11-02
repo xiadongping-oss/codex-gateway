@@ -17,6 +17,9 @@ let savedCollapsed = false
 try { savedCollapsed = localStorage.getItem('gw.sidebar.collapsed') === '1' } catch { /* Use the expanded default. */ }
 window.applyWorkspaceCollapsed(savedCollapsed)
 const icons = {
+ runtime:'M3 12h4l3-8 4 16 3-8h4',
+ lan:'M9 3h6v5H9zM2 16h6v5H2zM16 16h6v5h-6zM12 8v4M5 16v-4h14v4',
+
   overview:'M3 3h7v7H3zM14 3h7v4h-7zM14 11h7v10h-7zM3 14h7v7H3z',
   account:'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM4 21v-2a7 7 0 0 1 14 0v2M19 4h3m-1.5-1.5v3',
   images:'M3 4h18v16H3zM3 15l5-5 5 5 3-3 5 5M15 8h.01',
@@ -35,6 +38,7 @@ for (const holder of document.querySelectorAll('[data-icon]')) {
 }
 let busy = false, autostartBusy = false, autostartAvailable = false, pendingConfirmation
 let lastGateway = null
+let legacyMigration = false
 const errorMessage = error => typeof error === 'string' && error.length < 180 ? error : '操作未完成，请稍后重试。'
 // 启动、停止、退出这类操作要几百毫秒到几秒才有回音。不把按钮锁住，用户唯一能看到
 // 的反馈就是「点了没反应」，于是再点一次——所以这是必要的交互，不是装饰。
@@ -50,7 +54,7 @@ async function action(name) {
   catch (error) { $('action-error').textContent = errorMessage(error) }
   finally { busy = false; setActionsBusy(false) }
 }
-const PAGE_NAMES = { overview:'概览', account:'账号管理', images:'图片素材', models:'模型能力', apikeys:'API Key', logs:'调用日志' }
+const PAGE_NAMES = { runtime:'运行详情', lan:'局域网共享', overview:'概览', account:'账号管理', images:'图片素材', models:'模型能力', apikeys:'API Key', logs:'调用日志' }
 // 业务页由原生控制台承载：网关没就绪时点击只会排队（就绪后自动打开），但界面必须
 // 立刻给一句话反馈并指出下一步，否则用户看到的就是「点了没反应」。
 function navHint(page) {
@@ -86,6 +90,7 @@ function showNavNotice(text, target, goLabel) {
 }
 async function navigate(page) {
   $('action-error').textContent = ''
+  if (['service', 'data', 'desktop'].includes(page)) showPage(page)
   try { await invoke('workspace_navigate', { page }) }
   catch (error) { $('action-error').textContent = errorMessage(error) }
   if (!['service', 'data', 'desktop'].includes(page)) navHint(page)
@@ -99,17 +104,27 @@ function showPage(page) {
     if (selected) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current')
   }
   $('page-title').textContent = {service:'服务与诊断',data:'数据与备份',desktop:'设置'}[current]
-  $('page-subtitle').textContent = {service:'管理本机服务与运行状态',data:'迁移旧数据与恢复历史备份',desktop:'连接配置与应用偏好'}[current]
+  $('page-subtitle').textContent = {service:'管理本机服务与运行状态',data:'本机工作空间与数据说明',desktop:'连接配置与应用偏好'}[current]
 }
+window.showWorkspacePage = showPage
 for (const button of document.querySelectorAll('[data-page]')) button.onclick = () => navigate(button.dataset.page)
-function confirmAction(name, title, message, label) {
-  pendingConfirmation = name
+// 确认框两种用法：传 name = 触发一个网关动作；传 onConfirm = 由调用方自己执行
+// （迁移向导的「删除旧数据」用它，动作属于迁移 IPC 而不是 gateway_action）。
+function confirmAction(name, title, message, label, onConfirm) {
+  pendingConfirmation = { name, onConfirm }
   $('confirm-title').textContent = title; $('confirm-message').textContent = message; $('confirm-submit').textContent = label
   $('confirm-action').showModal()
 }
 $('confirm-cancel').onclick = () => { pendingConfirmation = undefined; $('confirm-action').close() }
 $('confirm-action').onclose = () => { pendingConfirmation = undefined }
-$('confirm-submit').onclick = () => { const name = pendingConfirmation; $('confirm-action').close(); if (name) action(name) }
+$('confirm-submit').onclick = () => {
+  const pending = pendingConfirmation
+  $('confirm-action').close()
+  if (!pending) return
+  if (pending.onConfirm) pending.onConfirm()
+  else if (pending.name) action(pending.name)
+}
+window.confirmAction = confirmAction
 $('reopen').onclick = () => navigate('overview')
 $('retry').onclick = () => action('retry')
 $('goto-data').onclick = () => navigate('data')
@@ -163,15 +178,16 @@ async function pollOnce() {
     setVisible($('retry'), ['maintenance', 'migration_complete'].includes(s.phase) || (s.phase === 'failed' && !migration))
     setText($('retry'), s.phase === 'maintenance' || s.phase === 'migration_complete' ? '启动网关' : '重新启动')
     setVisible($('fresh-start'), s.phase === 'setup')
-    window.backupBrowser.update(s)
-    setVisible($('maintenance'), s.phase === 'ready'); setVisible($('service-stop'), s.phase === 'ready')
-    setText($('data-state'), s.phase === 'ready' ? '停止服务后可检查迁移和历史备份。' : '账号、配置与图片保存在本机。')
+    if (legacyMigration) window.backupBrowser.update(s)
+    setVisible($('maintenance'), legacyMigration && s.phase === 'ready'); setVisible($('service-stop'), s.phase === 'ready')
+    setText($('data-state'), '账号、配置与图片保存在本机独立工作空间。旧版数据不再扫描或导入，可直接在账号管理中配置新账号。')
     setVisible($('restart'), s.phase === 'unresponsive'); setVisible($('reopen'), s.phase === 'ready')
     setVisible($('continue'), Boolean(s.waiting)); setVisible($('force'), Boolean(s.waiting))
     // 停止过程中不允许退出；操作进行中也不允许，否则会和正在执行的动作打架。
     $('quit').disabled = busy || s.phase === 'stopping'
   }
   if (workspace.status === 'fulfilled') {
+    legacyMigration = workspace.value.legacyMigration === true
     showPage(workspace.value.page)
     autostartAvailable = typeof workspace.value.autostart === 'boolean'
     if (!autostartBusy && autostartAvailable && $('desktop-autostart').checked !== workspace.value.autostart) {
@@ -188,7 +204,7 @@ async function pollOnce() {
   }
   if (gateway.status === 'fulfilled') {
     // 自动迁移结果来自 workspace_state，所以要等两份状态都到位再更新向导。
-    if (workspace.status === 'fulfilled') window.migrationWizard.update(gateway.value, workspace.value.migration)
+    if (workspace.status === 'fulfilled' && legacyMigration) window.migrationWizard.update(gateway.value, workspace.value.migration)
   }
   if (gateway.status === 'rejected') setText($('desktop-notice'), '暂时无法获取服务状态，请稍候。')
   // ui_rendered 只是把「界面已经起来」告诉原生端，发一次就够了，不必每轮都打 IPC。

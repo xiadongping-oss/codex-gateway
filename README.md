@@ -11,15 +11,26 @@
 | **宿主机**（自己用 / 给同事发 Key） | 本页[快速开始](#快速开始宿主机) |
 | **局域网用户**（用别人电脑上的网关） | 浏览器打开 `http://<宿主机IP>:4173/setup`，输入管理员发的 Key，按页面指引复制/下载配置即可（**零命令行**） |
 | **维护者**（构建发布包） | [`docs/RELEASE.md`](docs/RELEASE.md) |
-| **桌面版开发**（Windows 与 macOS） | [实施计划](docs/DESKTOP-PLAN.md) · [任务清单](docs/DESKTOP-TASKS.md) · [控制协议](docs/DESKTOP-CONTROL.md) · [数据目录](docs/DESKTOP-DATA.md)（规划中的 Tauri 桌面版） |
+| **桌面版开发**（Windows 与 macOS） | [实施计划](docs/DESKTOP-PLAN.md) · [任务清单](docs/DESKTOP-TASKS.md) · [控制协议](docs/DESKTOP-CONTROL.md) · [数据目录](docs/DESKTOP-DATA.md)（Windows 桌面预览版） |
 
 > 使用前请务必阅读[合规与使用须知](#合规与使用须知)。
+
+## Windows 桌面版 v1.13.0
+
+从 [最新版本](https://github.com/xiadongping-oss/codex-gateway/releases/latest) 下载 Setup 安装包或免安装 ZIP。桌面版无需单独安装 Node；Setup 会在需要时安装 WebView2。
+
+- 在「局域网共享」中直接开启、关闭共享并设置端口，默认共享端口为 `4174`；本机管理端口为 `4173`。
+- 工作区、开发接入与管理页面共用一个原生窗口，页面切换不会重新弹出窗口。
+- 账号、配置与图片保存在 `%LOCALAPPDATA%\CodexGatewayWorkspace-v1`，旧版不兼容数据不再自动导入或阻止新账号配置。
+- 账号授权完成后提供完成状态和关闭入口，连接错误、账号额度与订阅到期信息统一展示。
+
+当前安装包为未签名桌面预览版。关闭窗口后网关在托盘继续运行，退出应用请使用工作台或托盘的「退出应用」。
 
 ## 功能总览
 
 - **OpenAI 兼容 API**：`/v1/chat/completions`、`/v1/responses`、`/v1/models`、`/v1/images/generations`——任意 OpenAI 兼容客户端（WorkBuddy、ChatBox、Open WebUI、curl 等）填地址 + Key 即用
 - **图片生成**：API 直接生图，或以 **MCP 工具**供任意支持 Function Calling 的模型 / Agent 调用；生成结果自动进入**分用户网页素材站**（预览 / 复制链接 / 下载 / 删除）
-- **局域网共享**：一条命令开放给同网段设备；每个成员使用独立 API Key，调用与图片素材按 Key 隔离
+- **局域网共享**：桌面端直接管理共享，命令行版也可通过启动参数开放；每个成员使用独立 API Key，调用与图片素材按 Key 隔离
 - **多账号登录**：控制台内完成 OAuth 授权，支持多账号保存与切换；可配置出网代理适配受限网络；本机装过 Codex CLI 时可**一键导入 `~/.codex/auth.json` 的现有登录态**（无需再走浏览器授权）
 
 ## 架构一览

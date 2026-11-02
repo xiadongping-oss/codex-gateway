@@ -25,7 +25,7 @@ use std::sync::{
     Arc,
 };
 use supervisor::{Controller, Settings, ViewState};
-use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{Manager, Webview, WebviewUrl, WebviewWindowBuilder};
 
 fn startup_origin(url: &tauri::Url) -> bool {
     url.username().is_empty()
@@ -35,7 +35,7 @@ fn startup_origin(url: &tauri::Url) -> bool {
             || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost")))
 }
 
-fn local(window: &WebviewWindow) -> Result<(), String> {
+fn local(window: &Webview) -> Result<(), String> {
     let url = window.url().map_err(|_| "窗口不可用")?;
     if window.label() == "main" && startup_origin(&url) {
         Ok(())
@@ -44,16 +44,13 @@ fn local(window: &WebviewWindow) -> Result<(), String> {
     }
 }
 #[tauri::command]
-fn gateway_status(
-    window: WebviewWindow,
-    state: tauri::State<Controller>,
-) -> Result<ViewState, String> {
+fn gateway_status(window: Webview, state: tauri::State<Controller>) -> Result<ViewState, String> {
     local(&window)?;
     Ok(state.view.lock().unwrap().clone())
 }
 #[tauri::command]
 fn gateway_action(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<Controller>,
     action: String,
 ) -> Result<(), String> {
@@ -61,14 +58,14 @@ fn gateway_action(
     state.action(&action)
 }
 #[tauri::command]
-fn ui_rendered(window: WebviewWindow, state: tauri::State<Controller>) -> Result<(), String> {
+fn ui_rendered(window: Webview, state: tauri::State<Controller>) -> Result<(), String> {
     local(&window)?;
     state.rendered.store(true, Ordering::Relaxed);
     Ok(())
 }
 #[tauri::command]
 fn desktop_notice(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<desktop::Desktop>,
 ) -> Result<String, String> {
     local(&window)?;
@@ -77,19 +74,19 @@ fn desktop_notice(
 
 #[tauri::command]
 fn workspace_state(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<desktop::Desktop>,
     app: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     local(&window)?;
     Ok(
-        serde_json::json!({ "page": state.page.lock().unwrap().clone(), "autostart": autostart::enabled(&app).ok(), "notice": state.notice.lock().unwrap().clone(), "migration": desktop::migration_state(&app) }),
+        serde_json::json!({ "page": state.page.lock().unwrap().clone(), "autostart": autostart::enabled(&app).ok(), "notice": state.notice.lock().unwrap().clone(), "migration": desktop::migration_state(&app), "legacyMigration": state.isolated }),
     )
 }
 
 #[tauri::command]
 fn workspace_navigate(
-    window: WebviewWindow,
+    window: Webview,
     app: tauri::AppHandle,
     state: tauri::State<Controller>,
     page: String,
@@ -108,7 +105,7 @@ fn workspace_navigate(
 
 #[tauri::command]
 fn workspace_autostart(
-    window: WebviewWindow,
+    window: Webview,
     app: tauri::AppHandle,
     enabled: bool,
 ) -> Result<(), String> {
@@ -117,7 +114,7 @@ fn workspace_autostart(
 }
 #[tauri::command]
 async fn migration_request(
-    window: WebviewWindow,
+    window: Webview,
     state: tauri::State<'_, Controller>,
     request: migration::Request,
 ) -> Result<serde_json::Value, String> {
@@ -166,10 +163,9 @@ fn main() {
             background: AtomicBool::new(args.iter().any(|s| s == "--from-autostart")),
             duplicates: std::sync::atomic::AtomicUsize::new(0),
             isolated,
-            account_validation: cfg!(debug_assertions)
-                && args.iter().any(|a| a == "--account-validation"),
             notice: std::sync::Mutex::new(String::new()),
             page: std::sync::Mutex::new("overview".into()),
+            active_view: std::sync::Mutex::new("main".into()),
             migration: std::sync::Mutex::new(serde_json::json!({"state": "none"})),
         })
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -209,6 +205,9 @@ fn main() {
             desktop::install(app.handle())?;
             let window =
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .icon(tauri::image::Image::from_bytes(include_bytes!(
+                        "../icons/icon.png"
+                    ))?)?
                     .title(if cfg!(debug_assertions) && settings.account_validation {
                         "Codex Gateway · 账号验收（独立工作空间）"
                     } else if cfg!(debug_assertions) && settings.isolated {

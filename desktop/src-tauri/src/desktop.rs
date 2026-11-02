@@ -14,9 +14,9 @@ pub struct Desktop {
     pub background: AtomicBool,
     pub duplicates: AtomicUsize,
     pub isolated: bool,
-    pub account_validation: bool,
     pub notice: Mutex<String>,
     pub page: Mutex<String>,
+    pub active_view: Mutex<String>,
     // Result of the automatic legacy-workspace import attempted before the
     // gateway starts. Read by the workspace UI; never blocks starting.
     pub migration: Mutex<serde_json::Value>,
@@ -35,7 +35,15 @@ pub fn set_migration_state(app: &tauri::AppHandle, value: serde_json::Value) {
 pub fn business_page(page: &str) -> bool {
     matches!(
         page,
-        "overview" | "account" | "images" | "models" | "apikeys" | "logs" | "settings"
+        "overview"
+            | "account"
+            | "images"
+            | "models"
+            | "apikeys"
+            | "logs"
+            | "settings"
+            | "runtime"
+            | "lan"
     )
 }
 
@@ -50,6 +58,7 @@ pub fn set_page(app: &tauri::AppHandle, page: &str) {
 }
 
 static WINDOW_EPOCH: AtomicU64 = AtomicU64::new(0);
+static VIEW_SWITCHES: AtomicU64 = AtomicU64::new(0);
 
 // Wry executes run_on_main_thread inline when already on the native thread.
 // Native callbacks and the supervisor can await this result without scheduling
@@ -71,6 +80,9 @@ fn on_native_thread<T: Send + 'static>(
 #[derive(Debug, serde::Serialize)]
 pub struct WindowSnapshot {
     pub epoch: u64,
+    pub view_switches: u64,
+    pub active_view: String,
+    pub native_id: Option<usize>,
     pub windows: Vec<(String, bool)>,
 }
 
@@ -80,10 +92,8 @@ impl WindowSnapshot {
         self.windows.iter().filter(|(_, visible)| *visible).count()
     }
 
-    pub fn visible(&self, label: &str) -> bool {
-        self.windows
-            .iter()
-            .any(|(name, visible)| name == label && *visible)
+    pub fn view_visible(&self, label: &str) -> bool {
+        self.active_view == label && self.visible_count() == 1
     }
 }
 
@@ -91,7 +101,7 @@ impl WindowSnapshot {
 pub fn window_snapshot(app: &tauri::AppHandle) -> Result<WindowSnapshot, String> {
     on_native_thread(app, |app| {
         let mut windows = app
-            .webview_windows()
+            .windows()
             .into_values()
             .map(|window| {
                 window
@@ -104,12 +114,26 @@ pub fn window_snapshot(app: &tauri::AppHandle) -> Result<WindowSnapshot, String>
         Ok(WindowSnapshot {
             epoch: WINDOW_EPOCH.load(Ordering::SeqCst),
             windows,
+            view_switches: VIEW_SWITCHES.load(Ordering::SeqCst),
+            active_view: app.state::<Desktop>().active_view.lock().unwrap().clone(),
+            native_id: {
+                #[cfg(windows)]
+                {
+                    app.get_window("main")
+                        .and_then(|w| w.hwnd().ok())
+                        .map(|h| h.0 as usize)
+                }
+                #[cfg(not(windows))]
+                {
+                    None
+                }
+            },
         })
     })?
 }
 
-// Both origins keep their existing permissions. Switching pages transfers the
-// visible workspace instead of displaying two independent application windows.
+// Both origins keep separate WebViews and permissions inside one native frame.
+// Page navigation never hides, restores, resizes or recreates that frame.
 pub fn show_only(app: &tauri::AppHandle, label: &str) -> bool {
     let label = label.to_owned();
     on_native_thread(app, move |app| {
@@ -121,48 +145,58 @@ pub fn show_only(app: &tauri::AppHandle, label: &str) -> bool {
 }
 
 fn show_only_on_native_thread(app: &tauri::AppHandle, label: &str) -> bool {
-    let Some(target) = app.get_webview_window(label) else {
+    let Some(target) = app.get_webview(label) else {
         return false;
     };
-    let windows = app.webview_windows();
-    let previous = windows
-        .values()
-        .find(|w| w.label() != label && w.is_visible().unwrap_or(false));
-    if let Some(previous) = previous {
-        if !previous.is_minimized().unwrap_or(false) {
-            if let Ok(position) = previous.outer_position() {
-                let _ = target.set_position(position);
-            }
-            if let Ok(size) = previous.inner_size() {
-                let _ = target.set_size(size);
-            }
-        }
-    }
-    for window in windows.values().filter(|w| w.label() != label) {
-        if window.hide().is_err() {
+    let Some(frame) = app.get_window("main") else {
+        return false;
+    };
+    let previous = app.state::<Desktop>().active_view.lock().unwrap().clone();
+    if previous != label {
+        // Paint the destination before hiding the previous view. The parent
+        // frame and its taskbar entry stay visible throughout the operation.
+        if target.show().is_err() {
             return false;
         }
+        for view in app
+            .webviews()
+            .values()
+            .filter(|view| view.label() != label && view.window().label() == "main")
+        {
+            if view.hide().is_err() {
+                let _ = target.hide();
+                if let Some(source) = app.get_webview(&previous) {
+                    let _ = source.show();
+                }
+                return false;
+            }
+        }
+        *app.state::<Desktop>().active_view.lock().unwrap() = label.into();
+        VIEW_SWITCHES.fetch_add(1, Ordering::SeqCst);
     }
-    if target
-        .unminimize()
-        .and_then(|_| target.show())
-        .and_then(|_| target.set_focus())
-        .is_err()
-    {
-        // show() may have succeeded before focus failed. Hide it before restoring
-        // the previous window to preserve the invariant on the error path too.
-        if target.hide().is_err() {
-            return false;
-        }
-        if let Some(previous) = previous {
-            let _ = previous.show();
-        }
+    if frame.is_minimized().unwrap_or(false) && frame.unminimize().is_err() {
+        return false;
+    }
+    if !frame.is_visible().unwrap_or(false) && frame.show().is_err() {
+        return false;
+    }
+    if !frame.is_focused().unwrap_or(false) && frame.set_focus().is_err() {
+        return false;
+    }
+    if target.set_focus().is_err() {
         return false;
     }
     app.state::<Desktop>()
         .background
         .store(false, Ordering::SeqCst);
     true
+}
+
+pub fn view_visible(app: &tauri::AppHandle, label: &str) -> bool {
+    app.state::<Desktop>().active_view.lock().unwrap().as_str() == label
+        && app
+            .get_window("main")
+            .is_some_and(|frame| frame.is_visible().unwrap_or(false))
 }
 
 pub fn open_local(app: &tauri::AppHandle, page: &str) -> bool {
@@ -172,6 +206,12 @@ pub fn open_local(app: &tauri::AppHandle, page: &str) -> bool {
     let previous = app.state::<Desktop>().page.lock().unwrap().clone();
     set_page(app, page);
     if show_main(app) {
+        if let Some(main) = app.get_webview("main") {
+            let _ = main.eval(format!(
+                "window.showWorkspacePage?.({})",
+                serde_json::to_string(page).unwrap()
+            ));
+        }
         true
     } else {
         set_page(app, &previous);
@@ -238,7 +278,7 @@ pub fn hide(app: &tauri::AppHandle) {
     app.state::<Desktop>()
         .background
         .store(true, Ordering::SeqCst);
-    for w in app.webview_windows().values() {
+    for w in app.windows().values() {
         let _ = w.hide();
     }
 }

@@ -64,6 +64,11 @@ dialog{border:1px solid var(--border);border-radius:14px;padding:26px;width:min(
 .migration-actions{margin-top:18px}
 #migration-panel .field-hint{color:var(--muted);font-size:11.5px;margin:9px 0 0}
 #migration-panel .field-hint:empty{display:none}
+/* 手动指定目录：常驻区块，不再折叠 —— 扫描不到旧数据时它就是唯一的出路。 */
+.manual-block{margin:17px 0 0;padding:15px 16px;border:1px solid var(--border);border-radius:10px;background:var(--bg)}
+.manual-block h3{margin:0;font-size:13px}
+.manual-block .inline-help{margin:7px 0 0}
+.manual-block button{margin-top:13px}
 #migration-views button:disabled,#migration-steps button:disabled{opacity:1}
 #migration-panel .actions button:disabled{cursor:not-allowed;border-color:var(--border);color:var(--muted);background:var(--hover)}
 .migration-actions{gap:11px}

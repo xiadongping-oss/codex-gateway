@@ -40,7 +40,7 @@ impl Settings {
         } else {
             app.path().local_data_dir()?
         }
-        .join("CodexGateway");
+        .join("CodexGatewayWorkspace-v1");
         let mut resources = app.path().resource_dir()?.join("gateway-resources");
         let mut port = 4173;
         let mut bridge_port = None;
@@ -246,9 +246,9 @@ fn attempt_auto_import(
         // A candidate was found but refused: external paths, a writer still
         // holding it, a size that deserves a decision. Report why so the
         // workspace can offer a reviewed migration instead of hiding it.
-        Ok(result) => migration_state_from_reason(
-            result["reason"].as_str().unwrap_or("MIGRATION_FAILED"),
-        ),
+        Ok(result) => {
+            migration_state_from_reason(result["reason"].as_str().unwrap_or("MIGRATION_FAILED"))
+        }
         Err(code) => migration_state_from_reason(&code),
     }
 }
@@ -557,7 +557,7 @@ fn open_console(
 }
 
 fn verify_startup_page(app: &tauri::AppHandle, title: &str) -> bool {
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = app.get_webview("main") else {
         return false;
     };
     let end = Instant::now() + Duration::from_secs(3);
@@ -617,7 +617,7 @@ fn run(
     let mut crash_count = 0;
     let mut migration = crate::migration::Wizard::default();
     let mut pending_navigation: Option<String> = None;
-    let mut auto_import_pending = crate::migration::new_install(&settings);
+    let mut auto_import_pending = settings.isolated && crate::migration::new_install(&settings);
     let migration_passed = crate::migration_check::start(&app, &settings);
     #[cfg(debug_assertions)]
     let mut soak = crate::soak_check::Check::new(&settings);
@@ -630,6 +630,10 @@ fn run(
                 Some("show".into())
             }
             Some(Work::Migration(request, reply)) => {
+                if !settings.isolated {
+                    let _ = reply.send(Err("旧版数据迁移已停止支持，请直接配置新账号".into()));
+                    continue;
+                }
                 if settings.smoke_case == "migration" {
                     eprintln!("R03_REQUEST_RECEIVED");
                 }
@@ -1273,10 +1277,7 @@ fn run(
             }
             if settings.smoke && settings.smoke_case == "channel-loss" && smoke_stage == 1 {
                 let observed = verify_startup_page(&app, "网关未能运行")
-                    && !app
-                        .webview_windows()
-                        .keys()
-                        .any(|s| s.starts_with("console-"));
+                    && !app.webviews().keys().any(|s| s.starts_with("console-"));
                 eprintln!("D02_CHANNEL_RETURN {observed}");
                 quitting.store(true, Ordering::Relaxed);
                 app.exit(if observed { 0 } else { 1 });

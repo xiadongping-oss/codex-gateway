@@ -248,7 +248,7 @@ test('countdownText 对未来时刻给倒计时，对过去时刻给「已重置
 
 // 会真的响应探测请求的假 bridge：
 //   /health 回当前快照；/v1/chat/completions 记录请求体，并按需刷新快照
-async function fakeProbeBridge({ refreshHeaders = null, replyStatus = 200 } = {}) {
+async function fakeProbeBridge({ refreshHeaders = null, replyStatus = 200, replyBody = null } = {}) {
   const state = { at: 0, headers: {}, probeCount: 0, probeBodies: [] }
   const srv = http.createServer((req, res) => {
     res.setHeader('content-type', 'application/json')
@@ -265,7 +265,7 @@ async function fakeProbeBridge({ refreshHeaders = null, replyStatus = 200 } = {}
         state.headers = refreshHeaders
       }
       res.writeHead(replyStatus)
-      res.end(JSON.stringify(replyStatus === 200 ? { ok: true } : { error: 'rate_limited' }))
+      res.end(JSON.stringify(replyBody || (replyStatus === 200 ? { ok: true } : { error: 'rate_limited' })))
     })
   })
   await new Promise((r) => srv.listen(0, '127.0.0.1', r))
@@ -353,4 +353,43 @@ test('没有端口 / 连不上时如实返回原因，不假装成功也不抛�
   const dead = await q.probeQuotaViaBridge({ accountId: 'probe-dead', bridgePort: deadPort, timeoutMs: 1500 })
   assert.equal(dead.ok, false)
   assert.equal(dead.reason, 'bridge_unreachable')
+})
+
+for (const [name, status, body, reason] of [
+  ['地区限制', 503, { error: 'Token refresh failed (HTTP 403). unsupported_country_region_territory' }, 'region_restricted'],
+  ['授权失效', 401, { error: 'invalid_grant' }, 'auth_required'],
+  ['上游故障', 502, { error: 'bad_gateway' }, 'upstream_error'],
+  ['刷新令牌失效', 503, { error: 'Token refresh failed (HTTP 401). invalid_refresh_token' }, 'auth_required']
+]) test(`额度探测如实区分${name}，不误报缺少限流头`, async () => {
+  const b = await fakeProbeBridge({ replyStatus: status, replyBody: body })
+  try {
+    const result = await q.probeQuotaViaBridge({ accountId: `probe-error-${name}`, bridgePort: b.port })
+    assert.equal(result.ok, false)
+    assert.equal(result.reason, reason)
+    assert.equal(result.status, status)
+  } finally { b.srv.close() }
+})
+
+
+test('订阅日期只读取明确的订阅有效期，不使用令牌过期时间', () => {
+ const date='2030-03-12T10:00:00+00:00'
+ const plan=q.subscriptionPlanFromClaims({exp:123,'https://api.openai.com/auth':{chatgpt_plan_type:'pro',chatgpt_subscription_active_until:date}})
+ assert.equal(plan.name,'PRO');assert.equal(plan.expiresAt,'2030-03-12T10:00:00.000Z')
+ assert.equal(q.subscriptionPlanFromClaims({exp:2000000000}).expiresAt,null)
+ assert.equal(q.subscriptionPlanFromClaims({'https://api.openai.com/auth':{chatgpt_subscription_active_until:'invalid'}}).expiresAt,null)
+})
+test('实时套餐名称不能清掉手动记录的订阅日期', async () => {
+ reset();const expiry=new Date(Date.now()+7*86400000).toISOString()
+ writeFile({shared:{plan:{name:'Manual',expiresAt:expiry}}})
+ const b=await fakeBridge({'x-codex-primary-used-percent':'32','x-codex-plan-type':'pro'})
+ try {const result=await q.getAccountQuota({bridgePort:b.port});assert.equal(result.plan.name,'PRO');assert.equal(result.plan.expiresAt,expiry);assert.equal(result.plan.expirySource,'manual');assert.ok(result.plan.expiresInDays>0)} finally {b.srv.close()}
+})
+test('从当前账号凭据获取订阅有效期，实时额度保留该日期', async () => {
+ reset();const root=process.env.CGW_DATA_DIR,expiry=new Date(Date.now()+3*86400000).toISOString()
+ fs.mkdirSync(path.join(root,'accounts'),{recursive:true})
+ fs.writeFileSync(path.join(root,'accounts.json'),JSON.stringify({activeId:'sub-fixture',accounts:[{id:'sub-fixture',name:'Fixture'}]}))
+ const claims={'https://api.openai.com/auth':{chatgpt_plan_type:'pro',chatgpt_subscription_active_until:expiry}}
+ fs.writeFileSync(path.join(root,'accounts/sub-fixture.json'),JSON.stringify({tokens:{id_token:'e30.'+Buffer.from(JSON.stringify(claims)).toString('base64url')+'.fixture'}}))
+ const b=await fakeBridge({'x-codex-primary-used-percent':'32','x-codex-plan-type':'pro'})
+ try {const result=await q.getAccountQuota({bridgePort:b.port});assert.equal(result.plan.expiresAt,expiry);assert.equal(result.plan.expirySource,'account');assert.match(result.plan.expiresInText,/剩余/)} finally {b.srv.close();fs.unlinkSync(path.join(root,'accounts.json'));fs.unlinkSync(path.join(root,'accounts/sub-fixture.json'))}
 })

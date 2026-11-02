@@ -420,6 +420,32 @@ test('native service fixes destination, exposes only summary, and supports pendi
   assert.equal(fs.existsSync(f.target), false)
 })
 
+test('discard deletes only a verified idle workspace; anything else is refused', t => {
+  const f = fixture(t), call = request => handleMigrationRequest(request, f.target, f.resources)
+  assert.throws(() => call({ operation: 'discard', sourceRoot: 'relative/path' }), { code: 'MIGRATION_ABSOLUTE_PATH_REQUIRED' })
+  assert.throws(() => call({ operation: 'discard', sourceRoot: f.source, extra: 1 }), { code: 'MIGRATION_INVALID_ARGUMENT' })
+  // 没有 workspace 标记的目录一律不认；包含目标根的父目录先被重叠守卫拒绝。
+  assert.throws(() => call({ operation: 'discard', sourceRoot: f.temp }), { code: 'MIGRATION_ROOT_OVERLAP' })
+  fs.mkdirSync(path.join(f.temp, '不是工作区'))
+  assert.throws(() => call({ operation: 'discard', sourceRoot: path.join(f.temp, '不是工作区') }), { code: 'MIGRATION_SOURCE_MISSING' })
+  assert.throws(() => call({ operation: 'discard', sourceRoot: f.target }), { code: 'MIGRATION_ROOT_OVERLAP' })
+  assert.throws(() => call({ operation: 'discard', sourceRoot: f.resources }), { code: 'MIGRATION_ROOT_OVERLAP' })
+  assert.throws(() => call({ operation: 'discard', sourceRoot: path.join(f.temp, 'missing-dir') }), { code: 'MIGRATION_SOURCE_MISSING' })
+  // 有迁移记录在时，旧目录可能还要被 abort 恢复，不许删。
+  prepareMigration(planMigration(f.options), stopped)
+  assert.throws(() => call({ operation: 'discard', sourceRoot: f.source }), { code: 'MIGRATION_PENDING' })
+  fs.rmSync(f.guard, { recursive: true })
+  // 被进程占用（owner lock）时也不许删。
+  fs.mkdirSync(path.join(f.source, 'runtime'), { recursive: true })
+  fs.writeFileSync(path.join(f.source, 'runtime/owner.lock'), 'busy')
+  assert.throws(() => call({ operation: 'discard', sourceRoot: f.source }), { code: 'MIGRATION_DATA_IN_USE' })
+  fs.rmSync(path.join(f.source, 'runtime'), { recursive: true })
+  const result = call({ operation: 'discard', sourceRoot: f.source })
+  assert.equal(result.discarded, f.source)
+  assert.equal(fs.existsSync(f.source), false)
+  assert.deepEqual(fs.readdirSync(f.temp).filter(name => name.includes('discarding')), [])
+})
+
 test('history survives a new client, lists aborted backups and restores only a reviewed fixed target', t => {
   const f = fixture(t), before = bytes(f.source)
   prepareMigration(planMigration(f.options), stopped)

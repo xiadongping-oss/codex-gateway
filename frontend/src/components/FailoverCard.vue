@@ -49,18 +49,18 @@ function reasonInfo(item) {
   <section class="card fo-card">
     <div class="fo-head">
       <div>
-        <div class="card-title">账号降级（failover）</div>
+        <div class="card-title">账号自动切换</div>
         <div class="card-sub">
-          收到 429/401 时自动换号重放；这里显示正在冷却的账号与剩余时间——排障时直接看出「为什么没切过去」
+          查看冷却中的账号与切换结果
         </div>
       </div>
       <span class="fo-flag" :class="hasDegraded ? 'warn' : 'ok'">
-        <span class="dot"></span>{{ hasDegraded ? list.length + ' 个冷却中' : '全部健康' }}
+        <span class="dot"></span>{{ hasDegraded ? list.length + ' 个冷却中' : '无冷却账号' }}
       </span>
     </div>
 
     <div v-if="!hasDegraded" class="fo-calm">
-      ✓ 当前无账号处于降级冷却，所有账号都可被正常选为服务账号。
+      当前没有处于冷却中的账号。
     </div>
 
     <div v-else class="fo-list">

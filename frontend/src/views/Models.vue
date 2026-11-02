@@ -23,43 +23,6 @@ const suggest = ref({ text: 'gpt-6.1-sol', image: 'gpt-image-2.5-sunburst' })
 const imageModel = ref('')
 const imageModelVia = ref('')
 
-// ---- 局域网接入 ----
-// 网关以 GW_LAN=1 启动时监听 0.0.0.0，局域网内其他主机填「接口地址 + API Key」即可接入
-const lan = ref({ enabled: false, addresses: [], port: 4173, authRequired: true, controlPlaneLocalOnly: false })
-const lanCopied = ref('')
-
-async function loadLan() {
-  lan.value = await api.getLanInfo()
-}
-
-function lanBaseUrl(addr) {
-  return `http://${addr.address}:${lan.value.port}/v1`
-}
-
-async function copyLanText(text, label) {
-  if (!text) return
-  try {
-    await copyText(text)
-    lanCopied.value = label
-    setTimeout(() => (lanCopied.value = ''), 1800)
-  } catch (e) {
-    lanCopied.value = '✕ ' + (e?.message || '复制失败')
-    setTimeout(() => (lanCopied.value = ''), 3000)
-  }
-}
-
-const lanExample = computed(() => {
-  // 用后端排过序的 preferred，不要 addresses[0]：
-  // 装了 Tailscale 或 Docker 的机器上，第一个地址往往局域网同事连不上
-  const a = api.primaryLanAddress(lan.value.addresses)
-  if (!a) return ''
-  return [
-    '接口地址：' + lanBaseUrl(a),
-    'API Key：' + (useManual.value ? (manualKey.value || '<your-cgw-key>') : (selectedKeyToken.value || '<your-cgw-key>')),
-    '模型名称：' + (selectedModel.value || suggest.value.text)
-  ].join('\n')
-})
-
 const baseUrl = (typeof window !== 'undefined' ? window.location.origin : '') || BASE || 'http://127.0.0.1:4173'
 
 const selectedModel = ref('')
@@ -145,18 +108,16 @@ async function refreshAll(force = false) {
   loading.value = true
   loadErr.value = ''
   try {
-    const [m, a, ks, l, st] = await Promise.all([
+    const [m, a, ks, st] = await Promise.all([
       api.getModels({ refresh: force }),
       api.getAccounts(),
       api.listApiKeys(),
-      api.getLanInfo(),
       api.getGatewayStatus()
     ])
     models.value = m || []
     apikeys.value = ks || []
     accounts.value = (a && a.accounts) || []
     activeId.value = (a && a.activeId) || null
-    lan.value = l || lan.value
     // 实际生图模型（与网关注入 bridge 的同一个值）
     imageModel.value = (st && st.imageModel) || ''
     imageModelVia.value = (st && st.imageModelVia) || ''
@@ -322,83 +283,6 @@ watch(() => models.value.length, () => {
           还没选 API Key：去 <a href="#/apikeys" @click.prevent="$emit('navigate', 'apikeys')">「API Key 管理」</a>
           创建一个（绑「{{ activeAccount ? activeAccount.name : '当前激活' }}」账号），粘贴进来即可用于 WorkBuddy。
         </p>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-title-row">
-        <div class="card-title">
-          局域网接入
-          <span class="lan-badge" :class="lan.enabled ? 'on' : 'off'">{{ lan.enabled ? '已开启' : '未开启' }}</span>
-        </div>
-        <span class="card-meta">其他主机填「接口地址 + API Key」即可使用</span>
-      </div>
-
-      <div v-if="!lan.enabled" class="lan-off">
-        <div class="lan-off-title">当前仅本机可访问（监听 127.0.0.1）</div>
-        <div class="lan-off-body">
-          局域网内的其他电脑无法访问本网关。需要开放时，用环境变量启动网关：
-          <div class="lan-cmd">
-            <code>GW_LAN=1 node gateway/launcher.mjs</code>
-            <button class="btn-ghost sm" @click="copyLanText('GW_LAN=1 node gateway/launcher.mjs', '启动命令')">
-              {{ lanCopied === '启动命令' ? '✓ 已复制' : '复制启动命令' }}
-            </button>
-          </div>
-          <b>开启后的安全边界（自动生效）：</b>
-          <ul class="lan-rules">
-            <li>控制面 <code>/__gw/*</code> 仅本机可访问 —— 账号、API Key、配置不会出局域网</li>
-            <li><code>/v1/*</code> 强制 cgw- API Key 鉴权，匿名请求一律 401</li>
-            <li>bridge 子进程仍只监听 127.0.0.1，不直接对外暴露</li>
-            <li>Windows 防火墙需放行 <code>{{ lan.port }}</code> 端口（首次启动会弹窗询问）</li>
-          </ul>
-        </div>
-      </div>
-
-      <div v-else class="lan-on">
-        <div class="lan-on-head">
-          <span class="lan-dot"></span>
-          网关正在监听 <code>{{ lan.listenHost }}:{{ lan.port }}</code>，局域网内以下地址可用：
-        </div>
-
-        <ul class="lan-rules" style="margin-top: 12px">
-          <li>控制面 <code>/__gw/*</code> <b>仅本机可访问</b> —— 账号、API Key、配置不会出局域网</li>
-          <li><code>/v1/*</code> 强制 cgw- API Key 鉴权，匿名请求一律 401</li>
-          <li>bridge 子进程仍只监听 127.0.0.1，不直接对外暴露</li>
-          <li>Windows 防火墙需放行 <code>{{ lan.port }}</code> 端口（首次启动会弹窗询问）</li>
-        </ul>
-
-        <div class="lan-addrs">
-          <div v-for="a in lan.addresses" :key="a.address" class="lan-addr">
-            <code class="mono">{{ lanBaseUrl(a) }}</code>
-            <span class="lan-kind" :class="a.kind">{{ api.lanKindLabel(a) }}</span>
-            <span class="lan-iface">{{ a.name }}</span>
-            <span v-if="a.preferred" class="lan-pick" title="局域网同事优先用这个地址">推荐</span>
-            <button class="btn-ghost sm" @click="copyLanText(lanBaseUrl(a), '地址 ' + a.address)">
-              {{ lanCopied === '地址 ' + a.address ? '✓ 已复制' : '复制' }}
-            </button>
-          </div>
-          <div v-if="!lan.addresses.length" class="empty">
-            未检测到局域网 IPv4 地址，请检查网卡连接状态。
-          </div>
-          <div v-if="lan.addresses.length > 1" class="lan-hint">
-            Tailscale 地址只有在对方也加入同一 tailnet 时可达；虚拟网卡地址通常只有宿主机自己连得上。
-          </div>
-        </div>
-
-        <div class="lan-form">
-          <div class="lan-form-title">在其他主机的客户端（如 WorkBuddy 添加模型）填写：</div>
-          <pre class="code-block" style="margin-top: 8px">{{ lanExample }}</pre>
-          <div class="cfg-actions" style="margin-top: 10px">
-            <button class="btn-primary sm" :disabled="!lanExample" @click="copyLanText(lanExample, '接入三项')">
-              {{ lanCopied === '接入三项' ? '✓ 已复制' : '复制接口地址 / API Key / 模型' }}
-            </button>
-          </div>
-          <p class="hint" style="margin-top: 10px">
-            <span class="warn-dot">!</span>
-            API Key 必须是 <code>cgw-</code> 开头的网关密钥（去 <a href="#/apikeys" @click.prevent="$emit('navigate', 'apikeys')">「API Key 管理」</a> 创建）。
-            若客户端报 401，多半是填成了 OpenAI 官方 key 或漏填。
-          </p>
-        </div>
       </div>
     </div>
 
@@ -590,59 +474,4 @@ code.hl {
 .card-title-row { display: flex; align-items: center; gap: 12px; }
 .card-meta { font-size: 11.5px; color: var(--text-3); margin-left: auto; }
 
-/* ---- 局域网接入面板 ---- */
-.lan-badge {
-  font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
-  margin-left: 8px; vertical-align: middle;
-}
-.lan-badge.on  { background: var(--emerald-dim); color: var(--emerald-light); border: 1px solid rgba(139,107,214,0.28); }
-.lan-badge.off { background: rgba(255,255,255,0.05); color: var(--text-3); border: 1px solid var(--border); }
-
-.lan-off {
-  background: var(--card-2); border: 1px solid var(--border);
-  border-radius: 10px; padding: 14px 16px;
-}
-.lan-off-title { font-size: 13px; color: var(--text); margin-bottom: 8px; font-weight: 600; }
-.lan-off-body { font-size: 12.5px; color: var(--text-2); line-height: 1.8; }
-.lan-cmd {
-  display: flex; align-items: center; gap: 10px; margin: 10px 0 12px;
-  background: var(--bg); border: 1px solid var(--border-strong); border-radius: 9px; padding: 10px 12px;
-}
-.lan-cmd code { font-family: var(--mono); font-size: 12px; color: var(--emerald-light); flex: 1; }
-.lan-rules { margin: 8px 0 0; padding-left: 20px; color: var(--text-3); font-size: 12px; line-height: 1.9; }
-.lan-rules b { color: var(--text-2); }
-.lan-rules code, .lan-off code {
-  font-family: var(--mono); background: rgba(255,255,255,0.06);
-  padding: 1px 5px; border-radius: 4px; font-size: 11px;
-}
-
-.lan-on {
-  background: var(--card-2); border: 1px solid rgba(139,107,214,0.22);
-  border-radius: 10px; padding: 14px 16px;
-}
-.lan-on-head { font-size: 12.5px; color: var(--text-2); display: flex; align-items: center; gap: 8px; }
-.lan-on-head code { font-family: var(--mono); color: var(--emerald-light); font-size: 12px; }
-.lan-dot {
-  width: 8px; height: 8px; border-radius: 50%; background: var(--emerald);
-  box-shadow: 0 0 0 3px rgba(139,107,214,0.18); flex: none;
-}
-.lan-addrs { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 0; }
-.lan-addr {
-  display: flex; align-items: center; gap: 10px;
-  background: var(--bg); border: 1px solid var(--border-strong);
-  border-radius: 9px; padding: 9px 12px;
-}
-.lan-addr code { font-size: 12.5px; color: var(--text); flex: 1; }
-.lan-iface { font-size: 11px; color: var(--text-3); }
-.lan-kind {
-  font-size: 10.5px; font-weight: 600; border-radius: 6px; padding: 1px 7px; flex: none;
-  color: var(--text-3); background: rgba(255,255,255,0.05); border: 1px solid var(--border);
-  white-space: nowrap;
-}
-.lan-kind.lan { color: var(--primary); background: rgba(139,107,214,0.1); border-color: rgba(139,107,214,0.3); }
-.lan-kind.tailscale { color: #a5b4fc; background: rgba(129,140,248,0.12); border-color: rgba(129,140,248,0.35); }
-.lan-pick { font-size: 10.5px; font-weight: 600; color: var(--primary); flex: none; cursor: help; }
-.lan-hint { font-size: 11.5px; color: var(--text-3); line-height: 1.6; }
-.lan-form { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
-.lan-form-title { font-size: 12.5px; color: var(--text-2); }
 </style>

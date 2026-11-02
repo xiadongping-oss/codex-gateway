@@ -2,10 +2,11 @@
 // process tree. The target and resources come from native settings, never UI JSON.
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { planMigration, summarizePlan, prepareMigration, finishMigration, rollbackMigration, describePendingMigration, listMigrationBackups, reviewMigrationBackup, rollbackMigrationBackup } from './migration.mjs'
-import { migrationGuardPath } from '../gateway/storage-paths.mjs'
-import { discoverLegacySources, AUTO_IMPORT_BYTE_LIMIT } from './legacy-sources.mjs'
+import { planMigration, summarizePlan, prepareMigration, finishMigration, rollbackMigration, describePendingMigration, listMigrationBackups, reviewMigrationBackup, rollbackMigrationBackup, noWriter } from './migration.mjs'
+import { migrationGuardPath, containsPath } from '../gateway/storage-paths.mjs'
+import { discoverLegacySources, looksLikeWorkspace, AUTO_IMPORT_BYTE_LIMIT } from './legacy-sources.mjs'
 
 const fail = code => { throw Object.assign(new Error(code), { code }) }
 const present = file => { try { fs.lstatSync(file); return true } catch (e) { if (e.code === 'ENOENT') return false; throw e } }
@@ -47,13 +48,34 @@ function describeCandidate(candidate, targetRoot, resourceRoot) {
   }
   return item
 }
+// Discarding a legacy workspace is the one destructive path in this service, so
+// it borrows every guard the discovery path already trusts: the directory must
+// look exactly like a gateway workspace, hold no writer, and sit outside both
+// the live target and the signed program resources. A pending migration keeps
+// its source untouched — abort may still need it.
+function discardLegacySource(sourceRoot, targetRoot, resourceRoot) {
+  if (present(migrationGuardPath(targetRoot))) fail('MIGRATION_PENDING')
+  if (typeof sourceRoot !== 'string' || !path.isAbsolute(sourceRoot) || sourceRoot.includes('\0')) fail('MIGRATION_ABSOLUTE_PATH_REQUIRED')
+  const source = path.resolve(sourceRoot)
+  if (source === targetRoot || containsPath(source, targetRoot) || containsPath(targetRoot, source)) fail('MIGRATION_ROOT_OVERLAP')
+  if (containsPath(source, resourceRoot) || containsPath(resourceRoot, source)) fail('MIGRATION_ROOT_OVERLAP')
+  if (!looksLikeWorkspace(source)) fail('MIGRATION_SOURCE_MISSING')
+  noWriter(source)
+  // Rename first, delete second: the rename is atomic, so a half-failed delete
+  // can never leave the old workspace looking intact at its original location.
+  const staging = path.join(path.dirname(source), `.${path.basename(source)}.discarding-${crypto.randomUUID()}`)
+  fs.renameSync(source, staging)
+  fs.rmSync(staging, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 })
+  return { discarded: source }
+}
+
 export function handleMigrationRequest(request, targetRoot, resourceRoot) {
   if (!path.isAbsolute(targetRoot) || !path.isAbsolute(resourceRoot)) fail('MIGRATION_ABSOLUTE_PATH_REQUIRED')
   const guard = migrationGuardPath(targetRoot)
   const allowed = {
     context: [], history: [], detect: [], auto_import: [],
     backup_review: ['archiveId'], backup_restore: ['archiveId', 'fingerprint', 'sourceStopped'], plan: ['selection'], apply: ['selection', 'fingerprint', 'sourceStopped'],
-    resume: ['sourceStopped'], abort: ['sourceStopped'], rollback: ['archive', 'sourceStopped']
+    resume: ['sourceStopped'], abort: ['sourceStopped'], rollback: ['archive', 'sourceStopped'], discard: ['sourceRoot']
   }[request?.operation]
   if (!allowed || Object.keys(request).some(k => k !== 'operation' && !allowed.includes(k))) fail('MIGRATION_INVALID_ARGUMENT')
   if (request.operation === 'context') return { targetRoot, pending: present(guard), targetExists: present(targetRoot), recovery: present(guard) ? describePendingMigration(targetRoot) : null }
@@ -72,6 +94,7 @@ export function handleMigrationRequest(request, targetRoot, resourceRoot) {
     return { imported: false, reason }
   }
   if (request.operation === 'backup_review') return reviewMigrationBackup(targetRoot, request.archiveId)
+  if (request.operation === 'discard') return discardLegacySource(request.sourceRoot, targetRoot, resourceRoot)
   if (request.operation === 'backup_restore') return rollbackMigrationBackup(targetRoot, request.archiveId, request.fingerprint, { sourceStopped: request.sourceStopped === true })
   if (request.operation === 'plan' || request.operation === 'apply') {
     const input = request.selection

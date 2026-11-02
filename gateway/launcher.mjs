@@ -31,6 +31,7 @@
 import { gatewayWork } from './work-tracker.mjs'
 import { imageSizeInfo } from './image-size.mjs'
 import { createShutdownManager } from './shutdown-manager.mjs'
+import { createDesktopLan, DEFAULT_LAN_PORT } from './desktop-lan.mjs'
 import { storagePaths, storageLease } from './storage-bootstrap.mjs'
 import { bridgeStorageEnv } from './storage-paths.mjs'
 import { validateExternalPath } from './storage-init.mjs'
@@ -49,6 +50,7 @@ import {
   defaultAuthFilePath,
   writeAuthFile,
   normalizeAuthJson,
+  isKnownInvalidLocalAuth,
   startDeviceFlow,
   pollDeviceFlow,
   clearDeviceFlow,
@@ -189,7 +191,8 @@ try { officialLogin.recover() } catch {}
 try { ensureReferenceRoot() } catch {}
 
 // 应用出网代理（仅影响本进程 fetch；bridge 子进程的代理在 startBridge 中注入）
-try { applyProxy(gwConfig.proxy || '') } catch {}
+// Wait for the dispatcher before OAuth, health or model requests can start.
+await applyProxy(gwConfig.proxy || '')
 
 // ---- 命令行参数（必须在端口解析之前，因为 --port 要参与端口计算）----
 //   --lan / --lan-host=<addr>   开局域网模式（等价 GW_LAN=1）
@@ -444,6 +447,15 @@ function lanAddresses() {
     }
   } catch {}
   return sortAddresses(out)
+}
+
+let desktopLan
+function lanStatus() {
+  const state = DESKTOP && desktopLan ? desktopLan.snapshot() : {
+    enabled: LAN_ENABLED, listenHost: LISTEN_HOST, port: LAUNCHER_PORT, manageable: false
+  }
+  return { ...state, addresses: state.enabled ? lanAddresses().map(a => ({ ...a, port: state.port })) : [],
+    authRequired: state.enabled || !!gwConfig.strictAuth, controlPlaneLocalOnly: true }
 }
 
 const MAX_LOG = 800
@@ -1957,7 +1969,7 @@ function authRejectBody(v) {
 }
 
 function strictAuthReject(req, res, p) {
-  const enforced = gwConfig.strictAuth || LAN_ENABLED
+  const enforced = gwConfig.strictAuth || LAN_ENABLED || req.desktopLan
   if (!enforced) return false
   const raw = rawBearer(req)
   if (raw) {
@@ -1980,7 +1992,7 @@ function strictAuthReject(req, res, p) {
   res.end(JSON.stringify({
     error: 'missing_api_key',
     reason: 'missing',
-    message: LAN_ENABLED
+    message: LAN_ENABLED || req.desktopLan
       ? '局域网模式：/v1 必须携带有效的 cgw- API Key'
       : '严格鉴权已开启：/v1 需要有效的 cgw- API Key（设置页可关闭）',
     hint: '请在请求头加 Authorization: Bearer <cgw- Key>；Key 可在控制台「API Key」页生成。'
@@ -2344,7 +2356,7 @@ async function handleHttpRequest(req, res) {
     // 局域网放行例外：单个生成图 GET（文件名=时间戳36进制+随机UUID片段，不可枚举，视作能力令牌）。
     // 图库列表 / 删除 / 其余控制面（账号/密钥/配置/日志）仍仅限本机。
     const lanGenImageGet = req.method === 'GET' && /^\/__gw\/gen-images\/[A-Za-z0-9_-]+\.png$/.test(p)
-    if (LAN_ENABLED && !isLoopbackReq(req) && !lanGenImageGet) {
+    if ((LAN_ENABLED || req.desktopLan) && !isLoopbackReq(req) && !lanGenImageGet) {
       recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 403, latency: 0, tokens: null })
       res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
       return res.end(JSON.stringify({
@@ -2356,7 +2368,7 @@ async function handleHttpRequest(req, res) {
     // 局域网用户手上只有 cgw- API Key，没有控制台会话，controlPlaneGuard 会一律
     // 401 admin_auth_required —— 素材站缩略图与 MCP 返回的图片链接全部打不开。
     // 放行仍保留前两道闸（Host 白名单 + 同源），只是不要求管理令牌。
-    const lanImagePass = lanGenImageGet && !isLoopbackReq(req)
+    const lanImagePass = lanGenImageGet && (req.desktopLan || !isLoopbackReq(req))
     if (lanImagePass) {
       if (browserOriginGuard(req, res)) return
     } else if (controlPlaneGuard(req, res)) {
@@ -2427,15 +2439,7 @@ async function handleHttpRequest(req, res) {
           proxyEnabled: !!gwConfig.proxy,
           proxyAvailable: getProxyInfo().available
         },
-        lan: {
-          enabled: LAN_ENABLED,
-          listenHost: LISTEN_HOST,
-          port: LAUNCHER_PORT,
-          addresses: LAN_ENABLED ? lanAddresses() : [],
-          // 局域网模式下 /v1 强制鉴权，strictAuth 的开关值不再影响外部行为
-          authRequired: LAN_ENABLED || !!gwConfig.strictAuth,
-          controlPlaneLocalOnly: LAN_ENABLED
-        }
+        lan: lanStatus()
       })
     }
 
@@ -2589,15 +2593,20 @@ async function handleHttpRequest(req, res) {
         proxy: gwConfig.proxy || '',
         proxyEnabled: !!gwConfig.proxy,
         proxyAvailable: getProxyInfo().available,
-        lan: {
-          enabled: LAN_ENABLED,
-          listenHost: LISTEN_HOST,
-          port: LAUNCHER_PORT,
-          addresses: LAN_ENABLED ? lanAddresses() : [],
-          authRequired: LAN_ENABLED || !!gwConfig.strictAuth,
-          controlPlaneLocalOnly: LAN_ENABLED
-        }
+        lan: lanStatus()
       })
+    }
+
+    if (p === '/__gw/lan' && req.method === 'POST') {
+      if (!DESKTOP || !desktopLan) return sendJson(res, 400, { error: 'lan_not_managed', message: '请在桌面端管理共享设置。' })
+      try {
+        const body = await readOptionalBody(req)
+        await desktopLan.configure({ enabled: body.enabled, port: body.port })
+        pushLog(`◆ 局域网共享${body.enabled ? '已开启，端口 ' + body.port : '已关闭'}`)
+        return sendJson(res, 200, { ok: true, lan: lanStatus() })
+      } catch (e) {
+        return sendJson(res, e.code === 'lan_port_in_use' ? 409 : 400, { error: e.code || 'lan_update_failed', message: e.message })
+      }
     }
 
     // ---- 出网代理（与 engine.js 对称；bridge 为子进程，需重启以应用） ----
@@ -2830,6 +2839,12 @@ async function handleHttpRequest(req, res) {
         }
         const body = await readOptionalBody(req)
         const data = normalizeAuthJson(JSON.parse(fs.readFileSync(info.path, 'utf-8')))
+        const currentPath = resolveActiveAuthFilePath()
+        const current = fs.existsSync(currentPath) ? normalizeAuthJson(JSON.parse(fs.readFileSync(currentPath, 'utf-8'))) : null
+        const health = await fetchBridgeHealth()
+        if (isKnownInvalidLocalAuth(data, current, health)) {
+          return sendJson(res, 409, { error: 'local_auth_reauthorization_required', detail: '本地文件与当前账号使用同一份已失效的刷新令牌。重复导入不会更新授权，请通过「OAuth 授权」或「官方登录」重新登录。' })
+        }
         const acct = await addAccount({
           name: body.name || (info.email ? info.email : '本机 Codex 导入'),
           provider: data.auth_mode === 'api_key' ? 'apikey' : 'oauth',
@@ -3090,7 +3105,7 @@ async function handleHttpRequest(req, res) {
       // 但把完整的 bridge /health 原样透出去，等于告诉任何能连到这个端口的人：
       // 这台机器跑着 codex-gateway、账号是否已登录、限流与版本 —— 纯属多余的指纹。
       // 所以按来源分档：本机（控制台要用）保持完整响应，远程只留 ok 与错误码。
-      if (!isLoopbackReq(req)) return publicHealthSummary(req, res)
+      if (req.desktopLan || !isLoopbackReq(req)) return publicHealthSummary(req, res)
       if (gwConfig.mode !== 'openai' && !primaryInstance()) {
         return sendJson(res, 503, {
           ok: false,
@@ -3258,7 +3273,7 @@ let resolveReady, rejectReady
 export const gatewayReady = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject })
 gatewayReady.catch(() => {})
 const sockets = new Set()
-const server = http.createServer((req, res) => {
+function serveRequest(req, res) {
   res.on('error', () => {}) // Includes rejected drain requests on already-closed sockets.
   if (gatewayWork.draining) {
     let p = ''
@@ -3297,6 +3312,14 @@ const server = http.createServer((req, res) => {
       }
     } catch {}
   }).finally(() => { handlerDone = true; endIfDone() })
+}
+const server = http.createServer(serveRequest)
+if (DESKTOP) desktopLan = createDesktopLan({ handler: serveRequest, consolePort: LAUNCHER_PORT,
+  persist(next) {
+    if (!saveConfig({ ...gwConfig, ...next })) return false
+    Object.assign(gwConfig, next)
+    return true
+  }
 })
 server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)) })
 
@@ -3333,8 +3356,9 @@ export const gatewayRuntime = {
     if (failures.length) throw new AggregateError(failures, 'FLUSH_FAILED')
   },
   async stopChildren(ms) { return (await Promise.all([bridgePool.stopAndWait(ms), officialLogin.stopAndWait(ms)])).every(Boolean) },
-  closeHttp(ms) {
+  async closeHttp(ms) {
     cancelBrowserLogin({ force: true, preserveResult: true }); clearDeviceFlow({ force: true, preserveResult: true })
+    await desktopLan?.stop()
     return new Promise(resolve => {
       if (!server.listening) return resolve(true)
       const timer = setTimeout(() => resolve(false), ms)
@@ -3406,7 +3430,12 @@ server.on('error', (err) => {
   process.exit(1)
 })
 
-server.listen(LAUNCHER_PORT, LISTEN_HOST, () => {
+server.listen(LAUNCHER_PORT, LISTEN_HOST, async () => {
+  if (desktopLan) {
+    const port = Number.isInteger(gwConfig.desktopLanPort) && gwConfig.desktopLanPort >= 1024 && gwConfig.desktopLanPort <= 65535 ? gwConfig.desktopLanPort : DEFAULT_LAN_PORT
+    const state = await desktopLan.restore({ enabled: gwConfig.desktopLanEnabled === true, port })
+    if (state.error) pushLog('⚠ 局域网共享未开启：' + state.error)
+  }
   resolveReady({ state: 'ready', origin: `http://127.0.0.1:${LAUNCHER_PORT}`, port: LAUNCHER_PORT, bindHost: LISTEN_HOST, dataRoot: DATA_ROOT, storageVersion: 1, capabilities: ['bootstrap', 'graceful-shutdown'] })
   pushLog(`◆ 启动器已就绪：http://127.0.0.1:${LAUNCHER_PORT}`)
   // 数据目录与程序分离时明说一声：用户排障时不会找错地方

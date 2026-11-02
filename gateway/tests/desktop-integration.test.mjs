@@ -14,9 +14,9 @@ import { migrationGuardPath } from '../storage-paths.mjs'
 
 const GW = fileURLToPath(new URL('..', import.meta.url))
 const sleep = ms => new Promise(r => setTimeout(r, ms))
-async function fixture(t, port) {
+async function fixture(t, port, dataRoot) {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cgw-desktop-'))
-  const root = path.join(temp, '数据 space'), home = path.join(temp, 'home')
+  const root = dataRoot || path.join(temp, '数据 space'), home = path.join(temp, 'home')
   fs.mkdirSync(home)
   if (!port) {
     const server = net.createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening')
@@ -80,6 +80,54 @@ test('desktop handshake does not initialize storage; wrong version cannot start 
   await r.wait(x => x.type === 'fatal')
   assert.equal((await r.exited)[0], 5)
   assert.equal(fs.existsSync(r.root), false)
+})
+
+test('desktop LAN: live management, authentication, rollback, persistence and shutdown', async t => {
+  const r = await fixture(t), ready = await r.start()
+  assert.equal(ready.bindHost, '127.0.0.1')
+  const login = await fetch((await r.command('bootstrap')).payload.url, { redirect: 'manual' })
+  const cookie = login.headers.get('set-cookie').split(';')[0]
+  const headers = { Cookie: cookie, 'Content-Type': 'application/json' }
+  const control = (body, extra = {}) => fetch(ready.origin + '/__gw/lan', { method: 'POST', headers: { ...headers, ...extra }, body: JSON.stringify(body) })
+  const occupying = net.createServer(); occupying.listen(0, '0.0.0.0'); await once(occupying, 'listening')
+  t.after(() => new Promise(resolve => occupying.close(resolve)))
+  const busyPort = occupying.address().port
+  const probe = net.createServer(); probe.listen(0, '0.0.0.0'); await once(probe, 'listening')
+  const port = probe.address().port; await new Promise(resolve => probe.close(resolve))
+  assert.equal((await control({ enabled: true, port }, { Cookie: '' })).status, 401)
+  assert.equal((await control({ enabled: true, port }, { Origin: 'https://example.com' })).status, 403)
+  assert.equal((await control({ enabled: true, port: ready.port })).status, 400)
+  assert.equal((await control({ enabled: true, port: '4174' })).status, 400)
+  const enabled = await control({ enabled: true, port })
+  assert.equal(enabled.status, 200)
+  const status = (await enabled.json()).lan
+  assert.equal(status.enabled, true); assert.equal(status.port, port); assert.equal(status.manageable, true)
+  assert.ok(status.addresses.every(a => a.port === port))
+  const origin = `http://127.0.0.1:${port}`
+  assert.equal((await fetch(origin + '/v1/models')).status, 401)
+  assert.equal((await fetch(origin + '/v1/models', { headers: { Authorization: 'Bearer cgw-invalid-fixture' } })).status, 401)
+  for (const p of ['/', '/__gw/status', '/__gw/apikeys', '/__gw/admin/bootstrap', '/__gw/lan']) {
+    assert.equal((await fetch(origin + p, { headers })).status, 403, p)
+  }
+  const key = await (await fetch(ready.origin + '/__gw/apikeys', { method: 'POST', headers, body: '{"name":"LAN fixture"}' })).json()
+  assert.equal((await fetch(origin + '/v1/models', { headers: { Authorization: `Bearer ${key.key.token}` } })).status, 200)
+  const conflict = await control({ enabled: true, port: busyPort })
+  assert.equal(conflict.status, 409); assert.equal((await conflict.json()).error, 'lan_port_in_use')
+  assert.equal((await fetch(origin + '/v1/models')).status, 401, 'old listener survives failed replacement')
+  const stored = JSON.parse(fs.readFileSync(path.join(r.root, '.gw-config.json')))
+  assert.equal(stored.desktopLanEnabled, true); assert.equal(stored.desktopLanPort, port)
+  await r.command('shutdown', { reason: 'user_exit' }); await r.exited
+  await assert.rejects(fetch(origin + '/v1/models'))
+  const restarted = await fixture(t, ready.port, r.root), again = await restarted.start()
+  assert.equal(again.bindHost, '127.0.0.1')
+  assert.equal((await fetch(origin + '/v1/models')).status, 401, 'saved listener is restored on process restart')
+  const relogin = await fetch((await restarted.command('bootstrap')).payload.url, { redirect: 'manual' })
+  const newHeaders = { Cookie: relogin.headers.get('set-cookie').split(';')[0], 'Content-Type': 'application/json' }
+  assert.equal((await fetch(again.origin + '/__gw/lan', { method: 'POST', headers: newHeaders, body: JSON.stringify({ enabled: false, port }) })).status, 200)
+  await assert.rejects(fetch(origin + '/v1/models'))
+  assert.equal((await fetch(again.origin + '/__gw/status', { headers: newHeaders })).status, 200)
+  assert.equal(JSON.parse(fs.readFileSync(path.join(r.root, '.gw-config.json'))).desktopLanEnabled, false)
+  await restarted.command('shutdown', { reason: 'user_exit' }); await restarted.exited
 })
 
 test('real desktop: ticket exchange, replacement/replay, drain slow request, save and release', async t => {

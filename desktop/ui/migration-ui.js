@@ -7,6 +7,7 @@
   // 知道的是「数据还在吗、我该做什么」，而不是内部代号。
   const messages = {
     MIGRATION_SOURCE_MISSING: '找不到这个目录，请核对路径是否完整、盘符是否正确。数据没有被改动。',
+    MIGRATION_SOURCE_NOT_DETECTED: '这个位置还没有通过扫描确认，不能直接删除。只有扫描找到的旧数据才提供删除。',
     ENOENT: '有文件或目录不存在，可能已经被移动过。数据没有被改动。',
     MIGRATION_ABSOLUTE_PATH_REQUIRED: '请填写完整的绝对路径，例如 C:\\Users\\你的名字\\AppData\\Local\\CodexGateway。',
     MIGRATION_INVALID_ACCOUNTS: '账号注册表和凭据文件对不上，请在旧版里再启动一次确认能正常使用。未进行迁移。',
@@ -130,7 +131,7 @@
         node.textContent = spec.label
         node.onclick = spec.onClick
         node.disabled = busy || Boolean(spec.disabled)
-        node.className = id === 'main' || id === 'start' ? '' : 'secondary'
+        node.className = spec.danger ? 'danger' : (id === 'main' || id === 'start' ? '' : 'secondary')
       }
       return node
     }
@@ -159,7 +160,11 @@
     el('hint').textContent = ''
     if (state.view === 'source') {
       const picked = Boolean(state.selected)
-      renderActions({ main: { label: '下一步', onClick: next, disabled: !picked } })
+      const deletable = picked && !state.selected.manual
+      renderActions({
+        main: { label: '下一步', onClick: next, disabled: !picked },
+        alt: deletable ? { label: '删除这份旧数据', onClick: discardSelected, danger: true } : null
+      })
     } else if (state.view === 'gallery') {
       renderActions({ back: { label: '上一步', onClick: () => go('source') }, main: { label: '下一步', onClick: next } })
     } else if (state.view === 'recovery') {
@@ -182,13 +187,18 @@
     el('step-badge').textContent = labels[state.view] || '准备中'
     el('step-badge').className = state.view === 'result' && state.result && state.result.phase !== 'committed' ? 'badge failed' : 'badge'
   }
+  // 扫描结果自己会说话：有几处、在哪、多大。一个都没有时，下面的手动表单就是出路。
+  function renderSourceLede() {
+    const count = state.candidates.filter(candidate => !candidate.manual).length
+    const lede = el('source-lede')
+    lede.hidden = count === 0
+    if (count) lede.textContent = `在这台电脑上找到 ${count} 处旧版数据。选中一份后开始迁移；不再需要的也可以直接删除。`
+    el('source-empty').hidden = count > 0
+  }
   function renderCandidates() {
     const list = el('candidates')
     list.replaceChildren()
-    const empty = state.candidates.length === 0
-    el('source-empty').hidden = !empty
-    // 一个候选都没有时，再把「手动指定」藏在折叠区里等于没给出口。
-    el('manual').open = empty
+    renderSourceLede()
     state.candidates.forEach((candidate, index) => {
       const row = document.createElement('label')
       row.className = state.selected === candidate ? 'choice selected' : 'choice'
@@ -200,6 +210,7 @@
       input.onchange = () => {
         state.selected = candidate
         state.galleryChoice = candidate.galleryFiles ? 'import' : 'skip'
+        notice('')
         renderCandidates()
         render()
       }
@@ -355,7 +366,6 @@
       setPlanning(false)
       renderError(describe(error), error)
       syncAdvanced(error)
-      if (['MIGRATION_ABSOLUTE_PATH_REQUIRED', 'MIGRATION_SOURCE_MISSING', 'ENOENT'].includes(String(error))) el('manual').open = true
       go(hasGallery() ? 'gallery' : 'source')
       return
     }
@@ -426,6 +436,51 @@
     } catch { /* 候选列表失败不覆盖上面的错误提示 */ }
     renderCandidates()
   }
+
+  // ---- 删除旧数据 -------------------------------------------------------------
+  // 迁移永远不删除旧目录；删除是用户对「不需要的旧数据」的显式选择，必须经过确认。
+  function notice(text) {
+    const box = el('source-notice')
+    box.hidden = !text
+    box.textContent = text || ''
+  }
+  function discardSelected() {
+    const candidate = state.selected
+    if (!candidate || candidate.manual || state.busy || state.loading) {
+      if (candidate && candidate.manual) renderError(describe('MIGRATION_SOURCE_NOT_DETECTED'), 'MIGRATION_SOURCE_NOT_DETECTED')
+      return
+    }
+    window.confirmAction(null, '删除这份旧数据？',
+      `${candidate.sourceRoot} 里的账号、配置和图片会被永久删除，无法恢复。如果只是想搬进桌面版，请用「下一步」迁移。`,
+      '永久删除', () => discard(candidate))
+  }
+  async function discard(candidate) {
+    if (state.busy || state.loading) return
+    state.busy = true
+    setView('running')
+    el('running-text').textContent = '正在删除这份旧数据…'
+    renderError('')
+    render()
+    try {
+      const result = await invoke({ operation: 'discard', sourceRoot: candidate.sourceRoot })
+      state.selected = null
+      state.view = 'source'
+      setView('source')
+      setStep('source')
+      renderError('')
+      notice(`已删除 ${result.discarded}。`)
+      await loadCandidatesQuiet()
+    } catch (error) {
+      state.view = 'source'
+      setView('source')
+      setStep('source')
+      renderError(describe(error), error)
+      await loadCandidatesQuiet()
+    } finally {
+      state.busy = false
+      render()
+    }
+  }
   function renderRecovery() {
     const recovery = state.context && state.context.recovery
     // 「还原」对谨慎用户是有破坏暗示的词，必须讲清丢的是什么、不丢的是什么。
@@ -454,6 +509,7 @@
       return
     }
     manualError.textContent = ''
+    notice('')
     const gallery = el('gallery').value.trim()
     const manual = {
       sourceRoot,

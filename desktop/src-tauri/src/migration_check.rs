@@ -38,7 +38,7 @@ pub fn start(app: &tauri::AppHandle, settings: &Settings) -> Arc<AtomicBool> {
         "fresh": settings.smoke_case == "migration-fresh"
     });
     thread::spawn(move || {
-        let window = app.get_webview_window("main").unwrap();
+        let window = app.get_webview("main").unwrap();
         let script = format!(
             "window.__migrationFixture = {}; {}",
             fixture,

@@ -1,6 +1,9 @@
 <script setup>
 defineProps({name:{type:String,default:'overview'}})
 const paths={
+ runtime:'M3 12h4l3-8 4 16 3-8h4',
+ lan:'M9 3h6v5H9zM2 16h6v5H2zM16 16h6v5h-6zM12 8v4M5 16v-4h14v4',
+
  overview:'M3 3h7v7H3zM14 3h7v4h-7zM14 11h7v10h-7zM3 14h7v7H3z',
  account:'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM4 21v-2a7 7 0 0 1 14 0v2M19 4h3m-1.5-1.5v3',
  images:'M3 4h18v16H3zM3 15l5-5 5 5 3-3 5 5M15 8h.01',

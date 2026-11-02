@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tauri::{Manager, WebviewWindow};
+use tauri::{Manager, Webview};
 
 type Observation = Option<(u8, Instant, Value)>;
 
@@ -19,6 +19,10 @@ pub struct Check {
     observation: Arc<Mutex<Observation>>,
     callback_error: Arc<Mutex<Option<String>>>,
     cleanup_app: Option<tauri::AppHandle>,
+    previous_switches: Option<u64>,
+    native_id: Option<usize>,
+    #[cfg(windows)]
+    normal_bounds: Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>)>,
 }
 impl Default for Check {
     fn default() -> Self {
@@ -31,6 +35,10 @@ impl Default for Check {
             observation: Arc::new(Mutex::new(None)),
             callback_error: Arc::new(Mutex::new(None)),
             cleanup_app: None,
+            previous_switches: None,
+            native_id: None,
+            #[cfg(windows)]
+            normal_bounds: None,
         }
     }
 }
@@ -53,7 +61,7 @@ impl Check {
         self.next_probe = Instant::now();
     }
 
-    fn click(&self, window: &WebviewWindow, selector: &str) -> Result<(), String> {
+    fn click(&self, window: &Webview, selector: &str) -> Result<(), String> {
         let script = format!(
             "(() => {{ const e = document.querySelector({}); if (!e || e.disabled || !e.getClientRects().length) return false; e.click(); return true; }})()",
             serde_json::to_string(selector).unwrap()
@@ -68,7 +76,7 @@ impl Check {
             .map_err(|_| "WORKSPACE_CLICK_FAILED".into())
     }
 
-    fn probe(&mut self, window: &WebviewWindow, local: bool) -> Result<Option<Value>, String> {
+    fn probe(&mut self, window: &Webview, local: bool) -> Result<Option<Value>, String> {
         if Instant::now() >= self.next_probe {
             self.next_probe = Instant::now() + Duration::from_millis(150);
             let script = if local {
@@ -135,7 +143,12 @@ impl Check {
         }
         let snapshot = crate::desktop::window_snapshot(app)?;
         let visible = snapshot.visible_count();
-        if visible > 1 {
+        if visible > 1
+            || snapshot.windows.len() != 1
+            || self
+                .native_id
+                .is_some_and(|id| snapshot.native_id != Some(id))
+        {
             eprintln!(
                 "W01_VISIBILITY_FAILURE {}",
                 serde_json::to_string(&snapshot).unwrap()
@@ -165,20 +178,30 @@ impl Check {
                 Ok(false)
             };
         };
-        let main = app
-            .get_webview_window("main")
-            .ok_or("WORKSPACE_MAIN_MISSING")?;
+        let main = app.get_webview("main").ok_or("WORKSPACE_MAIN_MISSING")?;
+        let frame = app.get_window("main").ok_or("WORKSPACE_FRAME_MISSING")?;
         if self.stage == 0 {
             if !console.smoke_passed() || visible != 1 {
                 return Ok(false);
             }
-            let window = app
-                .webview_windows()
-                .into_values()
-                .find(|window| {
-                    window.label().starts_with("console-") && snapshot.visible(window.label())
-                })
-                .ok_or("WORKSPACE_CONSOLE_MISSING")?;
+            let window = console.webview();
+            self.native_id = snapshot.native_id;
+            #[cfg(windows)]
+            {
+                if self.normal_bounds.is_none() {
+                    self.normal_bounds = Some((
+                        frame
+                            .outer_position()
+                            .map_err(|_| "WORKSPACE_BOUNDS_QUERY")?,
+                        frame.inner_size().map_err(|_| "WORKSPACE_BOUNDS_QUERY")?,
+                    ));
+                    frame.maximize().map_err(|_| "WORKSPACE_MAXIMIZE_FAILED")?;
+                    return Ok(false);
+                }
+                if !frame.is_maximized().unwrap_or(false) {
+                    return Ok(false);
+                }
+            }
             self.node_pid = Some(session.child.id());
             self.console_label = Some(window.label().into());
             self.cleanup_app = Some(app.clone());
@@ -190,13 +213,14 @@ impl Check {
                 return Err("WORKSPACE_TEST_AUTOSTART_ALREADY_ENABLED".into());
             }
             self.click(&window, "button[data-workspace-page='service']")?;
+            self.previous_switches = Some(snapshot.view_switches);
             self.advance();
             return Ok(false);
         }
         let remote = app
-            .get_webview_window(self.console_label.as_deref().unwrap())
+            .get_webview(self.console_label.as_deref().unwrap())
             .ok_or("WORKSPACE_CONSOLE_REPLACED")?;
-        let local = !matches!(self.stage, 6 | 8);
+        let local = matches!(self.stage, 1..=5 | 7 | 12 | 13 | 17);
         let Some(value) = self.probe(if local { &main } else { &remote }, local)? else {
             return Ok(false);
         };
@@ -210,15 +234,37 @@ impl Check {
             3..=5 => "desktop",
             6 => "account",
             8 => "overview",
+            9 | 15 => "runtime",
+            10 => "lan",
+            11 => "logs",
+            12 | 17 => "data",
+            13 => "service",
+            14 => "models",
+            16 => "settings",
+            18 | 19 => "overview",
             _ => return Err("WORKSPACE_STAGE_INVALID".into()),
         };
         if visible != 1
-            || snapshot.visible("main") != local
-            || snapshot.visible(remote.label()) == local
-            || page != expected
+            || snapshot.view_visible("main") != local
+            || snapshot.view_visible(remote.label()) == local
+            || (local && page != expected)
+            || (!local && !crate::desktop::business_page(&page))
             || value["domPage"] != expected
             || (local && value["state"]["page"] != expected)
         {
+            return Ok(false);
+        }
+        // Both views fill the same client area after maximize, resize and return.
+        if (if local { &main } else { &remote }).size().ok() != frame.inner_size().ok() {
+            return Ok(false);
+        }
+        if matches!(self.stage, 2..=5 | 9..=11 | 13 | 15 | 16)
+            && self.previous_switches != Some(snapshot.view_switches)
+        {
+            return Err("WORKSPACE_REDUNDANT_WINDOW_TRANSFER".into());
+        }
+        #[cfg(windows)]
+        if self.stage < 19 && !frame.is_maximized().unwrap_or(false) {
             return Ok(false);
         }
         match self.stage {
@@ -242,16 +288,29 @@ impl Check {
                     },
                 )?;
             }
-            6 | 8 => {
-                if value["cleanOrigin"] != true
-                    || value["sessionReady"] != true
+            6 | 8..=19 => {
+                if (!local && (value["cleanOrigin"] != true || value["sessionReady"] != true))
                     || !console.smoke_passed()
                 {
                     return Err("WORKSPACE_REMOTE_SESSION_CHANGED".into());
                 }
-                if self.stage == 8 {
+                if self.stage == 19 {
                     if !Self::autostart_matches(app, false)? {
                         return Err("WORKSPACE_AUTOSTART_NOT_CLEARED".into());
+                    }
+                    #[cfg(windows)]
+                    {
+                        let (position, size) =
+                            self.normal_bounds.ok_or("WORKSPACE_BOUNDS_MISSING")?;
+                        if frame.is_maximized().unwrap_or(true)
+                            || frame.outer_position().ok() != Some(position)
+                            || frame.inner_size().ok() != Some(size)
+                        {
+                            return Ok(false);
+                        }
+                        if snapshot.view_switches < 6 {
+                            return Err("WORKSPACE_VIEW_SWITCH_NOT_EXERCISED".into());
+                        }
                     }
                     eprintln!(
                         "W01_VISIBILITY {}",
@@ -260,11 +319,33 @@ impl Check {
                     eprintln!("W01_WORKSPACE true");
                     return Ok(true);
                 }
-                self.click(&remote, "button[data-workspace-page='service']")?;
+                let selector = match self.stage {
+                    6 => "button[data-workspace-page='service']",
+                    8 | 14 => "button[data-workspace-page='runtime']",
+                    9 => "button[data-workspace-page='lan']",
+                    10 => "button[data-workspace-page='logs']",
+                    11 | 16 => "button[data-workspace-page='data']",
+                    12 => "button.nav-item[data-page='service']",
+                    13 => "button.nav-item[data-page='models']",
+                    15 => "button[data-workspace-page='settings']",
+                    17 => "button.nav-item[data-page='overview']",
+                    18 => {
+                        #[cfg(windows)]
+                        frame
+                            .unmaximize()
+                            .map_err(|_| "WORKSPACE_UNMAXIMIZE_FAILED")?;
+                        self.previous_switches = Some(snapshot.view_switches);
+                        self.advance();
+                        return Ok(false);
+                    }
+                    _ => unreachable!(),
+                };
+                self.click(if local { &main } else { &remote }, selector)?;
             }
             7 => self.click(&main, "button.nav-item[data-page='overview']")?,
             _ => unreachable!(),
         }
+        self.previous_switches = Some(snapshot.view_switches);
         eprintln!(
             "W01_VISIBILITY {}",
             serde_json::to_string(&snapshot).unwrap()

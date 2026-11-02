@@ -43,7 +43,7 @@ function initials(name) {
     <div class="account-row">
       <span class="k">状态</span>
       <span class="v" :class="account.loggedIn ? 'ok' : 'bad'">
-        <span class="dot"></span>{{ account.loggedIn ? '登录态有效' : '未登录' }}
+        <span class="dot"></span>{{ account.loggedIn ? '凭据已保存' : '未登录' }}
       </span>
     </div>
     <div class="account-row" style="border-bottom: none">
@@ -61,7 +61,7 @@ function initials(name) {
 .account-head.empty { border-style: dashed; }
 .avatar {
   width: 44px; height: 44px; border-radius: 12px;
-  background: linear-gradient(135deg, var(--emerald), #14b8a6); color: #082f23;
+  background: var(--primary-soft); color: var(--primary);
   display: grid; place-items: center;
   font-size: 16px; font-weight: 800; letter-spacing: 0.05em;
 }

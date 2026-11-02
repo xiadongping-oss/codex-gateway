@@ -3,7 +3,7 @@
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex Gateway</title><link rel="stylesheet" href="style.css"></head>
 <body><div class="layout">
   <aside class="sidebar" aria-label="工作台导航">
-    <div class="brand"><svg class="brand-mark" viewBox="0 0 40 40" fill="none" aria-hidden="true"><rect x="1" y="1" width="38" height="38" rx="12" fill="currentColor" opacity=".12"/><path d="M15 12 7 20l8 8M25 12l8 8-8 8m-3-18-5 20" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="30" cy="10" r="4" fill="currentColor"/><circle cx="30" cy="10" r="1.2" fill="var(--card)"/></svg><span><strong>Codex 网关</strong><small>AI WORKSPACE</small></span></div>
+    <div class="brand"><img class="brand-mark" src="brand.png" alt="" aria-hidden="true" draggable="false"><span><strong>Codex 网关</strong><small>AI WORKSPACE</small></span></div>
     <nav>
       <div class="nav-group"><p class="nav-heading">工作区</p>
         <button class="nav-item" data-page="overview" title="概览"><span data-icon="overview"></span><span>概览</span></button>
@@ -13,9 +13,11 @@
       </div>
       <div class="nav-group"><p class="nav-heading">开发接入</p>
         <button class="nav-item" data-page="apikeys" title="API Key"><span data-icon="apikeys"></span><span>API Key</span></button>
+        <button class="nav-item" data-page="lan" title="局域网共享"><span data-icon="lan"></span><span>局域网共享</span></button>
         <button class="nav-item" data-page="logs" title="调用日志"><span data-icon="logs"></span><span>调用日志</span></button>
       </div>
       <div class="nav-group"><p class="nav-heading">管理</p>
+        <button class="nav-item" data-page="runtime" title="运行详情"><span data-icon="runtime"></span><span>运行详情</span></button>
         <button class="nav-item active" data-page="service" title="服务与诊断" aria-current="page"><span data-icon="service"></span><span>服务与诊断</span></button>
         <button class="nav-item" data-page="data" title="数据与备份"><span data-icon="data"></span><span>数据与备份</span></button>
         <button class="nav-item" data-page="desktop" title="设置"><span data-icon="settings"></span><span>设置</span></button>
@@ -44,7 +46,7 @@
     <section id="migration-panel" class="card migration-card" aria-labelledby="migration-title" hidden>
       <div class="card-top"><span class="eyebrow">数据迁移</span><span id="migration-step-badge" class="badge">准备中</span></div>
       <h2 id="migration-title">把旧数据搬进来</h2>
-      <p class="lede">在这台电脑上找到旧版留下的数据，自动搬进桌面版的工作空间。旧目录始终保留，不会删除。</p>
+      <p class="lede">在这台电脑上找到旧版留下的数据，搬进桌面版的工作空间。迁移全程先备份、可回退，旧目录不会被删除；不再需要的旧数据也可以在扫描后直接清理。</p>
       <div id="migration-auto" class="notice" hidden></div>
       <div id="migration-service-notice" class="notice gate" hidden>
         <p>本机服务正在运行。迁移要重写整个数据目录，所以要先把它停下来。</p>
@@ -66,10 +68,13 @@
           <p class="lede">正在这台电脑上查找旧版数据…</p>
         </div>
         <div data-view="source" hidden>
-          <p class="lede">找到以下旧数据位置，选择一个开始迁移。</p>
+          <p class="lede" id="migration-source-lede" hidden></p>
           <div id="migration-candidates" class="choice-list" role="radiogroup" aria-label="旧数据位置"></div>
-          <p id="migration-source-empty" class="lede" hidden>这台电脑上没有找到旧版数据。如果旧版装在别的盘或用过便携版，可以手动指定目录。</p>
-          <details id="migration-manual" class="manual"><summary>手动指定目录</summary>
+          <p id="migration-source-notice" class="notice ok" hidden></p>
+          <p id="migration-source-empty" class="lede" hidden>这台电脑上没有找到旧版数据。可以把旧版的目录路径粘贴到下面，检查通过后就能迁移。</p>
+          <div id="migration-manual" class="manual-block">
+            <h3>手动指定目录</h3>
+            <p class="inline-help">旧版装在别的盘、改过数据位置或用过便携版时，把完整目录路径粘贴在这里。</p>
             <label for="migration-source">旧数据目录</label>
             <input id="migration-source" type="text" spellcheck="false" autocomplete="off" placeholder="粘贴完整目录路径">
             <label for="migration-kind">这是什么版本的数据</label>
@@ -77,8 +82,8 @@
             <label for="migration-gallery">图库目录（图片不在数据目录里时才填）</label>
             <input id="migration-gallery" type="text" spellcheck="false" autocomplete="off" placeholder="完整目录路径，可留空">
             <p id="migration-manual-error" class="field-error"></p>
-            <button id="migration-manual-use" class="secondary">使用这个目录</button>
-          </details>
+            <button id="migration-manual-use" class="secondary">检查并选用这个目录</button>
+          </div>
         </div>
         <div data-view="gallery" hidden>
           <p class="lede" id="migration-gallery-lede"></p>

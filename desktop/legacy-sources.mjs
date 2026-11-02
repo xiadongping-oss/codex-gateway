@@ -56,7 +56,9 @@ function isDirectory(root, api) {
     return false
   }
 }
-function looksLikeWorkspace(root, api) {
+// Exported for the discard path: deleting a "detected old workspace" must apply
+// the exact same recognition rules discovery used, not a looser guess.
+export function looksLikeWorkspace(root, api = { ...fsDefault, ...path }) {
   if (!isDirectory(root, api)) return false
   return MARKERS.some(name => {
     try {

@@ -8,7 +8,7 @@ use std::{
 };
 use tauri::{
     webview::{NewWindowResponse, PageLoadEvent},
-    Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    Manager, Url, Webview, WebviewBuilder, WebviewUrl,
 };
 use tauri_plugin_opener::OpenerExt;
 
@@ -108,7 +108,7 @@ impl Policy {
         }
     }
     fn open_workspace(self: &Arc<Self>, app: &tauri::AppHandle, label: &str, page: &'static str) {
-        let Some(source) = app.get_webview_window(label) else {
+        let Some(source) = app.get_webview(label) else {
             return;
         };
         let handle = app.clone();
@@ -127,7 +127,7 @@ impl Policy {
                     }.unwrap_or(Value::Null);
                     let theme = if presentation["theme"] == "dark" { "dark" } else { "light" };
                     let collapsed = presentation["collapsed"] == true;
-                    if let Some(main) = handle.get_webview_window("main") {
+                    if let Some(main) = handle.get_webview("main") {
                         let _ = main.eval(format!("window.applyWorkspaceTheme?.('{}'); window.applyWorkspaceCollapsed?.({})", theme, collapsed));
                     }
                     crate::desktop::open_local(&handle, page);
@@ -188,7 +188,7 @@ impl Policy {
     }
 }
 pub struct Console {
-    window: WebviewWindow,
+    window: Webview,
     pub policy: Arc<Policy>,
     pub evidence: Arc<Mutex<Value>>,
     pub started: Instant,
@@ -215,17 +215,9 @@ impl Console {
         let label = format!("console-{launch_id}-{}", uuid::Uuid::new_v4());
         let nav_label = label.clone();
         let popup_label = label.clone();
-        let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
-            .title(if cfg!(debug_assertions) && app.state::<crate::desktop::Desktop>().account_validation {
-                "Codex Gateway · 账号验收（独立工作空间）"
-            } else if cfg!(debug_assertions) && isolated {
-                "Codex Gateway · 隔离测试（非真实账号环境）"
-            } else {
-                "Codex Gateway · 工作台"
-            })
-            .inner_size(1200., 820.)
-            .min_inner_size(760., 600.)
-            .visible(false)
+        let frame = app.get_window("main").ok_or("CONSOLE_FRAME_MISSING")?;
+        let builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
+            .focused(false)
             .incognito(true)
             .data_directory(webview_data.to_path_buf())
             .initialization_script(include_str!("../scripts/session.js").replace("/*__CGW_ORIGIN__*/null",&serde_json::to_string(&format!("http://127.0.0.1:{port}")).unwrap()))
@@ -247,7 +239,7 @@ impl Console {
                     let policy = popup.clone();
                     let _ = popup_app.run_on_main_thread(move || {
                         if policy.internal(&url) {
-                            if let Some(w) = handle.get_webview_window(&label) {
+                            if let Some(w) = handle.get_webview(&label) {
                                 let _ = w.navigate(url);
                             }
                         }
@@ -264,18 +256,33 @@ impl Console {
                         .eval("history.replaceState(null, '', location.pathname + location.search + location.hash);");
                 }
             })
-            .build()
+;
+        // Build outside the visible client area, then size the hidden child to
+        // the shared frame. An unauthenticated/blank view must never flash up.
+        let window = frame
+            .add_child(
+                builder,
+                tauri::PhysicalPosition::new(-10000, -10000),
+                tauri::PhysicalSize::new(1, 1),
+            )
             .map_err(|_| "CONSOLE_UNAVAILABLE")?;
-        let active = policy.clone();
-        let close_app = app.clone();
-        window.on_window_event(move |event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if active.active.load(Ordering::SeqCst) {
-                    api.prevent_close();
-                    crate::desktop::hide(&close_app);
-                }
-            }
-        });
+        if window
+            .hide()
+            .and_then(|_| {
+                window.set_bounds(tauri::Rect {
+                    position: tauri::PhysicalPosition::new(0, 0).into(),
+                    size: frame
+                        .inner_size()
+                        .map_err(|_| tauri::Error::WindowNotFound)?
+                        .into(),
+                })
+            })
+            .and_then(|_| window.set_auto_resize(true))
+            .is_err()
+        {
+            let _ = window.close();
+            return Err("CONSOLE_UNAVAILABLE".into());
+        }
         Ok(Self {
             window,
             policy,
@@ -332,6 +339,10 @@ impl Console {
             return Err("CONSOLE_SESSION_LOST".into());
         }
         Ok(ready)
+    }
+    #[cfg(debug_assertions)]
+    pub fn webview(&self) -> &Webview {
+        &self.window
     }
     pub fn smoke_passed(&self) -> bool {
         let v = self.evidence.lock().unwrap();
@@ -395,19 +406,18 @@ impl Console {
     pub fn close(&self, app: &tauri::AppHandle) {
         self.policy.active.store(false, Ordering::SeqCst);
         self.policy.initial.lock().unwrap().take();
-        let _ = self.window.destroy();
         crate::desktop::show_main(app);
+        let _ = self.window.close();
     }
     pub fn suspend(&self, app: &tauri::AppHandle) {
         self.policy.active.store(false, Ordering::SeqCst);
-        let _ = self.window.hide();
         crate::desktop::show_main(app);
     }
     pub fn test_close(&self) -> tauri::Result<()> {
-        self.window.close()
+        self.window.window().close()
     }
     pub fn visible(&self) -> bool {
-        self.window.is_visible().unwrap_or(false)
+        crate::desktop::view_visible(self.window.app_handle(), self.window.label())
     }
     pub fn test_menu(&self, app: &tauri::AppHandle) {
         if !app.state::<crate::desktop::Desktop>().isolated {
@@ -415,7 +425,7 @@ impl Console {
         }
         use tauri::menu::ContextMenu;
         let _ = app.state::<crate::desktop::TrayMenu>().0.popup_at(
-            self.window.as_ref().window(),
+            self.window.window(),
             tauri::LogicalPosition::new(700., 400.),
         );
     }

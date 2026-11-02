@@ -193,6 +193,7 @@ export async function probeQuotaViaBridge({ accountId = null, bridgePort, model 
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   let status = 0
   let netErr = null
+  let responseBody = ''
   try {
     const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
       method: 'POST',
@@ -207,7 +208,7 @@ export async function probeQuotaViaBridge({ accountId = null, bridgePort, model 
     })
     status = res.status
     // 返回内容没用，但必须读完才会释放连接
-    await res.arrayBuffer().catch(() => null)
+    responseBody = await res.text().catch(() => '')
   } catch (e) {
     netErr = e
   } finally {
@@ -222,7 +223,11 @@ export async function probeQuotaViaBridge({ accountId = null, bridgePort, model 
     probeState.set(key, { at: Date.now(), ok: true, status })
     return { ok: true, source: 'realtime', status, syncedAt: rt.syncedAt }
   }
-  const reason = netErr ? 'bridge_unreachable' : status ? 'no_limit_headers' : 'unknown'
+  const reason = netErr ? 'bridge_unreachable'
+    : /unsupported_country_region_territory|region_territory/i.test(responseBody) ? 'region_restricted'
+    : status === 401 || /invalid_grant|invalid_refresh_token|token_expired|revoked|HTTP 401/i.test(responseBody) ? 'auth_required'
+    : status >= 400 ? 'upstream_error'
+    : status ? 'no_limit_headers' : 'unknown'
   const detail = netErr ? netErr.message : status ? `探测请求返回 ${status}，但这次响应没带上限流头` : ''
   probeState.set(key, { at: Date.now(), ok: false, status, reason })
   return { ok: false, reason, status, detail }
@@ -351,6 +356,16 @@ export function realtimeQuotaFrom(headers = {}, at = 0) {
   }
 }
 
+export function subscriptionPlanFromClaims(claims = {}) {
+  const auth = claims['https://api.openai.com/auth'] || {}
+  const raw = auth.chatgpt_subscription_active_until
+  const date = typeof raw === 'string' && raw.trim() ? new Date(raw) : null
+  return {
+    name: typeof auth.chatgpt_plan_type === 'string' ? auth.chatgpt_plan_type.toUpperCase() : '',
+    expiresAt: date && Number.isFinite(date.getTime()) ? date.toISOString() : null
+  }
+}
+
 export async function getAccountQuota(gwConfig = {}) {
   ensureDataDir()
 
@@ -360,6 +375,7 @@ export async function getAccountQuota(gwConfig = {}) {
   let name = ''
   let provider = ''
   let accountId = null
+  let accountPlan = {}
   try {
     const reg = loadAccounts()
     accountId = reg?.activeId || null
@@ -373,6 +389,7 @@ export async function getAccountQuota(gwConfig = {}) {
         const idToken = data?.tokens?.id_token
         if (idToken) {
           const claims = jwtClaims(idToken) || {}
+          accountPlan = subscriptionPlanFromClaims(claims)
           email =
             claims?.['https://api.openai.com/profile']?.email ||
             claims?.email ||
@@ -398,7 +415,6 @@ export async function getAccountQuota(gwConfig = {}) {
   const legacySample = !!raw._note && raw._sample !== false
 
   const plan = cfg.plan || {}
-  const expiresInDays = daysUntil(plan.expiresAt)
   // 没有任何数据时不给「剩余 100%」这种假数字，宁可给 null 让界面显示空态
   let weekly = cfg.weekly ? normalizeQuota({ ...cfg.weekly, label: cfg.weekly.label || 'Weekly' }) : null
   let models = Array.isArray(cfg.models) ? cfg.models.map(normalizeQuota) : []
@@ -415,7 +431,9 @@ export async function getAccountQuota(gwConfig = {}) {
     // 贴在「实时同步」标签底下，正是这轮要消灭的那类误导。
     models = (rt.models || []).map((m) => normalizeQuota(m))
   }
-  const effPlan = rt?.plan || plan
+  const effPlan = { ...plan, ...(accountPlan.name ? { name: accountPlan.name } : {}), ...rt?.plan }
+  const expiresAt = accountPlan.expiresAt || plan.expiresAt || null
+  const expiresInDays = daysUntil(expiresAt)
 
   const syncedAt = rt?.syncedAt || null
   const ageSec = syncedAt ? Math.max(0, Math.round((Date.now() - new Date(syncedAt).getTime()) / 1000)) : null
@@ -442,10 +460,11 @@ export async function getAccountQuota(gwConfig = {}) {
       name: effPlan.name || '—',
       multiplier: effPlan.multiplier || '',
       badge: effPlan.name && effPlan.multiplier ? `${effPlan.name} ${effPlan.multiplier}` : effPlan.name || '—',
-      expiresAt: effPlan.expiresAt || null,
-      expiresInDays: rt?.plan ? null : expiresInDays,
+      expiresAt,
+      expirySource: accountPlan.expiresAt ? 'account' : plan.expiresAt ? 'manual' : 'unknown',
+      expiresInDays,
       expiresInText:
-        rt?.plan || expiresInDays === null ? '—' : expiresInDays < 0 ? '已过期' : `剩余 ${expiresInDays} 天`
+        expiresInDays === null ? '上游未提供' : expiresInDays < 0 ? '已过期' : `剩余 ${expiresInDays} 天`
     },
     weekly,
     models,

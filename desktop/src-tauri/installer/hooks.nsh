@@ -9,6 +9,11 @@
   ${EndIf}
 !macroend
 
+; Refresh Explorer's cached executable/shortcut artwork after a branding update.
+!macro NSIS_HOOK_POSTINSTALL
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+!macroend
+
 !macro NSIS_HOOK_POSTUNINSTALL
   !insertmacro CGW_REMOVE_OWNED_AUTOSTART "Software\Microsoft\Windows\CurrentVersion\Run" "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "Codex Gateway Desktop"
 !macroend

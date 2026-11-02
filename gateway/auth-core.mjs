@@ -93,7 +93,7 @@ export function loadConfig() {
   // proxy: 出网代理地址，如 http://127.0.0.1:7897；留空表示直连
   // （Tailscale exit node / 系统层方案无需填写，因为它们对应用透明）
   // referenceRoot: 参考图允许所在的根目录，留空 = 用默认（gateway/references）
-  const base = { mode: 'bridge', openaiApiKey: '', openaiBaseUrl: '', authFilePath: defaultAuthFilePath(), autoStart: true, proxy: '', referenceRoot: '' }
+  const base = { mode: 'bridge', openaiApiKey: '', openaiBaseUrl: '', authFilePath: defaultAuthFilePath(), autoStart: true, proxy: '', referenceRoot: '', desktopLanEnabled: false, desktopLanPort: 4174 }
   try {
     const txt = fs.readFileSync(CONFIG_PATH, 'utf-8')
     const j = JSON.parse(txt)
@@ -119,7 +119,9 @@ export function saveConfig(cfg) {
       autoStart: cfg.autoStart,
       proxy: cfg.proxy || '',
       strictAuth: !!cfg.strictAuth,
-      referenceRoot: cfg.referenceRoot || ''
+      referenceRoot: cfg.referenceRoot || '',
+      desktopLanEnabled: cfg.desktopLanEnabled === true,
+      desktopLanPort: Number.isInteger(cfg.desktopLanPort) && cfg.desktopLanPort >= 1024 && cfg.desktopLanPort <= 65535 ? cfg.desktopLanPort : 4174
     })
   } catch (e) {
     // 以前是纯吞：磁盘只读 / 被占用时 saveConfig 一声不响，
@@ -365,6 +367,13 @@ export function codexCliAuthPath(env = process.env, homedir = os.homedir) {
  *   unsupported    JSON 合法但不包含可用的凭据结构
  * 探测本身不该抛 —— 前端按钮要拿这份结果决定显示「导入」还是「重新登录」。
  */
+export function isKnownInvalidLocalAuth(incoming, current, health) {
+  const token = incoming?.tokens?.refresh_token
+  if (!token || token !== current?.tokens?.refresh_token) return false
+  const detail = JSON.stringify(health?.data?.error || health?.error || '')
+  return /invalid_refresh_token|refresh_token_reused|refresh_token_expired|Token refresh failed \(HTTP 401\)/i.test(detail)
+}
+
 export function inspectCodexCliAuth(env = process.env, readFile) {
   const read = typeof readFile === 'function' ? readFile : (p) => fs.readFileSync(p, 'utf-8')
   const authPath = codexCliAuthPath(env)
@@ -703,6 +712,12 @@ export async function startBrowserLogin({ callbackPort = OAUTH_CALLBACK_PORT } =
   const loginId = b64url(crypto.randomBytes(16))
   const redirectUri = `http://localhost:${port}/auth/callback`
   const authUrl = buildAuthorizeUrl({ redirectUri, codeChallenge: challenge, state })
+  // Offer the normal provider-selection flow without the desktop shortcut.
+  // Keep the same callback, state and PKCE challenge so either entry completes
+  // this session. Do not invent provider hints or prefill the account's email.
+  const loginUrl = new URL(authUrl)
+  loginUrl.searchParams.delete('codex_streamlined_login')
+  loginUrl.searchParams.delete('codex_cli_simplified_flow')
 
   const session = {
     loginId,
@@ -776,6 +791,7 @@ export async function startBrowserLogin({ callbackPort = OAUTH_CALLBACK_PORT } =
   return {
     loginId,
     authUrl,
+    loginUrl: loginUrl.href,
     hostedUrl: buildHostedUrl(authUrl),
     redirectUri,
     port,

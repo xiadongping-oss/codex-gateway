@@ -1,6 +1,6 @@
 {
   "name": "codex-gateway",
-  "version": "1.12.2",
+  "version": "1.13.0",
   "private": true,
   "type": "module",
   "main": "gateway/launcher.mjs",
@@ -37,7 +37,7 @@
     "test:bench": "node gateway/tests/bench-concurrency.mjs",
     "test:mutate:port": "node gateway/tests/mutate-port.mjs",
     "test:mutate:toolcall": "node gateway/tests/mutate-toolcall.mjs",
-    "test:desktop": "node --test --test-timeout=60000 gateway/tests/desktop.test.mjs gateway/tests/desktop-integration.test.mjs",
+    "test:desktop": "node --test --test-timeout=60000 gateway/tests/desktop.test.mjs gateway/tests/desktop-lan.test.mjs gateway/tests/desktop-integration.test.mjs",
     "test:desktop:ui": "node --test --test-timeout=30000 desktop/ui-contract.test.mjs",
     "prepare:runtime": "node prepare-runtime.mjs",
     "prepare:desktop": "node prepare-desktop.mjs",

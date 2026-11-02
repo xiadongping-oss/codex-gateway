@@ -3,19 +3,21 @@ import { ref, computed } from 'vue'
 import { useLiveData } from '../composables/useLiveData'
 
 const emit = defineEmits(['navigate'])
-import StatusCard from '../components/StatusCard.vue'
-import AccountCard from '../components/AccountCard.vue'
-import ModelsCard from '../components/ModelsCard.vue'
-import LogsCard from '../components/LogsCard.vue'
 import QuotaMiniCard from '../components/QuotaMiniCard.vue'
-import LanMiniCard from '../components/LanMiniCard.vue'
-import BridgePoolCard from '../components/BridgePoolCard.vue'
-import FailoverCard from '../components/FailoverCard.vue'
+import AppIcon from '../components/AppIcon.vue'
 import SetupModal from '../components/SetupModal.vue'
 
-const { status, account, logs, capabilities, capabilitiesBase, gw, gwBusy, gwRestart, gwStart, gwStop, gwConnected, gwActionError, lastError, toggleCapability } =
+const { status, account, gw, gwBusy, gwRestart, gwStart, gwStop, gwConnected, gwActionError, lastError } =
   useLiveData()
 
+const workspaceLinks = [
+  {key:'models',title:'模型与接入',description:'查看模型，连接客户端'},
+  {key:'account',title:'账号管理',description:'登录授权与账号额度'},
+  {key:'images',title:'图片素材',description:'生成图库与本地素材'},
+  {key:'logs',title:'调用日志',description:'请求记录与运行日志'},
+  {key:'runtime',title:'运行详情',description:'账号实例与自动切换'},
+  {key:'lan',title:'局域网共享',description:'网络地址与共享配置'}
+]
 const showSetup = ref(false)
 const fmtUptime = (s) => {
   const h = String(Math.floor(s / 3600)).padStart(2, '0')
@@ -96,21 +98,9 @@ const authOk = computed(() => account.value?.loggedIn !== false)
 
     <div class="section-heading"><h2>工作空间</h2><span>常用功能，一步直达</span></div>
     <div class="quick-grid">
-      <button class="quick-card" @click="$emit('navigate', 'models')"><span class="quick-icon">◇</span><span><b>模型与接入</b><small>查看可用模型，连接客户端</small></span><span class="arrow">↗</span></button>
-      <button class="quick-card" @click="$emit('navigate', 'images')"><span class="quick-icon mint">▧</span><span><b>图片素材</b><small>浏览生成图片与本地素材</small></span><span class="arrow">↗</span></button>
-      <button class="quick-card" @click="$emit('navigate', 'logs')"><span class="quick-icon peach">≡</span><span><b>调用记录</b><small>查看请求详情与运行日志</small></span><span class="arrow">↗</span></button>
+      <button v-for="item in workspaceLinks" :key="item.key" class="quick-card" @click="$emit('navigate',item.key)"><span class="quick-icon"><AppIcon :name="item.key" /></span><span class="quick-copy"><b>{{ item.title }}</b><small>{{ item.description }}</small></span><span class="arrow" aria-hidden="true">→</span></button>
     </div>
     <QuotaMiniCard @open="$emit('navigate', 'account')" />
-    <LanMiniCard @open="$emit('navigate', 'models')" />
-    <details class="details-panel">
-      <summary><span>运行详情</span><span>账号信息、模型能力与实例状态</span></summary>
-      <div class="detail-content">
-        <div class="row"><StatusCard :status="status" /><AccountCard :account="account" @manage="showSetup = true" /></div>
-        <BridgePoolCard :instances="gw.bridgeInstances || []" :pool="gw.bridgePool || {}" :active-account-id="gw.activeAccountId || ''" />
-        <FailoverCard :failover="gw.failover || {}" />
-        <div class="row"><ModelsCard :capabilities="capabilities" :supported="capabilitiesBase" @toggle="toggleCapability" /><LogsCard :logs="logs" /></div>
-      </div>
-    </details>
     <footer class="overview-footer"><span class="footer-dot"></span>你的服务，运行在本机。<span>Codex Gateway</span></footer>
     <SetupModal v-if="showSetup" @close="showSetup = false" @changed="showSetup = false" />
   </div>
@@ -167,9 +157,6 @@ h2 { font-size: 27px; font-weight: 650; letter-spacing: -.8px; margin-top: 15px;
 .quick-icon.mint { background: var(--emerald-dim); color: var(--success); }.quick-icon.peach { background: var(--card-2); color: var(--amber); }
 .quick-card b { display: block; font-size: 12px; font-weight: 600; }.quick-card small { display: block; color: var(--text-3); font-size: 10px; margin-top: 4px; }
 .arrow { margin-left: auto; color: var(--text-3); }
-.details-panel { border: 1px solid var(--border); border-radius: 18px; background: var(--card); }
-summary { padding: 16px 20px; cursor: pointer; font-size: 12px; }summary span + span { color: var(--text-3); margin-left: 14px; font-size: 10px; }
-.detail-content { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 16px; }
 .overview-footer { display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--text-3); padding: 0 4px; }.overview-footer > span:last-child { margin-left: auto; }
 .connection-note { color: var(--amber); background: var(--card); padding: 10px 16px; border: 1px solid var(--border); border-radius: 12px; font-size: 12px; }
 .overview :deep(.quota-strip), .overview :deep(.lan-strip) { border-radius: 18px; }
@@ -188,4 +175,17 @@ summary { padding: 16px 20px; cursor: pointer; font-size: 12px; }summary span + 
 }
 .overview{padding:4px 24px 24px;gap:16px}.gateway-hero{border-radius:14px;padding:24px;min-height:190px}.account-summary,.stat-card,.quick-card{border-radius:12px}.stat-card{padding:18px}.power-button{border-radius:24px}.quick-card{padding:16px}
 @media(max-width:760px){.overview{padding:4px 14px 18px}.gateway-hero{min-height:180px;padding:20px}}
+</style>
+
+<style scoped>
+.quick-grid { gap:12px; }
+.quick-card { padding:18px; gap:12px; min-height:90px; text-align:left; transition:background .15s,border-color .15s; }
+.quick-card:hover { background:var(--card-2); border-color:var(--border-strong); }
+.quick-card:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }
+.quick-icon { width:36px; height:36px; border-radius:10px; background:var(--primary-soft); }
+.quick-icon svg { width:19px; height:19px; }
+.quick-copy { min-width:0; }.quick-card b { font-size:13px; }.quick-card small { font-size:11px; line-height:1.5; margin-top:4px; }
+.arrow { font-size:16px; }
+@media(max-width:1100px) { .quick-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:680px) { .quick-grid { grid-template-columns:minmax(0,1fr); }.quick-card { min-height:76px; } }
 </style>

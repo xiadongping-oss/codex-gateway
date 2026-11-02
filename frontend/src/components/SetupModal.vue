@@ -6,17 +6,21 @@ import { copyText as writeClipboard } from '../api/client'
 import { vModalFocus } from '../composables/modalFocus'
 
 const emit = defineEmits(['close', 'changed'])
-const tabs = [
+const props = defineProps({ reauthorizing: Boolean })
+const tabs = computed(() => [
   { key: 'tempLogin', label: '官方登录' },
   { key: 'oauth', label: 'OAuth 授权' },
   { key: 'json', label: 'Token / JSON' },
   { key: 'apikey', label: 'API Key' },
   { key: 'import', label: '导入' }
-]
+].filter(tab => !props.reauthorizing || ['tempLogin', 'oauth'].includes(tab.key)))
 const active = ref('oauth')
 const loading = ref(false)
 const error = ref('')
 const okMsg = ref('')
+const completed = ref(false)
+const completionText = ref('')
+const completionButton = ref(null)
 let disposed = false
 let actionGeneration = 0
 const actionCurrent = generation => !disposed && generation === actionGeneration
@@ -190,8 +194,7 @@ async function finishTempLogin() {
     tempHint.value = r.cleaned
       ? '登录信息已导入，临时配置已清理。'
       : '登录信息已导入。临时配置可能仍由客户端使用，已保留；可自行关闭官方客户端。'
-    okMsg.value = `官方登录导入成功${r.email ? '（' + r.email + '）' : ''}${r.isExisting ? '，已有账号凭据已更新' : ''}`
-    emit('changed')
+    completeAuthorization(`账号凭据已保存${r.email ? '（' + r.email + '）' : ''}。${tempHint.value}`)
   } catch (e) {
     if (disposed || generation !== tempGeneration) return
     tempPhase.value = 'failed'
@@ -316,6 +319,21 @@ function setOk(m) {
   okMsg.value = m
   error.value = ''
 }
+// Only durable backend success may enter this state; pending/retry messages
+// must keep their current flow and credentials reachable.
+function completeAuthorization(message = '账号凭据已保存，可返回账号管理查看连接状态。') {
+  if (disposed || completed.value) return
+  stopPoll()
+  stopTempPoll()
+  ++actionGeneration
+  browser.value = null
+  device.value = null
+  error.value = ''
+  completionText.value = message
+  completed.value = true
+  emit('changed')
+  nextTick(() => { if (!disposed) completionButton.value?.focus() })
+}
 // 复制到剪贴板：此前静默失败（http 非安全上下文 / 权限被拒时用户毫无反馈）
 async function copyText(t) {
   if (!t) return
@@ -365,6 +383,7 @@ async function savePendingCard() {
 // 运行时直接 TypeError: api.startBrowserLogin is not a function，
 // 被 catch 吞成一句「操作失败」—— OAuth 与设备授权两条路一度完全不可用。
 async function startAuth() {
+  if (completed.value) return
   const generation = actionGeneration
   const source = authMode.value
   startingOAuthSource = source
@@ -382,7 +401,7 @@ async function startAuth() {
         cancelOAuthSource(source).catch(() => {})
         return
       }
-      if (r?.ok || r?.hostedUrl) {
+      if (r?.ok || r?.loginUrl || r?.hostedUrl) {
         browser.value = r
         setOk(r.pendingImport ? '' : '浏览器授权已发起，请在打开的页面完成登录')
         // 自动检测回调。此前 pollTimer 从未被赋值，界面上「正在等待回调…
@@ -413,10 +432,7 @@ function startPolling() {
       const r = await api.pollBrowserLoginApi(currentPayload())
       if (!actionCurrent(generation) || pollGeneration !== authPollGeneration || !polling.value || active.value !== 'oauth') return
       if (r?.ok) {
-        stopPoll()
-        browser.value = null
-        setOk('授权完成，账号已就绪')
-        emit('changed')
+        completeAuthorization()
       } else if (r?.pending) {
         // 继续等
       } else {
@@ -442,10 +458,13 @@ function cancelActiveOAuth() {
   const source = startingOAuthSource || (device.value ? 'device' : browser.value ? 'browser' : '')
   return source ? cancelOAuthSource(source) : Promise.resolve()
 }
-async function openBrowserLogin() {
-  if (browser.value?.hostedUrl) api.openBrowser(browser.value.hostedUrl)
+async function openBrowserLogin(useExistingSession = false) {
+  const session = browser.value
+  const url = useExistingSession ? session?.hostedUrl : (session?.loginUrl || session?.authUrl || session?.hostedUrl)
+  if (url) await api.openBrowser(url)
 }
 async function submitCallback() {
+  if (completed.value) return
   const generation = actionGeneration
   stopPoll()
   loading.value = true
@@ -455,10 +474,7 @@ async function submitCallback() {
     const r = await api.submitBrowserCallbackApi(callbackUrl.value, { pendingId: pendingId.value || undefined, name: email.value.trim() || undefined })
     if (!actionCurrent(generation)) return
     if (r?.ok) {
-      stopPoll()
-      browser.value = null
-      setOk('授权完成，账号已就绪')
-      emit('changed')
+      completeAuthorization()
     } else setError(r)
   } catch (e) {
     if (actionCurrent(generation)) setError(e)
@@ -467,6 +483,7 @@ async function submitCallback() {
   }
 }
 async function continueAuth() {
+  if (completed.value) return
   const generation = actionGeneration
   stopPoll()
   loading.value = true
@@ -480,11 +497,7 @@ async function continueAuth() {
     // 此前判 `r?.ok && r.done` 恒为假，于是即使授权真的完成了也走不到成功分支 ——
     // 用户点「我已授权，继续」永远只会看到「还没检测到授权完成」。
     if (r?.ok) {
-      stopPoll()
-      browser.value = null
-      device.value = null
-      setOk('授权完成，账号已就绪')
-      emit('changed')
+      completeAuthorization()
     } else if (r?.pending) {
       setOk(pendingOAuthImport.value ? '授权正在保存，请稍后重试' : '还没检测到授权完成，完成授权后稍等片刻再点一次')
     } else setError(r)
@@ -542,6 +555,7 @@ async function importExistingLocal() {
   if (!disposed) await getLocalAccount()
 }
 async function getLocalAccount() {
+  if (props.reauthorizing) return setError('本地导入不会生成新授权，请通过 OAuth 授权或官方登录重新登录。')
   const generation = actionGeneration
   localBusy.value = true
   error.value = ''
@@ -558,7 +572,7 @@ async function getLocalAccount() {
     const r = await api.importCodexLocal()
     if (!actionCurrent(generation)) return
     if (r?.ok) {
-      setOk(`已导入本机登录${r.email ? '（' + r.email + '）' : ''}${r.isExisting ? '，凭据已更新' : '并设为当前账号'}`)
+      setOk(`已读取本机凭据${r.email ? '（' + r.email + '）' : ''}。这不会重新授权，连接状态请以账号页检测结果为准。`)
       emit('changed')
     } else setError(r?.detail || r?.error || '导入失败')
   } catch (e) {
@@ -686,12 +700,19 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
 
 <template>
   <div class="modal-mask" @click.self="closeTempLogin">
-    <div class="modal" role="dialog" aria-modal="true" aria-label="添加 Codex 账号" v-modal-focus="closeTempLogin">
+    <div class="modal" role="dialog" aria-modal="true" :aria-label="completed ? '授权完成' : reauthorizing ? '重新授权 Codex 账号' : '添加 Codex 账号'" v-modal-focus="closeTempLogin">
       <div class="modal-head">
-        <div class="modal-title">添加 Codex 账号</div>
+        <div class="modal-title">{{ completed ? '授权完成' : reauthorizing ? '重新授权 Codex 账号' : '添加 Codex 账号' }}</div>
         <button class="x" @click="closeTempLogin" aria-label="关闭">×</button>
       </div>
 
+      <section v-if="completed" class="completion-panel" role="status" aria-live="polite">
+        <span class="completion-mark" aria-hidden="true">✓</span>
+        <h3>账号授权已完成</h3>
+        <p>{{ completionText }}</p>
+        <button ref="completionButton" class="btn-primary" @click="closeTempLogin">完成</button>
+      </section>
+      <template v-else>
       <div class="tabs">
         <button
           v-for="t in tabs"
@@ -707,6 +728,7 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
       </div>
 
       <div class="modal-body">
+        <p v-if="reauthorizing" class="hint">请完成一次新的登录授权。本地导入只复制已保存的凭据，无法修复失效令牌。</p>
         <!-- 官方登录 -->
         <div v-if="active === 'tempLogin'" class="pane">
           <p class="hint">
@@ -742,11 +764,11 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
             <span v-html="icons.rotate"></span>
             重试导入登录信息
           </button>
-          <button v-if="tempPhase !== 'completed'" class="btn-outline wide" :disabled="loading || localBusy || tempImporting" @click="importExistingLocal">
+          <button v-if="!reauthorizing && tempPhase !== 'completed'" class="btn-outline wide" :disabled="loading || localBusy || tempImporting" @click="importExistingLocal">
             从本地导入
           </button>
 
-          <details class="examples"><summary>未弹出客户端或已登录？</summary><p class="hint dim">
+          <details v-if="!reauthorizing" class="examples"><summary>未弹出客户端或已登录？</summary><p class="hint dim">
             可自行打开官方客户端完成新登录；已有本机登录可点「从本地导入」。
             取消只停止本次导入，不会关闭已打开的官方客户端。无法确认客户端已退出时会保留临时配置；导入失败时保留凭据供重试。
           </p></details>
@@ -793,17 +815,19 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
           <div v-if="browser && !browser.pendingImport" class="auth-box">
             <div class="sec-label">授权链接</div>
             <div class="link-row">
-              <input type="text" readonly :value="browser.hostedUrl" class="url-input" />
-              <button class="btn-ghost sm" @click="copyText(browser.hostedUrl)">
+              <input type="text" readonly :value="browser.loginUrl || browser.authUrl || browser.hostedUrl" class="url-input" />
+              <button class="btn-ghost sm" @click="copyText(browser.loginUrl || browser.authUrl || browser.hostedUrl)">
                 <span v-html="icons.copy"></span>
                 复制
               </button>
             </div>
 
-            <button class="btn-primary" @click="openBrowserLogin">
+            <button class="btn-primary" @click="openBrowserLogin(false)">
               <span v-html="icons.external"></span>
-              在浏览器中打开
+              打开登录方式选择
             </button>
+            <button v-if="browser.hostedUrl" class="btn-outline wide" @click="openBrowserLogin(true)">使用浏览器已有会话</button>
+            <p class="hint">使用 Google 登录时，请在官方页面选择「Continue with Google」。如果出现已记住的账号卡片，请先选「Use another account」，不要点账号卡片继续邮箱登录。</p>
 
             <p class="hint">
               <span v-html="icons.info"></span>
@@ -853,6 +877,7 @@ const tabIcon = (k) => icons[{ tempLogin: 'monitor', oauth: 'globe', json: 'file
               </button>
             </div>
             <p class="hint">在浏览器打开上方链接并输入此用户码完成授权。</p>
+            <p class="hint dim">如果账号卡片把你带到邮箱密码页，请返回并选择「Use another account」，再选择原来的登录方式。</p>
           </div>
 
           <button v-if="device || browser" :class="pendingOAuthImport ? 'btn-primary wide' : 'btn-outline wide'" :disabled="loading || polling" @click="continueAuth">
@@ -964,7 +989,7 @@ at-xxxxxxxxxxxxxxxx
 
         <!-- 导入 -->
         <div v-else-if="active === 'import'" class="pane">
-          <p class="hint">从本机已登录的会话中导入 Codex 账号。</p>
+          <p class="hint">读取本机已保存的 Codex 凭据；不会发起新登录或更新失效授权。</p>
 
           <button class="btn-primary" :disabled="localBusy" @click="getLocalAccount">
             <span v-html="icons.database"></span>
@@ -983,11 +1008,18 @@ at-xxxxxxxxxxxxxxxx
         <div v-if="error" class="msg err">{{ error }}</div>
         <div v-if="okMsg" class="msg ok">{{ okMsg }}</div>
       </div>
+      </template>
     </div>
   </div>
 </template>
 
 <style scoped>
+.completion-panel { display:flex; flex-direction:column; align-items:center; gap:16px; padding:24px 16px 8px; text-align:center; }
+.completion-mark { display:grid; place-items:center; width:56px; height:56px; border-radius:50%; background:var(--primary-soft); color:var(--primary); font-size:28px; }
+.completion-panel h3 { font-size:18px; font-weight:600; }
+.completion-panel p { max-width:440px; font-size:13px; line-height:1.7; color:var(--text-2); }
+.completion-panel .btn-primary { min-width:160px; margin-top:8px; }
+
 .modal-mask {
   position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55);
   display: flex; align-items: center; justify-content: center; z-index: 50;

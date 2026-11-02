@@ -3,7 +3,9 @@
 // 数据来自 /__gw/account/quota：真实账号身份 + 本地维护的订阅/用量配置。
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import * as api from '../api/gateway'
+import QuotaWindow from './QuotaWindow.vue'
 
+const props = defineProps({ connectionBlocked: Boolean })
 const q = ref(null)
 const loading = ref(false)
 const err = ref('')
@@ -13,6 +15,10 @@ let timer = null
 const weekly = computed(() => q.value?.weekly || null)
 const models = computed(() => (Array.isArray(q.value?.models) ? q.value.models : []))
 const plan = computed(() => q.value?.plan || null)
+const subscriptionDate = computed(() => {
+  const date = plan.value?.expiresAt ? new Date(plan.value.expiresAt) : null
+  return date && Number.isFinite(date.getTime()) ? date.toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'}) : '上游未提供'
+})
 const account = computed(() => q.value?.account || null)
 
 // 订阅临期：<=3 天告警，已过期报错
@@ -168,7 +174,7 @@ const probing = ref(false)
 const probeHint = ref('')
 
 async function probeAndReload() {
-  if (probing.value || loading.value || editing.value) return
+  if (probing.value || loading.value || editing.value || props.connectionBlocked) return
   probing.value = true
   probeHint.value = ''
   let r = null
@@ -180,8 +186,13 @@ async function probeAndReload() {
     else if (r.reason === 'no_account') probeHint.value = '还没有激活账号'
     else if (r.reason === 'bridge_start_failed') probeHint.value = `该账号的 bridge 起不来：${r.detail || '未知原因'}`
     else if (r.reason === 'bridge_unreachable') probeHint.value = '连不上该账号的 bridge'
+    else if (r.reason === 'region_restricted') probeHint.value = '网络出口受限，请检查出网代理后重试。'
+    else if (r.reason === 'auth_required') probeHint.value = '账号授权已失效，请重新授权。'
+    else if (r.reason === 'upstream_error') probeHint.value = `上游请求失败（HTTP ${r.status}），请稍后重试。`
     else if (r.reason === 'no_limit_headers') probeHint.value = '上游这次没回限流头，稍后再试'
     else probeHint.value = `没取到数据：${r.reason || '未知原因'}`
+  } catch {
+    probeHint.value = '额度刷新失败，请稍后重试。'
   } finally {
     // 探测接口已经把最新额度一起返回了，不必再拉一次
     if (r?.quota) q.value = r.quota
@@ -218,20 +229,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="card">
+  <div class="card quota-card">
     <div class="q-head">
-      <div class="card-title">账号额度</div>
-      <span v-if="q && q.demo" class="demo-tag">暂无观测数据</span>
-      <span v-if="q" class="scope-tag" :class="isOwn ? 'own' : 'shared'">
-        {{ isOwn ? '本账号专属' : '共用配置' }}
-      </span>
-      <span v-if="saving" class="saving-tag">保存中…</span>
-      <span class="head-meta">更新于 {{ updatedText }}</span>
-      <button v-if="q && !editing" class="btn-ghost sm" @click="startEdit" :disabled="saving">编辑</button>
-      <button class="btn-ghost sm" @click="probeAndReload" :disabled="loading || probing || editing"
-              title="让网关发一次极小请求，把上游限流头拉回来（会消耗极少量额度）">
-        {{ probing ? '探测中…' : '刷新额度' }}
-      </button>
+      <div class="q-heading"><div class="card-title">账号额度</div><span class="quota-source">{{ q?.source === 'realtime' ? '上游同步' : q?.source === 'manual' ? '手动记录' : '等待同步' }}</span><span v-if="saving" class="saving-tag">保存中…</span></div>
+      <div class="q-actions"><span v-if="q" class="head-meta">更新于 {{ updatedText }}</span>
+        <button v-if="q && !editing" class="btn-ghost sm" @click="startEdit" :disabled="saving">编辑</button>
+        <button class="btn-ghost sm" @click="probeAndReload" :disabled="loading || probing || editing || connectionBlocked"
+          :title="connectionBlocked ? '请先恢复账号连接' : '发送一次最小请求以同步额度'">{{ probing ? '同步中…' : '刷新额度' }}</button>
+      </div>
     </div>
 
     <div v-if="err" class="q-err">{{ err }}</div>
@@ -253,7 +258,7 @@ onUnmounted(() => {
             <span v-if="q.stale" class="stale-chip" title="超过 30 分钟没再观测到上游限流头，数字可能已经变了">可能已过期</span>
             <span v-if="q.sample" class="sample-chip" title="这是旧版本自动生成的示例数据，点右上角「编辑」保存一次即可覆盖">示例数据</span>
           </div>
-          <div class="id-mail">{{ maskedEmail }}</div>
+          <div class="id-mail">{{ account.name === account.email ? '当前激活账号' : maskedEmail }}</div>
         </div>
       </div>
 
@@ -264,15 +269,15 @@ onUnmounted(() => {
         </div>
         <div class="meta-item">
           <span class="k">账号 ID</span>
-          <span class="v mono">{{ account.userId }}</span>
+          <span class="v mono" :title="account.userId">{{ account.userId }}</span>
         </div>
         <div class="meta-item">
           <span class="k">订阅到期</span>
-          <span class="v" :class="planUrgent">{{ plan?.expiresInText || '尚无订阅信息' }}</span>
+          <span class="v" :class="planUrgent">{{ subscriptionDate }}</span><span v-if="plan?.expiresAt" class="expiry-source" :title="plan.expirySource === 'account' ? '来自最近一次登录凭据中的订阅有效期' : '手动记录的日期'">{{ plan.expirySource === 'account' ? '账号信息' : '手动记录' }}</span>
         </div>
         <div class="meta-item">
           <span class="k">账号类型</span>
-          <select class="type-select" :value="q.accountType" @change="onTypeChange" :disabled="saving">
+          <select aria-label="账号类型" class="type-select" :value="q.accountType" @change="onTypeChange" :disabled="saving">
             <option v-for="t in (q.accountTypes || ['标准'])" :key="t" :value="t">{{ t }}</option>
           </select>
           <button v-if="isOwn" class="link-btn" :disabled="saving" @click="resetToShared">改用共用配置</button>
@@ -339,52 +344,15 @@ onUnmounted(() => {
       <template v-else>
       <!-- 空态：没有任何观测值时不画进度条，画一条就默认「还剩 100%」，那是假信息 -->
       <div v-if="q.source === 'none'" class="q-blank">
-        <div class="q-blank-title">暂无额度数据</div>
+        <span class="quota-empty-icon" aria-hidden="true">—</span><div><div class="q-blank-title">{{ connectionBlocked ? '等待连接恢复' : '暂无额度数据' }}</div><p class="q-blank-body">{{ connectionBlocked ? '连接恢复后可刷新额度，已导入的账号会保留。' : '完成一次调用或点击刷新额度后，同步上游返回的用量。' }}</p></div>
       </div>
 
-      <!-- 周用量 -->
-      <div class="q-block" v-if="weekly">
-        <div class="blk-head">
-          <span class="blk-label">{{ weekly.label }}</span>
-          <span class="blk-remain" :class="weekly.tone">剩余 {{ weekly.remainingPercent }}%</span>
-        </div>
-        <div class="bar">
-          <div class="bar-fill" :class="weekly.tone" :style="{ width: weekly.remainingPercent + '%' }"></div>
-        </div>
-        <div class="blk-foot">
-          <span>已用 {{ weekly.usedPercent }}%</span>
-          <span class="dot-sep">·</span>
-          <span>{{ weekly.resetIn }}后重置</span>
-        </div>
-      </div>
-
-      <!-- 模型级用量 -->
-      <div class="q-block" v-if="models.length">
-        <div class="blk-title">模型用量</div>
-        <div v-for="m in models" :key="m.id || m.label" class="m-row">
-          <div class="m-head">
-            <span class="m-label">{{ m.label }}</span>
-            <span class="m-remain" :class="m.tone">剩余 {{ m.remainingPercent }}%</span>
-          </div>
-          <div class="bar sm">
-            <div class="bar-fill" :class="m.tone" :style="{ width: m.remainingPercent + '%' }"></div>
-          </div>
-          <div class="m-foot">
-            <span>已用 {{ m.usedPercent }}%</span>
-            <span class="dot-sep">·</span>
-            <span>{{ m.resetIn }}后重置</span>
-          </div>
-        </div>
+      <div v-if="weekly || models.length" class="quota-windows">
+        <QuotaWindow v-if="weekly" :quota="weekly" />
+        <QuotaWindow v-for="m in models" :key="m.id || m.label" :quota="m" />
       </div>
       </template>
 
-<div class="q-note">
-        <p>点击「刷新额度」检测，或完成一次实际对话后再查看。若上游未返回额度信息，此处会保持空白；也可通过「编辑」手动记录。</p>
-        身份（账号名 / 邮箱 / ID）来自本地登录态。用量优先取该账号自己那个 bridge 观测到的上游限流头
-        （<code>source: realtime</code>，每个账号独立缓存，切账号不会串号）；没有观测值时显示你手填的配置
-        （<code>manual</code>），两者都没有就留空——不会编数字。手填值保存到当前激活账号名下
-        （<code>accounts[账号id]</code>），<code>shared</code> 为共用缺省。
-      </div>
     </template>
 
     <div v-else-if="loading" class="q-empty">加载中…</div>
@@ -393,7 +361,13 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.q-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.quota-card { width:100%; min-width:0; }
+.q-head { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:24px; }
+.q-heading, .q-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.q-heading .card-title, .q-actions button, .quota-source { white-space:nowrap; flex:none; }
+.quota-source { color:var(--text-3); font-size:12px; }
+.q-actions { margin-left:auto; }
+@media(max-width:680px) { .q-actions { width:100%; margin-left:0; } .head-meta { margin-right:auto; } }
 .head-meta { margin-left: auto; font-size: 11px; color: var(--text-3); font-family: var(--mono); }
 .demo-tag {
   font-size: 10.5px; font-weight: 600; color: var(--amber);
@@ -436,9 +410,9 @@ onUnmounted(() => {
 .q-empty { font-size: 12.5px; color: var(--text-3); padding: 8px 0; }
 /* 空态：不画进度条，改成说明 + 下一步动作 */
 .q-blank {
-  padding: 16px; border-radius: 10px; background: var(--bg);
-  border: 1px dashed var(--border-strong);
+  display:flex; align-items:center; justify-content:center; gap:16px; padding:32px 24px; margin-top:20px; border-radius:12px; background:var(--bg); border:1px solid var(--border);
 }
+.quota-empty-icon { display:grid; place-items:center; width:40px; height:40px; flex:none; border-radius:12px; background:var(--card); color:var(--text-3); font-size:20px; }
 .q-blank-title { font-size: 13px; font-weight: 600; color: var(--text); }
 .q-blank-body { font-size: 12px; color: var(--text-2); margin-top: 6px; line-height: 1.65; }
 .q-blank-alt { font-size: 11.5px; color: var(--text-3); margin-top: 8px; }
@@ -447,9 +421,9 @@ onUnmounted(() => {
 .q-id { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .avatar {
   width: 42px; height: 42px; border-radius: 12px; flex-shrink: 0;
-  background: linear-gradient(135deg, var(--primary), #0ea5e9);
+  background: var(--emerald-dim);
   display: flex; align-items: center; justify-content: center;
-  font-size: 16px; font-weight: 600; color: var(--on-primary);
+  font-size: 16px; font-weight: 600; color: var(--primary);
 }
 .id-main { min-width: 0; }
 .id-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -467,11 +441,13 @@ onUnmounted(() => {
 
 /* 元信息 */
 .q-meta {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px 18px; padding: 14px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
 }
-.meta-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.meta-item .k { font-size: 11.5px; color: var(--text-3); flex: none; }
+@media(max-width:1100px) { .q-meta { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:680px) { .q-meta { grid-template-columns:minmax(0,1fr); } }
+.meta-item { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 8px; min-width: 0; }
+.meta-item .k { width:100%; font-size: 11.5px; color: var(--text-3); flex: none; }
 .meta-item .v { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta-item .v.amber { color: var(--amber); }
 .meta-item .v.rose { color: var(--rose); }
@@ -484,38 +460,8 @@ onUnmounted(() => {
 .type-select:focus { border-color: var(--emerald); }
 .type-select:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* 用量块 */
-.q-block { padding: 16px 0 0; }
-.blk-title { font-size: 12px; color: var(--text-3); margin-bottom: 10px; }
-.blk-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
-.blk-label { font-size: 13px; font-weight: 600; }
-.blk-remain { font-family: var(--mono); font-size: 15px; font-weight: 500; }
-.blk-remain.emerald, .m-remain.emerald { color: var(--emerald-light); }
-.blk-remain.amber, .m-remain.amber { color: var(--amber); }
-.blk-remain.rose, .m-remain.rose { color: var(--rose); }
-
-.bar {
-  height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.07);
-  overflow: hidden;
-}
-.bar.sm { height: 6px; }
-.bar-fill { height: 100%; border-radius: 999px; transition: width 0.4s ease; }
-.bar-fill.emerald { background: linear-gradient(90deg, var(--primary), var(--primary)); }
-.bar-fill.amber { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
-.bar-fill.rose { background: linear-gradient(90deg, #e11d48, #f43f5e); }
-
-.blk-foot, .m-foot {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 11px; color: var(--text-3); font-family: var(--mono); margin-top: 6px;
-}
-.dot-sep { opacity: 0.5; }
-
-.m-row { padding: 10px 0 0; }
-.m-row + .m-row { border-top: 1px solid var(--border); margin-top: 10px; }
-.m-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 7px; }
-.m-label { font-size: 12.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.m-remain { font-family: var(--mono); font-size: 12.5px; font-weight: 500; flex: none; }
-
+.quota-windows { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr)); gap:16px; margin-top:20px; }
+.expiry-source { font-size:10px; color:var(--text-3); }
 /* 编辑态 */
 .q-edit { padding-top: 16px; }
 .ed-sec { margin-bottom: 18px; }

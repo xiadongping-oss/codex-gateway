@@ -55,6 +55,12 @@ function issuer(t) {
 
 async function browser(core, code = 'fixture-browser-code') {
   const info = await core.startBrowserLogin({ callbackPort: 0 })
+  const normal = new URL(info.loginUrl), legacy = new URL(info.authUrl)
+  assert.equal(normal.origin, 'https://auth.openai.com')
+  assert.equal(normal.pathname, '/oauth/authorize')
+  for (const field of ['state', 'code_challenge', 'code_challenge_method', 'redirect_uri', 'client_id', 'scope']) assert.equal(normal.searchParams.get(field), legacy.searchParams.get(field))
+  for (const field of ['login_hint', 'connection', 'codex_streamlined_login', 'codex_cli_simplified_flow']) assert.equal(normal.searchParams.has(field), false)
+
   const callback = new URL(info.redirectUri)
   callback.searchParams.set('code', code)
   callback.searchParams.set('state', new URL(info.authUrl).searchParams.get('state'))

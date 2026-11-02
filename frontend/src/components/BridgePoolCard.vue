@@ -40,9 +40,9 @@ const idleMin = computed(() => {
   <section class="card c-pool">
     <div class="pool-head">
       <div>
-        <div class="card-title">Bridge 实例池</div>
+        <div class="card-title">账号实例池</div>
         <div class="card-sub">
-          一个账号一个独立进程，切换账号＝切端口，互不抢占同一份登录态
+          按账号独立运行
           <template v-if="idleMin"> · 空闲 {{ idleMin }} 分钟自动回收</template>
         </div>
       </div>
@@ -57,7 +57,7 @@ const idleMin = computed(() => {
     </div>
 
     <div v-if="!list.length" class="pool-empty">
-      还没有运行中的实例。添加账号并完成授权后，网关会按账号自动拉起第一个 bridge。
+      暂无运行实例。启动模型代理后可在此查看。
     </div>
 
     <div v-else class="pool-list">

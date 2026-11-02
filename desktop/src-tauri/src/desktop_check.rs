@@ -47,11 +47,7 @@ impl Check {
         if self.started.elapsed() > Duration::from_secs(20) {
             return Err("DESKTOP_CHECK_TIMEOUT".into());
         }
-        let main_hidden = !app
-            .get_webview_window("main")
-            .ok_or("MAIN_MISSING")?
-            .is_visible()
-            .map_err(|_| "MAIN_MISSING")?;
+        let main_hidden = !desktop::view_visible(app, "main");
         match self.stage {
             0 => {
                 if console.visible() || !main_hidden || app.tray_by_id("gateway-tray").is_none() {

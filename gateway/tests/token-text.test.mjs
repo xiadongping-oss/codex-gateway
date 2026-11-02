@@ -3,7 +3,7 @@
 // refresh_token 联网换取（注入 fetch，不外联）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeAuthJson, parseAuthTokenText, exchangeRefreshToken, looksLikeJwt } from '../auth-core.mjs'
+import { normalizeAuthJson, parseAuthTokenText, exchangeRefreshToken, looksLikeJwt, isKnownInvalidLocalAuth } from '../auth-core.mjs'
 
 // ---------- normalizeAuthJson 扩展形态 ----------
 
@@ -138,4 +138,16 @@ test('exchangeRefreshToken：网络异常 → 带上下文的报错', async () =
 
 test('exchangeRefreshToken：空 refresh → 拒绝', async () => {
   await assert.rejects(exchangeRefreshToken('  ', { fetchImpl: async () => ({}) }), /缺少 refresh_token/)
+})
+
+
+test('本机导入拒绝同一份已被上游判为失效的刷新令牌', () => {
+ const old={tokens:{refresh_token:'synthetic-old'}}
+ const fresh={tokens:{refresh_token:'synthetic-new'}}
+ const failed={data:{error:'Token refresh failed (HTTP 401). invalid_refresh_token'}}
+ assert.equal(isKnownInvalidLocalAuth(old,old,failed),true)
+ assert.equal(isKnownInvalidLocalAuth(fresh,old,failed),false)
+ assert.equal(isKnownInvalidLocalAuth(old,old,{ok:true}),false)
+ assert.equal(isKnownInvalidLocalAuth(old,old,{data:{error:'unsupported_country_region_territory'}}),false)
+ assert.equal(isKnownInvalidLocalAuth({},{},failed),false)
 })

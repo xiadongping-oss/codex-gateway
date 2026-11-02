@@ -11,7 +11,8 @@ const props = defineProps({
   title: { type: String, default: '网关概览' },
   subtitle: { type: String, default: '本地 Codex 网关' },
   address: { type: String, default: '' },
-  running: { type: Boolean, default: true }
+  running: { type: Boolean, default: true },
+  showCopyConfig: { type: Boolean, default: true }
 })
 
 const theme = ref(localStorage.getItem('cgw.theme') === 'dark' ? 'dark' : 'light')
@@ -61,12 +62,12 @@ async function copyConfig() {
       <span class="pill" :class="{ off: !running }">
         <span class="dot" :class="{ off: !running }"></span>{{ running ? '运行中' : '已停止' }}
       </span>
-      <button class="btn-primary" @click="copyConfig">
+      <button v-if="showCopyConfig" class="btn-primary" @click="copyConfig">
         {{ copied ? '已复制 ✓' : '复制接入配置' }}
       </button>
     </div>
   </header>
-  <div v-if="copyErr" class="copy-err">{{ copyErr }}</div>
+  <div v-if="copyErr && showCopyConfig" class="copy-err">{{ copyErr }}</div>
 </template>
 
 <style scoped>
