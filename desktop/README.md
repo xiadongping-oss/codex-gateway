@@ -77,7 +77,7 @@ npm run desktop:smoke -- --interactive --case=tray-menu
 
 第二条使用自建的端口占用夹具，12 秒后释放测试端口；页面保持失败提示，点击“重新启动”后应恢复就绪。关闭窗口现在仅隐藏，必须从托盘或桌面管理页选择“退出应用”，脚本才校验并清理临时目录。第三条仅在隔离 debug 测试中直接弹出托盘使用的同一份原生菜单，便于无法操作系统托盘区域的测试工具验证点击。手动验证上限为 3 分钟；超时标为失败，失败目录保留用于排查。
 
-Windows 开发产物位于 `desktop/src-tauri/target/debug/codex-gateway-desktop.exe`，资源在同级 `gateway-resources/`。需要整个目录布局，不能只复制 exe。`desktop/.generated/` 保存每轮资源和本机构建元数据；两类目录均忽略，不提交源码库。安装包准备入口见下节，签名、公证和正式安装验收仍待完成。
+Windows 开发产物位于 `desktop/src-tauri/target/debug/codex-gateway-desktop.exe`，资源在同级 `gateway-resources/`。需要整个目录布局，不能只复制 exe。`desktop/.generated/` 保存每轮资源和本机构建元数据；两类目录均忽略，不提交源码库。安装包准备入口见下节；签名能力已接入打包入口（凭据待补），公证和正式安装验收仍待完成。
 
 ## Windows 内部预览包
 
@@ -90,7 +90,9 @@ npm run desktop:package:windows
 
 入口重建 Vue、准备白名单网关资源并固化 bridge 补丁，再以 Tauri CLI 2.12.4、锁定 Cargo 依赖生成 release EXE 和 NSIS。`windows-bundle.json` 仅用于该打包入口，不改变日常调试和 Mac CI。构建缓存位于 `src-tauri/target/windows-package`，每轮资源和交付目录独立；旧安装器时间戳不匹配时拒绝交付。`--offline` 仅要求 Cargo 和 Node 使用已有缓存，首次 NSIS 工具下载仍可能需要联网。
 
-结果在 `release/desktop-preview/<run>/`：未签名 `*-Setup.exe`、免安装 ZIP、`SHA256SUMS.txt` 和分阶段 `report.json` / 日志。ZIP 只含桌面 EXE、校验过的网关资源和使用说明；压缩后逐文件重新校验 SHA-256，并检查多余及缺失文件。构建报告与本机路径不放入 ZIP。ZIP 先完成，再生成 NSIS；如果安装器工具下载失败，报告仍明确失败，但保留已校验 ZIP 的 `artifacts` 条目和哈希清单。只有 `status=packaged` 才表示整轮打包完成，不能据此认定安装或业务验收通过。
+打包支持**可选 Authenticode 签名**：设置凭据环境变量即自动签名 EXE 与 Setup.exe（SHA256 摘要 + RFC3161 时间戳），签后自动验证签名者存在；不设则与未签名预览行为完全一致。凭据二选一——`CGW_SIGN_THUMBPRINT=<40位SHA1指纹>`（证书存储，推荐 EV 令牌）或 `CGW_SIGN_PFX=<PFX路径> CGW_SIGN_PFX_PASSWORD=<密码>`；可选 `CGW_SIGN_TIMESTAMP_URL`（默认 `http://timestamp.digicert.com`）、`CGW_SIGN_TOOL`（signtool 绝对路径，默认自动探测 Windows Kits 最新版 x64）。注意 PFX 密码会出现在 signtool 命令行上（本机进程可见），共享打包主机建议用指纹方式。签名阶段与结果记录在 `report.json` 的 `signing` / `signed` 字段。
+
+结果在 `release/desktop-preview/<run>/`：`*-Setup.exe`、免安装 ZIP、`SHA256SUMS.txt` 和分阶段 `report.json` / 日志（未设签名凭据时产物未签名；设凭据则两者均签名并在报告标注）。ZIP 只含桌面 EXE、校验过的网关资源和使用说明；压缩后逐文件重新校验 SHA-256，并检查多余及缺失文件。构建报告与本机路径不放入 ZIP。ZIP 先完成，再生成 NSIS；如果安装器工具下载失败，报告仍明确失败，但保留已校验 ZIP 的 `artifacts` 条目和哈希清单。只有 `status=packaged` 才表示整轮打包完成，不能据此认定安装或业务验收通过。
 
 NSIS 使用已有项目图标、中英文向导、当前用户安装及 WebView2 下载引导；ZIP 要求系统已有 WebView2。两种形式都使用 `%LOCALAPPDATA%/CodexGateway` 保存账号和配置，`%LOCALAPPDATA%/CodexGatewayDesktop` 保存窗口缓存及桌面日志，免安装不等于数据随身。卸载钩子只撤销指向当前安装目录的自启动命令，更新模式保留该设置，业务数据保留。安装/卸载、旧版迁移、缺少 WebView2 的干净机器、签名和升级中断仍须分别验收；此入口不发布文件或更新远端仓库。
 

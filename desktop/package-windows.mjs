@@ -20,7 +20,19 @@ const target = 'win32-x64', run = `${target}-${Date.now()}`
 const destination = path.join(root, 'release/desktop-preview', run)
 const outDir = path.join(desktop, '.generated', run)
 fs.mkdirSync(destination, { recursive: true })
-const report = { status: 'running', channel: 'internal-unsigned-preview', target, startedAt: new Date().toISOString(), stages: [], signed: false, installed: false, cleanMachineTest: 'not_run' }
+// Optional Authenticode signing. Without signing credentials the run stays an
+// unsigned internal preview exactly as before. Prefer CGW_SIGN_THUMBPRINT
+// (certificate store, e.g. EV tokens); PFX works via CGW_SIGN_PFX. Note: the
+// PFX password reaches signtool's command line, visible to local processes —
+// use the store method on shared packaging hosts.
+const timestampUrl = process.env.CGW_SIGN_TIMESTAMP_URL?.trim() || 'http://timestamp.digicert.com'
+const signThumbprint = process.env.CGW_SIGN_THUMBPRINT?.trim() || ''
+const signPfx = process.env.CGW_SIGN_PFX?.trim() || ''
+if (signThumbprint && signPfx) throw new Error('Choose one signing method: CGW_SIGN_THUMBPRINT or CGW_SIGN_PFX')
+if (signThumbprint && !/^[0-9a-f]{40}$/i.test(signThumbprint)) throw new Error('CGW_SIGN_THUMBPRINT must be a 40-hex SHA-1 certificate thumbprint')
+if (signPfx && !fs.existsSync(signPfx)) throw new Error(`CGW_SIGN_PFX file not found: ${signPfx}`)
+const signing = signThumbprint || signPfx ? { method: signThumbprint ? 'store' : 'pfx', thumbprint: signThumbprint || null, pfx: signPfx || null, timestampUrl, status: 'pending' } : null
+const report = { status: 'running', channel: signing ? 'internal-signed-preview' : 'internal-unsigned-preview', target, startedAt: new Date().toISOString(), stages: [], signed: false, signing, installed: false, cleanMachineTest: 'not_run' }
 const save = () => fs.writeFileSync(path.join(destination, 'report.json'), JSON.stringify(report, null, 2) + '\n')
 const hash = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
 async function runCommand(name, command, argv, cwd, env = process.env) {
@@ -38,6 +50,34 @@ async function runCommand(name, command, argv, cwd, env = process.env) {
     stage.status = 'passed'
   } catch (error) { stage.status = 'failed'; throw error }
   finally { await new Promise(resolve => log.end(resolve)); stage.finishedAt = new Date().toISOString(); save() }
+}
+function findSigntool() {
+  if (process.env.CGW_SIGN_TOOL) return process.env.CGW_SIGN_TOOL
+  const newer = (a, b) => { for (let i = 0; i < Math.max(a.length, b.length); i += 1) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) - (b[i] || 0); return 0 }
+  const found = []
+  for (const kitRoot of ['C:/Program Files (x86)/Windows Kits/10/bin', 'C:/Program Files/Windows Kits/10/bin']) {
+    if (!fs.existsSync(kitRoot)) continue
+    for (const entry of fs.readdirSync(kitRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^\d+(\.\d+)+$/.test(entry.name)) continue
+      const tool = path.join(kitRoot, entry.name, 'x64', 'signtool.exe')
+      if (fs.existsSync(tool)) found.push({ version: entry.name.split('.').map(Number), tool })
+    }
+  }
+  if (!found.length) throw new Error('signtool.exe not found; install the Windows SDK or set CGW_SIGN_TOOL')
+  found.sort((a, b) => newer(b.version, a.version))
+  return found[0].tool
+}
+async function signFile(stageName, file, signtool) {
+  const argv = ['sign', '/fd', 'SHA256', '/td', 'SHA256', '/tr', signing.timestampUrl]
+  if (signing.method === 'store') argv.push('/sha1', signing.thumbprint)
+  else argv.push('/f', signing.pfx, '/p', process.env.CGW_SIGN_PFX_PASSWORD ?? '')
+  argv.push(file)
+  await runCommand(stageName, signtool, argv, root)
+  const escaped = file.replaceAll("'", "''")
+  const ps = `if ((Get-AuthenticodeSignature -FilePath '${escaped}').SignerCertificate) { exit 0 } Write-Error 'no signer attached after signtool'; exit 1`
+  await runCommand(`${stageName}-verify`, 'powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], root)
+  signing.status = 'signed'
+  report.signed = true
 }
 try {
   const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'))).version
@@ -65,13 +105,15 @@ try {
   verifyDesktop({ target, outDir: builtResources })
   if (hash(path.join(builtResources, 'DESKTOP-RESOURCES.json')) !== report.resourceManifestSha256) throw new Error('Compiled resources mismatch')
   await runCommand('bundled-gateway', process.execPath, ['gateway/tests/prepared-resources-smoke.mjs', `--resources=${builtResources}`], root)
+  const signtool = signing ? findSigntool() : null
+  if (signing) await signFile('sign-binary', binary, signtool)
   const stem = `Codex-Gateway-${version}-windows-x64-preview`
   const portable = path.join(destination, stem)
   fs.mkdirSync(portable)
   fs.copyFileSync(binary, path.join(portable, path.basename(binary)), fs.constants.COPYFILE_EXCL)
   fs.copyFileSync(path.join(desktop, 'src-tauri/installer/TAURI-LICENSE-MIT.txt'), path.join(portable, 'TAURI-LICENSE-MIT.txt'), fs.constants.COPYFILE_EXCL)
   fs.cpSync(builtResources, path.join(portable, 'gateway-resources'), { recursive: true, errorOnExist: true, force: false })
-  fs.writeFileSync(path.join(portable, '使用说明.txt'), '\uFEFFCodex Gateway 桌面内部预览版（未签名）\r\n\r\n解压整个目录后运行 codex-gateway-desktop.exe；无需安装 Node。\r\n需要 Windows x64 和 Microsoft Edge WebView2 运行时；缺少运行时请使用 Setup 安装包联网安装。\r\n账号、配置和图片默认位于 %LOCALAPPDATA%\\CodexGateway。\r\n窗口缓存和桌面日志位于 %LOCALAPPDATA%\\CodexGatewayDesktop。\r\n本 ZIP 免安装，但不是数据随身模式；移动或删除程序目录不会删除账号。\r\n关闭窗口会继续后台运行；在工作台的“服务与诊断”页或托盘菜单选择“退出应用”。\r\n升级、移动、卸载前请先退出应用；当前版本尚未完成正式发行验收。\r\n')
+  fs.writeFileSync(path.join(portable, '使用说明.txt'), `\uFEFFCodex Gateway 桌面内部预览版（${signing ? '已签名' : '未签名'}）\r\n\r\n解压整个目录后运行 codex-gateway-desktop.exe；无需安装 Node。\r\n需要 Windows x64 和 Microsoft Edge WebView2 运行时；缺少运行时请使用 Setup 安装包联网安装。\r\n账号、配置和图片默认位于 %LOCALAPPDATA%\\CodexGateway。\r\n窗口缓存和桌面日志位于 %LOCALAPPDATA%\\CodexGatewayDesktop。\r\n本 ZIP 免安装，但不是数据随身模式；移动或删除程序目录不会删除账号。\r\n关闭窗口会继续后台运行；在工作台的“服务与诊断”页或托盘菜单选择“退出应用”。\r\n升级、移动、卸载前请先退出应用；当前版本尚未完成正式发行验收。\r\n`)
   verifyDesktop({ target, outDir: path.join(portable, 'gateway-resources') })
   const zip = path.join(destination, `${stem}.zip`)
   await runCommand('zip-verify', 'powershell.exe', ['-NoProfile', '-NonInteractive', '-File', path.join(desktop, 'archive-windows.ps1'), '-Source', portable, '-Destination', zip], root)
@@ -85,6 +127,7 @@ try {
   if (installers.length !== 1) throw new Error('Expected exactly one fresh NSIS installer')
   const installer = path.join(destination, `${stem}-Setup.exe`)
   fs.copyFileSync(path.join(bundleDir, installers[0]), installer, fs.constants.COPYFILE_EXCL)
+  if (signing) await signFile('sign-installer', installer, signtool)
   report.artifacts.push({ file: path.basename(installer), bytes: fs.statSync(installer).size, sha256: hash(installer) })
   if (hash(binary) !== hash(path.join(portable, path.basename(binary)))) throw new Error('Bundling changed verified executable')
   report.status = 'packaged'

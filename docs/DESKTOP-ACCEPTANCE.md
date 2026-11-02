@@ -64,7 +64,7 @@
 ### 配置层实测补充（2026-11-02，本机 win32-x64 / Rust 1.94.0 / Node v22.22.2）
 
 - **G1 真实 OAuth**：`desktop/src-tauri` 已实现登录/会话（`console.rs`/`session.js`/`desktop.rs`），但 `desktop/README.md` 反复明确"真实 OAuth 浏览器行为仍待 D05/D06 验证"；`desktop:verify` 的 `acceptance.realOAuth` 默认 `not_run`。
-- **G2 签名（配置缺口）**：`desktop/windows-bundle.json` **没有任何签名配置**（无 `signCommand`/证书路径），`desktop:package:windows` 产出的是**未签名** `*-Setup.exe`/`*.zip`——签名能力尚未接入。
+- **G2 签名（已接入，2026-11-02）**：`desktop/package-windows.mjs` 支持**可选 Authenticode 签名阶段**——设 `CGW_SIGN_THUMBPRINT`（证书存储，推荐 EV）或 `CGW_SIGN_PFX`(+`CGW_SIGN_PFX_PASSWORD`)（PFX 文件）即自动签 `codex-gateway-desktop.exe` 与 `*-Setup.exe`（SHA256 + RFC3161 时间戳，可用 `CGW_SIGN_TIMESTAMP_URL` 覆盖，默认 digicert）；`signtool` 探测顺序 `CGW_SIGN_TOOL` → Windows Kits 最新版 x64。**不设凭据则行为与未签名预览完全一致**。已用 openssl 自签 PFX 完成端到端验证（见 4.3）。剩余缺口：**真代码签名证书**（EV 建议过 SmartScreen）。
 - **G3 公证（配置缺口）**：仓库**无** `notarize`/`Developer ID`/`gatekeeper` 配置；`desktop/mac-distribution-check.mjs` 注释明确"**No Developer ID signing or app runtime acceptance**"；主 `tauri.conf.json` 的 `bundle` 为 `active:false`。
 - **实跑证据**：`npm run test:desktop:ui` → **8/8 通过**（110ms，迁移向导 UI 契约）；`npm run desktop:verify -- --preflight-only` → `preflight_passed`，但其 `acceptance` 四个字段（`realOAuth`/`signedInstaller`/`macLockRecovery`/`nativeUi`）**全部 `not_run`**。
 - ⚠️ 本次 preflight 报告 `source.hasUncommittedChanges=true`：仓库当前有未提交改动（新增 `frontend/src/components/FailoverCard.vue` 与 `gateway/failover.mjs` 的 `reason` 字段）。**验收应在干净/已提交的源码上跑**，否则报告会标记未提交、难以回溯。
@@ -97,12 +97,13 @@
 
 ### 4.3 G2 · Windows 签名安装包
 
-- **代码/配置就绪度（真实缺口）**：`desktop/windows-bundle.json` **无任何签名配置**（无 `signCommand`、无证书）；`desktop:package:windows` 产出**未签名**包。当前文件仅含 nsis / 图标 / 语言。
-- **本环境可跑**：❌ 需 Windows 代码签名证书（`.pfx` / EV）+ 签名工具链。
+- **代码/配置就绪度（已接入，2026-11-02）**：签名能力已在 `desktop/package-windows.mjs` 落地——凭据协议见上方"配置层实测补充"；无凭据 = 未签名预览（行为不变），有凭据 = 自动签 binary + Setup.exe 并在 `report.signing` / `report.signed=true` 记录。`windows-bundle.json` 保持纯 NSIS 布局配置，签名不经 Tauri bundle（`--no-sign` 指 Tauri 更新器签名，与代码签名无关）。
+- **端到端验证（本机已跑）**：openssl 生成自签 PFX → `CGW_SIGN_PFX=… CGW_SIGN_PFX_PASSWORD=… npm run desktop:package:windows -- --offline` → 产物 `report.json` 显示 `signed:true`、`sign-binary`/`sign-installer` 阶段 passed，`Get-AuthenticodeSignature` 有 `SignerCertificate`。
+- **剩余缺口**：真代码签名证书（建议 EV，过 SmartScreen）；干净机器安装走查。
 - **真人执行剧本**：
   1. 获取代码签名证书（建议 **EV 证书**以过 SmartScreen 拦截）。
-  2. 在 `windows-bundle.json` 的 `windows.nsis` 下补 `signCommand`（或 Tauri `bundle.windows.signCommand`），引用证书。
-  3. 重新打包：`npm ci --prefix desktop --ignore-scripts` → `npm run desktop:package:windows`。
+  2. 设置凭据环境变量（二选一）：EV/存储证书 `CGW_SIGN_THUMBPRINT=<40位SHA1指纹>`；PFX 文件 `CGW_SIGN_PFX=<路径> CGW_SIGN_PFX_PASSWORD=<密码>`（注意 PFX 密码会出现在 signtool 命令行，共享打包机建议用指纹方式）。
+  3. 重新打包：`npm ci --prefix desktop --ignore-scripts` → `npm run desktop:package:windows`。检查 `report.json` 的 `signed:true` 与 `sign-binary`/`sign-installer` 阶段。
   4. **干净机器（无 WebView2）** 安装：`./desktop/install-windows-test.ps1 -PackageDirectory <打包目录>`（校验哈希、安装、随包 Node 启停、同版本重装、降级拒绝、卸载、未知文件保留）。
   5. 验证签名：`Get-AuthenticodeSignature` 通过；右键属性无"未知发布者"。
   6. 判定：签名有效 + 干净机器安装成功 + 真实登录调用一次 = **G2 通过**。
@@ -123,7 +124,7 @@
 G1–G3 的"真实验收项"在**任何自动环境（含本次有工具链的主机）里默认 `not_run`**——`desktop:verify` 的 `acceptance` 字段已硬编码四个 `not_run`。这意味着：
 
 - **自动化 CI 通过 / preflight 通过 ≠ 可发布**。发布前必须有真人按 4.2–4.4 走通。
-- **G2 签名、G3 公证目前连配置都还没接入**，属于"未开工"而非"已做待验"。这是发布前必须先补的两块硬工程，且都依赖外部凭据（代码签名证书 / Apple 开发者账号），无法在仓库内独立完成。
+- **G2 签名能力已接入并可用本地自签证书端到端跑通（2026-11-02）**，剩余缺口是**真代码签名证书 + 干净机器走查**；**G3 公证目前连配置都还没接入**，属于"未开工"而非"已做待验"。两者都依赖外部凭据（代码签名证书 / Apple 开发者账号），无法在仓库内独立完成。
 
 ## 五、建议的发布门禁流程
 
