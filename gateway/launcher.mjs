@@ -250,8 +250,14 @@ if (!DESKTOP && (process.argv[2] === 'admin' || process.argv[2] === 'admin-token
     process.exit(1)
   }
   if (cmd === 'admin-token') {
-    console.log(adminAuth.token)
-    console.error(`\n脚本用法：  curl -H "Authorization: Bearer ${adminAuth.token}" ${base}/__gw/status`)
+    // 不把令牌直接打到 stdout（会落进 shell 历史 / 进程列表、被同机其他用户窥见）。
+    // 改为写入权限受限的本地文件，并在提示里引用该文件，避免明文出现在命令行回显。
+    const outDir = path.dirname(gwConfig.authFilePath || path.join(os.homedir(), '.codex-gateway'))
+    fs.mkdirSync(outDir, { recursive: true })
+    const outFile = path.join(outDir, 'admin-token.txt')
+    fs.writeFileSync(outFile, adminAuth.token + '\n', { mode: 0o600 })
+    console.log(`✓ 管理令牌已写入 ${outFile}（权限 0600，请勿提交或外传）`)
+    console.error(`\n脚本用法：  curl -H "Authorization: Bearer $(cat "${outFile}")" ${base}/__gw/status`)
     process.exit(0)
   }
   const r = await fetch(base + '/__gw/admin/bootstrap', {
@@ -3095,11 +3101,14 @@ async function handleHttpRequest(req, res) {
       }
     }
     const token = extractBearerToken(req.headers['authorization'])
-    // 带了 Authorization 却不是 cgw- 前缀（多半是贴了 OpenAI 的 sk-），
-    // 在**未启用严格鉴权**时会被静默降级成匿名放行 —— 用户得不到任何提示，
-    // 只会觉得「莫名奇妙能用了」，实际是拿宿主机激活账号在跑，用量还记不到他头上。
-    // 只要带了凭据就一律按凭据校验，前缀不对就明确拒绝。
+    // 安全不变量：Authorization 里只要是 Bearer 就必须是 cgw- 前缀，否则明确 401 拒绝
+    // （bad_prefix），绝不静默降级成匿名。extractBearerToken 只认 cgw- 前缀、会丢弃其它
+    // 前缀使 token 为 null；rawBearer 仍能取到原始值 —— 二者结合即可区分
+    // 「贴错厂商 Key」（401）与「压根没带 Key」（仅在不强制鉴权时才放行匿名）。
+    // 这条拒绝**无条件**生效（不依赖 strictAuth）：避免误配的客户端拿着本机激活账号
+    // 匿名跑、用量还记不到自己头上。下面的 warn 仅用于运维可观测，不改变拒绝结果。
     if (!token && rawBearer(req)) {
+      console.warn(`[auth] 拒绝非 cgw- 前缀的 Bearer（疑似贴错厂商 Key），来源 ${req.socket?.remoteAddress || 'unknown'}`)
       recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
       res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
       return res.end(JSON.stringify(authRejectBody({ reason: 'bad_prefix' })))

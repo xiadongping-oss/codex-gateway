@@ -213,8 +213,8 @@ fn invoke(settings: &Settings, payload: &Value, cancel: &AtomicBool) -> Result<V
         }
     }
     let (mut child, mut tree) = crate::process_tree::Tree::spawn(&mut command)?;
-    let stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
+    let stdout = child.stdout.take().ok_or("MIGRATION_WORKER_UNCONFIRMED")?;
+    let mut stderr = child.stderr.take().ok_or("MIGRATION_WORKER_UNCONFIRMED")?;
     let output = thread::spawn(move || {
         let mut bytes = Vec::new();
         stdout.take(65537).read_to_end(&mut bytes).map(|_| bytes)
@@ -223,7 +223,12 @@ fn invoke(settings: &Settings, payload: &Value, cancel: &AtomicBool) -> Result<V
         let _ = std::io::copy(&mut stderr, &mut std::io::sink());
     });
     // No work can begin until ownership of the process tree has been established.
-    let written = child.stdin.take().unwrap().write_all(&input).is_ok();
+    let written = child
+        .stdin
+        .take()
+        .ok_or("MIGRATION_WORKER_UNCONFIRMED")?
+        .write_all(&input)
+        .is_ok();
     let deadline = Instant::now() + Duration::from_secs(600);
     let mut interrupted = !written;
     let exit = loop {

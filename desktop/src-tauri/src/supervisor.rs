@@ -422,8 +422,8 @@ fn launch(settings: &Settings, cancel: &AtomicBool) -> Result<Session, String> {
         command.creation_flags(0x08000000);
     }
     let (mut child, tree) = crate::process_tree::Tree::spawn(&mut command)?;
-    let stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
+    let stdout = child.stdout.take().ok_or("NODE_START_FAILED")?;
+    let mut stderr = child.stderr.take().ok_or("NODE_START_FAILED")?;
     let (sender, receiver) = mpsc::sync_channel(16);
     let mut session = Session::new(child, receiver);
     session.tree = Some(tree);

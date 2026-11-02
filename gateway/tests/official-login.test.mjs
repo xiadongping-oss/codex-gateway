@@ -405,11 +405,12 @@ test('start：CLI 形态补 login 子命令；桌面客户端进入 defaultWatch
   const seen = []
   const mgrCli = makeManager(root, {
     discoverImpl: () => ({ path: 'C:\\npm\\codex.cmd', kind: 'cli' }),
-    spawnImpl: (cmd) => { seen.push(cmd); return { pid: 11, unref() {} } }
+    spawnImpl: (command, args, options) => { seen.push({ command, args, options }); return { pid: 11, unref() {} } }
   })
   const r1 = await mgrCli.start()
-  assert.match(seen[0], /"C:\\npm\\codex\.cmd" login/)
-  assert.equal(seen[0], 'start "" /WAIT CMD /d /s /c ""C:\\npm\\codex.cmd" login" & exit /b')
+  assert.equal(seen[0].command, 'cmd.exe')
+  assert.deepEqual(seen[0].args, ['/d', '/s', '/c', '""C:\\npm\\codex.cmd" login"'])
+  assert.equal(seen[0].options.shell, false)
   await mgrCli.cancel(r1.sessionId)
 
   // store 形态：不带 login；客户端退出后仍 waiting-login（watchDefaultProfile=true）
@@ -587,9 +588,11 @@ test('Mac application discovery and explicit bundle classification reach the GUI
   const calls = [], child = new EventEmitter(); child.pid = 9876; child.unref = () => {}
   const manager = createOfficialLoginManager({ dataRoot: tmpDataRoot(), platform: 'darwin', env: { HOME: '/fixture/home' },
     discoverImpl: ({ platform }) => { assert.equal(platform, 'darwin'); return discovered },
-    spawnImpl: (command, options) => { calls.push({ command, options }); return child }, defaultAuthText: () => null })
+    spawnImpl: (command, args, options) => { calls.push({ command, args, options }); return child }, defaultAuthText: () => null })
   const session = await manager.start()
-  assert.ok(calls[0].command.startsWith("/usr/bin/open -n '/Applications/Someone'\\''s $literal Codex.app'"))
+  assert.equal(calls[0].command, '/usr/bin/open')
+  assert.deepEqual(calls[0].args, ['-n', "/Applications/Someone's $literal Codex.app", '--env', `CODEX_HOME=${session.profileDir}`])
+  assert.equal(calls[0].options.shell, false)
   assert.equal(calls[0].options.env.CODEX_HOME, session.profileDir)
   child.emit('exit', 0)
   const status = await manager.status(session.sessionId)
@@ -604,9 +607,13 @@ test('explicit Windows CMD client gets login; asynchronous launch errors and non
     const child = new EventEmitter(); child.pid = failure === 'error' ? undefined : 9876; child.unref = () => {}
     const manager = createOfficialLoginManager({ dataRoot: tmpDataRoot(), platform: 'win32',
       discoverImpl: () => failure === 'nonzero-store' ? { path: 'C:\\store\\Codex.exe', kind: 'store' } : client,
-      spawnImpl: (command, options) => {
-        if (failure !== 'nonzero-store') assert.equal(command, 'start "" /WAIT CMD /d /s /c ""C:\\fixture cli\\codex.cmd" login" & exit /b')
-        assert.equal(options.shell, true); return child
+      spawnImpl: (command, args, options) => {
+        if (failure !== 'nonzero-store') {
+          assert.equal(command, 'cmd.exe')
+          assert.deepEqual(args, ['/d', '/s', '/c', '""C:\\fixture cli\\codex.cmd" login"'])
+          assert.equal(options.shell, false)
+        }
+        return child
       }, defaultAuthText: () => null })
     const session = await manager.start()
     if (failure === 'error') child.emit('error', Object.assign(new Error('fixture asynchronous failure'), { code: 'ENOENT' }))
@@ -639,7 +646,7 @@ test('manager watches only its injected custom CODEX_HOME and requires a change 
   fs.writeFileSync(auth, JSON.stringify({ tokens: { access_token: 'fixture-old' } }))
   const manager = createOfficialLoginManager({ dataRoot: root, platform: 'win32', env: { CODEX_HOME: ` "${custom}" ` },
     discoverImpl: () => ({ path: 'C:\\fixture\\Codex.exe', kind: 'app' }),
-    spawnImpl: (_command, options) => {
+    spawnImpl: (_command, _args, options) => {
       assert.notEqual(options.env.CODEX_HOME, custom, 'new client gets the temporary session profile')
       return { pid: 9876, unref() {} }
     } })

@@ -425,10 +425,17 @@ function walkStaging(dir, { scanPaths = true } = {}) {
     //    没有换行的单行文件（如极简 .cmd）不参与判断，否则只会制造噪音。
     if (TEXT_EXT.has(ext)) {
       const buf = fs.readFileSync(p)
+      const text = buf.toString('latin1')
       const hasLF = buf.includes(0x0a)
       const hasCR = buf.includes(0x0d)
-      if (hasLF) {
-        const wantCRLF = CRLF_REQUIRED.has(ext)
+      const hasStrayCR = /\r(?!\n)/.test(text) // 任何未组成 CRLF 的孤立 CR
+      const wantCRLF = CRLF_REQUIRED.has(ext)
+      // 孤立 CR：上面 normalizeEol 对不组成 CRLF 的 CR 原样放行、不修复，
+      // 所以这里必须兜底报错，否则会静默带进发布包（可复现构建盲区 D1）。
+      if (hasStrayCR) {
+        EOL_HITS.push(`${rel} 含孤立 CR（未组成 CRLF），须先修正为 LF 或 CRLF 再打包`)
+      } else if (hasLF) {
+        // 正常换行文件：按目标换行符校验（保留原逻辑）
         if (wantCRLF && !hasCR) EOL_HITS.push(`${rel} 应为 CRLF（Windows 脚本），实际为 LF`)
         if (!wantCRLF && hasCR) EOL_HITS.push(`${rel} 应为 LF，实际含 CRLF`)
       }

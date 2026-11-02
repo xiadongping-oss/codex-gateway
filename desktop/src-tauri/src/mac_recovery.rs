@@ -213,8 +213,8 @@ pub fn save(lease: &Lease, tree: &Tree) -> io::Result<()> {
         owner: lease.bytes.clone(),
         identity: lease.identity.clone(),
     };
-    let name =
-        std::ffi::CString::new(format!(".desktop-recovery-{}.tmp", uuid::Uuid::new_v4())).unwrap();
+    let name = std::ffi::CString::new(format!(".desktop-recovery-{}.tmp", uuid::Uuid::new_v4()))
+        .map_err(|_| invalid())?;
     let result = (|| {
         let mut file = open_at(
             &anchor.runtime,

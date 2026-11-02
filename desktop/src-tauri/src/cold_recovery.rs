@@ -36,7 +36,10 @@ fn creation(handle: HANDLE) -> Option<u64> {
     Some((times[0].dwHighDateTime as u64) << 32 | times[0].dwLowDateTime as u64)
 }
 pub fn save(lease: &Lease, tree: &Tree) -> std::io::Result<()> {
-    let parent = lease.path.parent().unwrap();
+    let parent = lease
+        .path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("recovery lease path missing parent"))?;
     let receipt = Receipt {
         shell: std::process::id(),
         created: creation(unsafe { GetCurrentProcess() })

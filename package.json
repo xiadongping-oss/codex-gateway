@@ -52,6 +52,9 @@
     "desktop:verify:test": "node --test desktop/validation.test.mjs",
     "desktop:test:icons": "node --test --test-timeout=30000 desktop/icon-compact.test.mjs",
     "test:mutate:icons": "node desktop/mutate-icon.mjs",
-    "desktop:branding": "node desktop/build-branding.mjs"
+    "desktop:branding": "node desktop/build-branding.mjs",
+    "scan:secrets": "node scripts/scan-secrets.mjs",
+    "hook:install": "cp scripts/git-hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit",
+    "check:dist-drift": "node scripts/check-dist-drift.mjs"
   }
 }

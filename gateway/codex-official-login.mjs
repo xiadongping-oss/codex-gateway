@@ -25,6 +25,13 @@ import { writeJsonAtomic } from './atomic-write.mjs'
 const SESSION_ID_RE = /^[0-9a-f]{16}$/
 export const LOGIN_TIMEOUT_MS = 10 * 60 * 1000
 
+// cmd 参数转义：把路径里的 `"` 转成 `""`。cmd 在 `/s /c` 的引号语境里把 `""` 当作字面引号，
+// 从而防止 client.path 含引号时逃逸出外层引号、注入额外命令。Windows 文件名虽不含 `"`，
+// 但 client.path 可能来自 CODEX_CLIENT_PATH 等可配置来源，必须防御（见下方 win32 启动分支）。
+function cmdEscape(p) {
+  return String(p).replace(/"/g, '""')
+}
+
 // 默认 profile（~/.codex/auth.json）：桌面版客户端若不尊重 CODEX_HOME，
 // 登录凭据会落到这里 —— 会话用「内容指纹变化」识别这次登录（见 resolveAuth）。
 export function defaultCodexAuthPath(env = process.env, homedir = os.homedir) {
@@ -359,33 +366,37 @@ export function createOfficialLoginManager({ dataRoot, spawnImpl = spawn, discov
 
     try {
       if (platform === 'win32') {
-        // start "" /WAIT：新控制台/GUI 窗口跑官方客户端；cmd 壳挂着等它退出，
-        // pid 即壳进程 —— 检测壳存活 + 凭据文件，两路信号互为兜底。
-        // CLI 形态补 login 子命令（浏览器授权 + 本地回调，完成后进程退出）；
-        // 桌面 GUI 不带参数，直接开窗口。
-        const cliArgs = launchKind === 'cli' ? ' login' : ''
-        // START otherwise runs batch files with CMD /K: even a failed CLI login
-        // leaves that window open and /WAIT never observes its exit code.
-        // Bare CMD is START's documented COMSPEC substitution, not a PATH lookup.
-        const launch = launchKind === 'cli' && /\.(cmd|bat)$/i.test(client.path)
-          ? `start "" /WAIT CMD /d /s /c ""${client.path}" login"`
-          : `start "" /WAIT "${client.path}"${cliArgs}`
-        // START's child code can otherwise be lost when the outer shell exits.
-        // No delayed expansion: valid install paths may contain literal '!'.
-        const command = `${launch} & exit /b`
-        const child = spawnImpl(command, {
-          shell: true, stdio: 'ignore',
-          env: { ...env, CODEX_HOME: profileDir }
-        })
-        session.pid = child.pid || null
-        own(child, session)
-        child.unref?.()
+        // 直接 spawn，不用 shell:true：避免把 client.path 拼进 shell 命令字符串带来的
+        // 引号/元字符注入面（client.path 来自配置或 where/which 发现，属外部可影响来源）。
+        // shell:false + 数组参数 是 Node 拉起外部进程的安全范式，pid 即真实子进程，
+        // 比原先跟踪「start 壳进程」更准确，退出码也可观测。
+        if (launchKind === 'cli' && /\.(cmd|bat)$/i.test(client.path)) {
+          // 批处理：显式拉起 cmd.exe 跑 login 子命令（浏览器授权 + 本地回调，完成后退出）。
+          // 用 `/d /s /c` 的标准安全引号写法：`""<path>" login"` —— /s 剥掉首尾引号后
+          // 得到 `"<path>" login`，路径被妥善引号包裹；路径内的 `"` 已由 cmdEscape 转义为 `""`。
+          // 不用 `start`：CLI 登录是 TUI，spawn 异步不阻塞网关进程，也不需要额外窗口。
+          const child = spawnImpl('cmd.exe', ['/d', '/s', '/c', `""${cmdEscape(client.path)}" login"`], {
+            shell: false, stdio: 'ignore',
+            env: { ...env, CODEX_HOME: profileDir }
+          })
+          session.pid = child.pid || null
+          own(child, session)
+          child.unref?.()
+        } else {
+          // GUI / 可执行（.exe / Store 版）：直接拉起二进制，自带窗口不阻塞网关。
+          const child = spawnImpl(client.path, launchKind === 'cli' ? ['login'] : [], {
+            shell: false, windowsHide: false, stdio: 'ignore',
+            env: { ...env, CODEX_HOME: profileDir }
+          })
+          session.pid = child.pid || null
+          own(child, session)
+          child.unref?.()
+        }
       } else if (platform === 'darwin' && launchKind === 'app') {
-        // macOS GUI 应用走 open（--env 需要 macOS 13+）。open 立即返回，
-        // pid 不可靠 —— posix 侧以凭据轮询为准，用户在界面上点「完成导入」。
-        const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`
-        const child = spawnImpl(`/usr/bin/open -n ${quote(client.path)} --env ${quote(`CODEX_HOME=${profileDir}`)}`, {
-          shell: true, stdio: 'ignore',
+        // macOS GUI 应用走 open（--env 需要 macOS 13+）。无 shell 直接拉起，路径作为裸参数传入，
+        // 无需引号转义，杜绝注入。open 立即返回，pid 不可靠 —— posix 侧以凭据轮询为准。
+        const child = spawnImpl('/usr/bin/open', ['-n', client.path, '--env', `CODEX_HOME=${profileDir}`], {
+          shell: false, stdio: 'ignore',
           env: { ...env, CODEX_HOME: profileDir }
         })
         session.pid = null // open 的壳进程不可作存活信号
