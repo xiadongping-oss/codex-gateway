@@ -81,3 +81,14 @@ dialog{border:1px solid var(--border);border-radius:14px;padding:26px;width:min(
 .notice{padding:11px 13px;border:1px solid var(--border);border-radius:9px;background:var(--soft);color:var(--text-2);font-size:12.5px;line-height:1.65}
 .notice.gate{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 .notice.gate p{margin:0;color:inherit;flex:1 1 280px}
+/* 内联说明：取代旧的 <details class="help"> 折叠块，说明文字直接摆在功能区旁边。 */
+.inline-help{margin:8px 0 0;color:var(--muted);font-size:12px;line-height:1.7;max-width:760px}
+.inline-help b{color:var(--text-2)}
+/* 业务页点击反馈横幅：网关未就绪时点了导航，必须立刻说明原因和下一步。 */
+.nav-notice{display:flex;align-items:center;gap:12px;padding:9px 8px 9px 14px;border:1px solid var(--border);border-left:3px solid var(--primary);border-radius:8px;background:var(--soft);color:var(--text-2);font-size:12.5px;margin:0 0 14px}
+.nav-notice[hidden]{display:none}
+.nav-notice>span{flex:1 1 auto}
+.nav-notice .secondary{flex:none}
+.notice-close{border:0;background:transparent;color:var(--muted);min-height:28px;min-width:28px;padding:0;font-size:15px;line-height:1}
+.notice-close:hover{color:var(--text)}
+.status-dot.failed{background:var(--danger)}

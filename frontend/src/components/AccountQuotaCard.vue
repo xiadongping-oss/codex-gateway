@@ -378,7 +378,6 @@ onUnmounted(() => {
       </div>
       </template>
 
-<details class="help-details"><summary>额度来源与保存说明</summary>
 <div class="q-note">
         <p>点击「刷新额度」检测，或完成一次实际对话后再查看。若上游未返回额度信息，此处会保持空白；也可通过「编辑」手动记录。</p>
         身份（账号名 / 邮箱 / ID）来自本地登录态。用量优先取该账号自己那个 bridge 观测到的上游限流头
@@ -386,7 +385,6 @@ onUnmounted(() => {
         （<code>manual</code>），两者都没有就留空——不会编数字。手填值保存到当前激活账号名下
         （<code>accounts[账号id]</code>），<code>shared</code> 为共用缺省。
       </div>
-</details>
     </template>
 
     <div v-else-if="loading" class="q-empty">加载中…</div>

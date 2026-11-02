@@ -192,7 +192,6 @@ watch(() => models.value.length, () => {
         <span class="card-meta">{{ models.length }} 个</span>
         <button class="btn-ghost sm" @click="refreshAll(true)" :disabled="loading">{{ loading ? '刷新中…' : '刷新' }}</button>
       </div>
-<details class="help-details"><summary>模型目录说明</summary>
 <div class="card-sub" style="margin-bottom: 12px">
         来自 <code>GET /v1/models</code>＝上游真实列表 ∪ 本地主力模型目录（上游不可达时仍可配置）。
         列表只下发<b>当前主力</b>：文本 3 个（<code>gpt-6.1-sol</code> / <code>gpt-6-astra</code> / <code>gpt-6.1-terra</code>）
@@ -203,7 +202,6 @@ watch(() => models.value.length, () => {
           <br />已隐藏 {{ hiddenCount }} 个旧世代 / 下线模型。
         </template>
       </div>
-</details>
       <div v-if="!upstreamOk" class="degraded">
         <span class="warn-dot">!</span>
         上游模型列表暂不可用（{{ upstreamErr || '未知原因' }}），当前展示本地目录兜底模型。
@@ -230,7 +228,6 @@ watch(() => models.value.length, () => {
         {{ loadErr || '暂无可用模型。请确认 bridge 已启动且授权有效。' }}
       </div>
 
-<details class="help-details" v-if="imageModel"><summary>图片模型与实际渲染说明</summary>
 <div class="image-note" v-if="imageModel">
         <div class="image-note-title">图片模型说明</div>
         <div class="image-note-body">
@@ -245,7 +242,6 @@ watch(() => models.value.length, () => {
           网关会在响应中回写真实模型（<code>model</code> 字段与 <code>x-cgw-image-model</code> 响应头），并把调用方填写的占位名记在 <code>cgw_requested_model</code> 里，便于核对。
         </div>
       </div>
-</details>
     </div>
 
     <div class="card">
@@ -310,7 +306,6 @@ watch(() => models.value.length, () => {
         <pre class="code-block">{{ configText }}</pre>
 
         <!-- WorkBuddy 添加模型对照：用户实测每次都要想怎么勾，直接给出结论 -->
-<details class="help-details"><summary>WorkBuddy 配置说明</summary>
 <div class="wb-guide">
           <div class="wb-guide-title">填到 WorkBuddy「添加模型」：</div>
           <div class="wb-guide-body">
@@ -321,7 +316,6 @@ watch(() => models.value.length, () => {
             <br /><b>自定义协议：不要勾</b>——勾了 WorkBuddy 不再自动补全 <code>/chat/completions</code> 路径，请求会打到网关没有的路由上直接 404
           </div>
         </div>
-</details>
 
         <p class="hint" v-if="!useManual && !selectedKeyId">
           <span class="warn-dot">!</span>
@@ -342,7 +336,7 @@ watch(() => models.value.length, () => {
 
       <div v-if="!lan.enabled" class="lan-off">
         <div class="lan-off-title">当前仅本机可访问（监听 127.0.0.1）</div>
-        <details class="help-details"><summary>开启局域网接入</summary><div class="lan-off-body">
+        <div class="lan-off-body">
           局域网内的其他电脑无法访问本网关。需要开放时，用环境变量启动网关：
           <div class="lan-cmd">
             <code>GW_LAN=1 node gateway/launcher.mjs</code>
@@ -357,7 +351,7 @@ watch(() => models.value.length, () => {
             <li>bridge 子进程仍只监听 127.0.0.1，不直接对外暴露</li>
             <li>Windows 防火墙需放行 <code>{{ lan.port }}</code> 端口（首次启动会弹窗询问）</li>
           </ul>
-        </div></details>
+        </div>
       </div>
 
       <div v-else class="lan-on">

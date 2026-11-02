@@ -34,6 +34,7 @@ for (const holder of document.querySelectorAll('[data-icon]')) {
   shape.setAttribute('d',icons[holder.dataset.icon] || icons.overview); svg.append(shape); holder.append(svg)
 }
 let busy = false, autostartBusy = false, autostartAvailable = false, pendingConfirmation
+let lastGateway = null
 const errorMessage = error => typeof error === 'string' && error.length < 180 ? error : '操作未完成，请稍后重试。'
 // 启动、停止、退出这类操作要几百毫秒到几秒才有回音。不把按钮锁住，用户唯一能看到
 // 的反馈就是「点了没反应」，于是再点一次——所以这是必要的交互，不是装饰。
@@ -49,10 +50,45 @@ async function action(name) {
   catch (error) { $('action-error').textContent = errorMessage(error) }
   finally { busy = false; setActionsBusy(false) }
 }
+const PAGE_NAMES = { overview:'概览', account:'账号管理', images:'图片素材', models:'模型能力', apikeys:'API Key', logs:'调用日志' }
+// 业务页由原生控制台承载：网关没就绪时点击只会排队（就绪后自动打开），但界面必须
+// 立刻给一句话反馈并指出下一步，否则用户看到的就是「点了没反应」。
+function navHint(page) {
+  const name = PAGE_NAMES[page] || page
+  const s = lastGateway
+  let text = null, target = null, goLabel = null
+  if (!s) text = `正在连接本机服务，「${name}」就绪后自动打开。`
+  else if (s.phase === 'starting') text = `正在启动网关，「${name}」就绪后自动打开。`
+  else if (s.phase === 'migrating') text = `正在迁移数据，「${name}」就绪后自动打开。`
+  else if (s.phase === 'stopping') text = `正在停止服务，暂时无法打开「${name}」。`
+  else if (s.phase === 'unresponsive') { text = `网关暂无响应，请先处理再打开「${name}」。`; target = 'service'; goLabel = '去服务与诊断' }
+  else if (s.phase === 'setup') { text = `请先完成初始设置，再使用「${name}」。`; target = 'service'; goLabel = '去服务与诊断' }
+  else if (s.phase === 'migration_complete') { text = `迁移已完成，启动网关后即可使用「${name}」。`; target = 'service'; goLabel = '去启动网关' }
+  else if (s.phase === 'maintenance') { text = `服务已停止（数据维护模式），启动网关后即可使用「${name}」。`; target = 'service'; goLabel = '去启动网关' }
+  else if (s.phase === 'failed') {
+    if (s.code === 'DATA_MIGRATION_REQUIRED' || s.code === 'DATA_MIGRATION_PENDING') {
+      text = `检测到旧版数据，完成迁移后即可使用「${name}」。`; target = 'data'; goLabel = '去数据与备份'
+    } else { text = `网关未能运行，暂时无法打开「${name}」。`; target = 'service'; goLabel = '去服务与诊断' }
+  }
+  if (!text) return // ready：控制台会真正打开，无需提示
+  showNavNotice(text, target, goLabel)
+}
+let noticeTimer = null
+function showNavNotice(text, target, goLabel) {
+  setText($('nav-notice-text'), text)
+  const go = $('nav-notice-go')
+  go.textContent = goLabel || ''
+  go.onclick = target ? () => navigate(target) : null
+  setVisible(go, Boolean(target))
+  setVisible($('nav-notice'), true)
+  if (noticeTimer) clearTimeout(noticeTimer)
+  noticeTimer = setTimeout(() => { noticeTimer = null; setVisible($('nav-notice'), false) }, 8000)
+}
 async function navigate(page) {
   $('action-error').textContent = ''
   try { await invoke('workspace_navigate', { page }) }
   catch (error) { $('action-error').textContent = errorMessage(error) }
+  if (!['service', 'data', 'desktop'].includes(page)) navHint(page)
 }
 function showPage(page) {
   const current = ['service','data','desktop'].includes(page) ? page : 'service'
@@ -76,6 +112,8 @@ $('confirm-action').onclose = () => { pendingConfirmation = undefined }
 $('confirm-submit').onclick = () => { const name = pendingConfirmation; $('confirm-action').close(); if (name) action(name) }
 $('reopen').onclick = () => navigate('overview')
 $('retry').onclick = () => action('retry')
+$('goto-data').onclick = () => navigate('data')
+$('nav-notice-close').onclick = () => { if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null } setVisible($('nav-notice'), false) }
 $('quit').onclick = () => action('quit')
 $('continue').onclick = () => action('continue')
 $('force').onclick = () => confirmAction('force','结束任务并退出？','进行中的任务会被中断。确认后将停止网关并退出应用。','结束并退出')
@@ -111,13 +149,17 @@ async function pollOnce() {
   const [gateway, workspace] = await Promise.allSettled([invoke('gateway_status'), invoke('workspace_state')])
   if (gateway.status === 'fulfilled') {
     const s = gateway.value
+    lastGateway = s
     setText($('title'), s.title); setText($('message'), s.message)
     setText($('badge'), s.badge); setClass($('badge'), `badge ${s.phase}`)
+    setClass(document.querySelector('.status-dot'), ['failed', 'unresponsive'].includes(s.phase) ? 'status-dot failed' : 'status-dot')
+    if (s.phase === 'ready') setVisible($('nav-notice'), false)
     setText($('sidebar-state'), s.phase === 'ready' ? '服务运行中' : s.phase === 'stopping' ? '正在停止' : '本机服务')
     setText($('address'), s.port ? `127.0.0.1:${s.port}` : '等待连接')
     const taskCount = Number(s.active || 0) + Number(s.background || 0)
     setText($('tasks'), taskCount ? `${taskCount} 项进行中` : '暂无任务')
     const migration = ['DATA_MIGRATION_REQUIRED', 'DATA_MIGRATION_PENDING'].includes(s.code)
+    setVisible($('goto-data'), migration)
     setVisible($('retry'), ['maintenance', 'migration_complete'].includes(s.phase) || (s.phase === 'failed' && !migration))
     setText($('retry'), s.phase === 'maintenance' || s.phase === 'migration_complete' ? '启动网关' : '重新启动')
     setVisible($('fresh-start'), s.phase === 'setup')

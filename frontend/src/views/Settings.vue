@@ -228,7 +228,7 @@ async function copyConfig() {
         把下方配置填到任意 OpenAI 兼容客户端（WorkBuddy / Codex CLI / Claude Code / n8n 等）即可调用本网关。
       </div>
       <button class="btn-primary" @click="copyConfig">{{ copied ? '已复制 ✓' : '复制接入配置' }}</button>
-      <details class="help-details"><summary>查看接入配置与客户端说明</summary><pre class="code">{{ accessCfgText }}</pre></details>
+      <pre class="code">{{ accessCfgText }}</pre>
       <div v-if="copyErr" class="msg err" style="margin-top: 10px">{{ copyErr }}</div>
       <div class="card-sub hint" style="margin-top: 10px">
         <template v-if="hasKey">API Key 即「API Key」页创建的 cgw- 密钥（仅本机可见；点「复制接入配置」时才会取明文）。严格鉴权开启后，客户端必须携带此 Key。</template>
@@ -304,14 +304,12 @@ async function copyConfig() {
         代理模块不可用（缺少 undici）。在 <code>gateway/</code> 执行 <code>npm i undici</code> 后重启网关。
       </div>
 
-<details class="help-details"><summary>代理配置说明</summary>
 <div class="card-sub hint">
         <b>为什么必须在这里配：</b>Node 的 fetch 不读取系统代理环境变量，与浏览器行为不同。<br />
         <b>用 Tailscale exit node 的话：</b>流量已在网卡层转发、对应用透明，此处<b>留空</b>即可。<br />
         常见端口：Clash Verge 默认 <code>7897</code>，Clash for Windows 默认 <code>7890</code>（填「混合端口」）。
         调整代理后调用异常？去「调用日志」页看看，或重启网关。
       </div>
-</details>
     </div>
 
     <div class="card">

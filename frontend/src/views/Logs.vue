@@ -104,9 +104,9 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
           <div v-for="(line, i) in gwLogs" :key="i" class="log-line" :class="{ err: isErrLine(line) }">{{ line }}</div>
           <div v-if="!gwLogs.length" class="empty-sub" role="status" style="padding: 30px; text-align: center">{{ gwLogsError ? '暂时无法确认是否有运行日志' : gwLogsLoaded ? '暂无日志' : '载入中…' }}</div>
         </div>
-        <details class="help-details"><summary>日志范围说明</summary><div class="card-sub" style="margin-top: 10px">
+        <div class="card-sub" style="margin-top: 10px">
           这里是进程级运行日志（启动 / 健康检查 / 上游错误 / 补丁校验）；业务调用的模型、状态与 Token 请看「业务调用」标签。
-        </div></details>
+        </div>
       </div>
     </template>
   </div>

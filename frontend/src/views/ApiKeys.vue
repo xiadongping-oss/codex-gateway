@@ -299,10 +299,10 @@ onUnmounted(() => {
           <span>+ 新建 Key</span>
         </button>
       </div>
-      <details class="help-details"><summary>API Key 与账号绑定说明</summary><div class="card-sub" style="margin-bottom: 14px">
+      <div class="card-sub" style="margin-bottom: 14px">
         给 WorkBuddy 等外部客户端用的「网关层」API Key —— 鉴权走 <code>Authorization: Bearer</code>，
         默认不锁定单一账号；指定账号后请求会被限制在所选账号内。
-      </div></details>
+      </div>
 
       <div v-if="loadErr" class="msg err">{{ loadErr }}</div>
 
