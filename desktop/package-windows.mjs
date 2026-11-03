@@ -8,6 +8,7 @@ import { prepareDesktop, verifyDesktop } from '../prepare-desktop.mjs'
 import { releaseRustEnvironment } from './rust-environment.mjs'
 import { inspectDistributionPaths } from './distribution-paths.mjs'
 import { isolateBuildResources } from './build-resources.mjs'
+import { signUpdateArtifact } from './update-artifacts.mjs'
 
 const desktop = path.dirname(fileURLToPath(import.meta.url)), root = path.dirname(desktop)
 const args = process.argv.slice(2)
@@ -113,14 +114,14 @@ try {
   fs.copyFileSync(binary, path.join(portable, path.basename(binary)), fs.constants.COPYFILE_EXCL)
   fs.copyFileSync(path.join(desktop, 'src-tauri/installer/TAURI-LICENSE-MIT.txt'), path.join(portable, 'TAURI-LICENSE-MIT.txt'), fs.constants.COPYFILE_EXCL)
   fs.cpSync(builtResources, path.join(portable, 'gateway-resources'), { recursive: true, errorOnExist: true, force: false })
-  fs.writeFileSync(path.join(portable, '使用说明.txt'), `\uFEFFCodex Gateway 桌面内部预览版（${signing ? '已签名' : '未签名'}）\r\n\r\n解压整个目录后运行 codex-gateway-desktop.exe；无需安装 Node。\r\n需要 Windows x64 和 Microsoft Edge WebView2 运行时；缺少运行时请使用 Setup 安装包联网安装。\r\n账号、配置和图片默认位于 %LOCALAPPDATA%\\CodexGatewayWorkspace-v1。\r\n窗口缓存和桌面日志位于 %LOCALAPPDATA%\\CodexGatewayDesktop。\r\n本 ZIP 免安装，但不是数据随身模式；移动或删除程序目录不会删除账号。\r\n关闭窗口会继续后台运行；在工作台的“服务与诊断”页或托盘菜单选择“退出应用”。\r\n升级、移动、卸载前请先退出应用；当前版本尚未完成正式发行验收。\r\n`)
+  fs.writeFileSync(path.join(portable, '使用说明.txt'), `\uFEFFCodex Gateway 桌面内部预览版（${signing ? '已签名' : '未签名'}）\r\n\r\n解压整个目录后运行 codex-gateway-desktop.exe；无需安装 Node。\r\n需要 Windows x64 和 Microsoft Edge WebView2 运行时；缺少运行时请使用 Setup 安装包联网安装。\r\n账号、配置和图片默认位于 %LOCALAPPDATA%\\CodexGatewayWorkspace-v1。\r\n窗口缓存和桌面日志位于 %LOCALAPPDATA%\\CodexGatewayDesktop。\r\n本 ZIP 免安装，但不是数据随身模式；移动或删除程序目录不会删除账号。\r\n默认关闭窗口后在后台运行，可在应用偏好中修改；在工作台的“服务与诊断”页或托盘菜单选择“退出应用”。\r\n升级、移动、卸载前请先退出应用；当前版本尚未完成正式发行验收。\r\n`)
   verifyDesktop({ target, outDir: path.join(portable, 'gateway-resources') })
   const zip = path.join(destination, `${stem}.zip`)
   await runCommand('zip-verify', 'powershell.exe', ['-NoProfile', '-NonInteractive', '-File', path.join(desktop, 'archive-windows.ps1'), '-Source', portable, '-Destination', zip], root)
   report.artifacts = [{ file: path.basename(zip), bytes: fs.statSync(zip).size, sha256: hash(zip) }]
   save()
-  // ZIP stays usable if installer tool downloads fail. No updater is shipped, so
-  // avoid mutating the verified executable with an NSIS-only bundle marker.
+  // ZIP stays usable if installer tool downloads fail. The updater recognizes
+  // the signed NSIS payload; do not mutate the verified portable executable.
   await runCommand('tauri-bundle', process.execPath, [cli, 'bundle', '--ci', '--no-sign', '--no-binary-patching', '--bundles', 'nsis', '--config', config], desktop, env)
   const bundleDir = path.join(cargoTarget, 'release/bundle/nsis')
   const installers = fs.readdirSync(bundleDir).filter(name => name.endsWith('-setup.exe') && fs.statSync(path.join(bundleDir, name)).mtimeMs >= Date.parse(report.startedAt))
@@ -129,6 +130,9 @@ try {
   fs.copyFileSync(path.join(bundleDir, installers[0]), installer, fs.constants.COPYFILE_EXCL)
   if (signing) await signFile('sign-installer', installer, signtool)
   report.artifacts.push({ file: path.basename(installer), bytes: fs.statSync(installer).size, sha256: hash(installer) })
+  const updater = signUpdateArtifact({desktop,installer,version,notes:process.env.CGW_RELEASE_NOTES_FILE ? fs.readFileSync(process.env.CGW_RELEASE_NOTES_FILE,'utf8') : undefined})
+  report.updater = updater ? {signed:true,verified:true,manifest:path.basename(updater.manifest),signature:path.basename(updater.signature)} : {signed:false,reason:'Signing key unavailable; online update feed was not generated'}
+  if (updater) for (const file of [updater.signature,updater.manifest]) report.artifacts.push({file:path.basename(file),bytes:fs.statSync(file).size,sha256:hash(file)})
   if (hash(binary) !== hash(path.join(portable, path.basename(binary)))) throw new Error('Bundling changed verified executable')
   report.status = 'packaged'
 } catch (error) { report.status = 'failed'; report.error = error.message; process.exitCode = 1 }

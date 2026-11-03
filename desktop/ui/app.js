@@ -2,9 +2,10 @@ const $ = id => document.getElementById(id)
 const invoke = window.__TAURI__.core.invoke
 window.applyWorkspaceTheme = value => {
   const theme = value === 'dark' ? 'dark' : 'light'
-  document.documentElement.dataset.theme = theme
-  $('desktop-theme-label').textContent = theme === 'dark' ? '深色' : '浅色'
-  try { localStorage.setItem('gw.theme',theme) } catch { /* Theme still applies when storage is unavailable. */ }
+  if (document.documentElement.dataset.theme !== theme) document.documentElement.dataset.theme = theme
+  const label = theme === 'dark' ? '深色' : '浅色'
+  if ($('desktop-theme-label').textContent !== label) $('desktop-theme-label').textContent = label
+  try { if (localStorage.getItem('gw.theme') !== theme) localStorage.setItem('gw.theme',theme) } catch { /* Theme still applies when storage is unavailable. */ }
 }
 let savedTheme = 'light'
 try { savedTheme = localStorage.getItem('gw.theme') || 'light' } catch { /* Use the workspace default. */ }
@@ -17,6 +18,7 @@ let savedCollapsed = false
 try { savedCollapsed = localStorage.getItem('gw.sidebar.collapsed') === '1' } catch { /* Use the expanded default. */ }
 window.applyWorkspaceCollapsed(savedCollapsed)
 const icons = {
+ access:'M8 3H3v18h5M14 8l5 4-5 4M8 12h11',
  runtime:'M3 12h4l3-8 4 16 3-8h4',
  lan:'M9 3h6v5H9zM2 16h6v5H2zM16 16h6v5h-6zM12 8v4M5 16v-4h14v4',
 
@@ -38,6 +40,34 @@ for (const holder of document.querySelectorAll('[data-icon]')) {
 }
 let busy = false, autostartBusy = false, autostartAvailable = false, pendingConfirmation
 let lastGateway = null
+let preferencesBusy = false, savedPreferences = null
+function applyPreferences(value) {
+  savedPreferences = value
+  if (!preferencesBusy) {
+    if ($('desktop-appearance').value !== value.appearance) $('desktop-appearance').value = value.appearance
+    if ($('desktop-close-behavior').value !== value.closeBehavior) $('desktop-close-behavior').value = value.closeBehavior
+  }
+  window.applyWorkspaceTheme(value.resolvedAppearance)
+  const description = value.closeBehavior === 'quit' ? '关闭窗口时正常结束任务并退出网关。' : '保留服务，在托盘继续运行。'
+  if ($('close-behavior-description').textContent !== description) $('close-behavior-description').textContent = description
+}
+window.addEventListener('cgw:appearance', event => applyPreferences(event.detail))
+async function savePreferences(patch) {
+  if (preferencesBusy) return
+  preferencesBusy = true
+  $('desktop-appearance').disabled = $('desktop-close-behavior').disabled = true
+  try {
+    const value = await invoke('workspace_preferences', { patch })
+    preferencesBusy = false; applyPreferences(value)
+    $('preferences-status').textContent = '设置已保存。'
+  } catch (error) {
+    preferencesBusy = false
+    if (savedPreferences) applyPreferences(savedPreferences)
+    $('preferences-status').textContent = errorMessage(error)
+  } finally { $('desktop-appearance').disabled = $('desktop-close-behavior').disabled = !savedPreferences }
+}
+$('desktop-appearance').onchange = event => savePreferences({appearance:event.target.value})
+$('desktop-close-behavior').onchange = event => savePreferences({closeBehavior:event.target.value})
 let legacyMigration = false
 const errorMessage = error => typeof error === 'string' && error.length < 180 ? error : '操作未完成，请稍后重试。'
 // 启动、停止、退出这类操作要几百毫秒到几秒才有回音。不把按钮锁住，用户唯一能看到
@@ -54,7 +84,7 @@ async function action(name) {
   catch (error) { $('action-error').textContent = errorMessage(error) }
   finally { busy = false; setActionsBusy(false) }
 }
-const PAGE_NAMES = { runtime:'运行详情', lan:'局域网共享', overview:'概览', account:'账号管理', images:'图片素材', models:'模型能力', apikeys:'API Key', logs:'调用日志' }
+const PAGE_NAMES = { access:'客户端接入', runtime:'运行详情', lan:'局域网共享', overview:'概览', account:'账号管理', images:'图片素材', models:'模型能力', apikeys:'API Key', logs:'调用日志' }
 // 业务页由原生控制台承载：网关没就绪时点击只会排队（就绪后自动打开），但界面必须
 // 立刻给一句话反馈并指出下一步，否则用户看到的就是「点了没反应」。
 function navHint(page) {
@@ -189,6 +219,12 @@ async function pollOnce() {
     $('quit').disabled = busy || s.phase === 'stopping'
   }
   if (workspace.status === 'fulfilled') {
+    window.cgwUpdaterUi.update(workspace.value.updater)
+    if (workspace.value.preferences && !preferencesBusy) {
+      if (!savedPreferences && workspace.value.preferencesError) $('preferences-status').textContent = workspace.value.preferencesError
+      applyPreferences(workspace.value.preferences)
+      $('desktop-appearance').disabled = $('desktop-close-behavior').disabled = false
+    }
     legacyMigration = workspace.value.legacyMigration === true
     showPage(workspace.value.page)
     autostartAvailable = typeof workspace.value.autostart === 'boolean'
@@ -199,6 +235,7 @@ async function pollOnce() {
     setVisible($('autostart-status'), !autostartAvailable)
     setText($('desktop-notice'), workspace.value.notice || '')
   } else {
+    if (!preferencesBusy) $('desktop-appearance').disabled = $('desktop-close-behavior').disabled = true
     autostartAvailable = false
     $('desktop-autostart').disabled = true
     setVisible($('autostart-status'), true)

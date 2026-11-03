@@ -1,5 +1,7 @@
 # RELEASE 构建指南（维护者用）
 
+桌面端签名更新包、`latest.json` 与在线更新发布流程见 [桌面端在线更新](DESKTOP-UPDATES.md)。
+
 > 普通用户不需要读本文件——拿到 zip 后看 `QUICK-START.md` 即可。
 
 本文记录现有 Windows ZIP 的发行流程，以及 F05 已实现的三目标桌面资源准备。Tauri 安装器与 macOS 正式发行见 [桌面版实施计划](DESKTOP-PLAN.md) 和 [任务清单](DESKTOP-TASKS.md)，不能将规划目标视为当前已支持的发行产物。

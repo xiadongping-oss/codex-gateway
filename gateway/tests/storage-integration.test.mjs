@@ -101,7 +101,7 @@ test('managed 真实网关：模块写入在初始化后，图库/素材/下载/
       assert.ok(match, name)
       return match[0]
     }).join('\n')
-    const context = { fs, path, crypto, Buffer, console, writeJsonAtomic, storagePaths: paths }
+    const context = { fs, path, crypto, Buffer, console, writeJsonAtomic, imageFileInfo: () => ({format:'png'}), storagePaths: paths }
     vm.runInNewContext(funcs + '\nthis.saved=saveGenImageB64', context)
     const name = context.saved(PNG.toString('base64'), { keyId: 'fixture-key', keyName: 'fixture' })
     assert.ok(name)

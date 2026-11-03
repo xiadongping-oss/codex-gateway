@@ -615,39 +615,31 @@ var init_upstream = __esm(() => {
 
 // src/images.ts
 import { z as z2 } from "zod";
+import { prepareMaskedEdit, validImageSize, parseImageTransport, imageInputError } from "../../../image-edit.mjs";
 async function buildBody(cfg, req) {
-  const refs = req.reference_images ?? [];
-  const hasRefs = refs.length > 0;
-  const userContent = [];
-  if (hasRefs) {
-    const { resolved, parts } = await resolveAttachments(refs, {}, cfg);
-    const nonImage = resolved.find((r) => r.kind !== "image");
-    if (nonImage) {
-      throw new AttachmentError(`reference_images entry is not an image (mime=${nonImage.mime}, file=${nonImage.filename})`, "ATTACH_BAD_SHAPE");
-    }
-    for (const p of parts)
-      userContent.push(p);
-    userContent.push({ type: "input_text", text: `Generate an image: ${req.prompt}` });
-  }
+  const images = req.image == null ? [] : Array.isArray(req.image) ? req.image : [req.image];
+  const refs = images.length ? images : req.reference_images ?? [];
+  const edit = req.action === "edit" || images.length > 0 || !!req.mask || !!req.outpaint;
+  if (edit && refs.length === 0) throw imageInputError("图片编辑必须提供 image。");
+  if (images.length && req.reference_images?.length) throw imageInputError("image 和 reference_images 请只使用其中一种。");
+  const { resolved, parts } = await resolveAttachments(refs, {}, cfg);
+  if (resolved.some(r => r.kind !== "image")) throw imageInputError("输入必须是图片。");
+  let maskParts = [];
+  if (req.mask) maskParts = (await resolveAttachments([req.mask], {}, cfg)).parts;
+  const prepared = prepareMaskedEdit(req, parts, maskParts);
+  const tool = { type: "image_generation", quality: req.quality, size: prepared.size || req.size, moderation: req.moderation };
+  for (const key of ["background", "output_format", "output_compression", "input_fidelity"]) if (req[key] !== undefined) tool[key] = req[key];
+  if (edit || req.action) tool.action = edit ? "edit" : req.action;
+  if (prepared.mask) tool.input_image_mask = { image_url: prepared.mask };
+  const prompt = edit ? "Edit the first input image: " + req.prompt : "Generate an image: " + req.prompt;
   return {
     model: cfg.imageModel,
     input: [
-      { role: "developer", content: hasRefs ? DEVELOPER_PROMPT_WITH_REFS : DEVELOPER_PROMPT },
-      hasRefs ? { role: "user", content: userContent } : { role: "user", content: `Generate an image: ${req.prompt}` }
+      { role: "developer", content: edit ? "Edit the first input image according to the user. If a mask is supplied, only transparent mask regions may be changed; preserve the other regions, objects and composition. For outpainting, fill the transparent canvas extensions seamlessly. Always invoke the image_generation tool; do not substitute a textual description." : refs.length ? DEVELOPER_PROMPT_WITH_REFS : DEVELOPER_PROMPT },
+      { role: "user", content: prepared.parts.length ? [...prepared.parts, { type: "input_text", text: prompt }] : prompt }
     ],
-    tools: [
-      {
-        type: "image_generation",
-        quality: req.quality,
-        size: req.size,
-        moderation: req.moderation
-      }
-    ],
-    tool_choice: hasRefs ? "auto" : "required",
-    reasoning: { effort: "low" },
-    stream: true,
-    store: false,
-    instructions: ""
+    tools: [tool], tool_choice: { type: "image_generation" },
+    reasoning: { effort: "low" }, stream: true, store: false, instructions: ""
   };
 }
 async function generateImage(cfg, upstream, req, signal) {
@@ -709,13 +701,26 @@ var init_images = __esm(() => {
     model: z2.string().optional(),
     prompt: z2.string().min(1).max(32000),
     n: z2.number().int().min(1).max(1).optional().default(1),
-    size: z2.enum(["1024x1024", "1024x1536", "1536x1024", "auto"]).optional().default("1024x1024"),
-    quality: z2.enum(["low", "medium", "high", "auto"]).optional().default("high"),
+    size: z2.string().refine(validImageSize, "invalid image size").optional().default("auto"),
+    quality: z2.enum(["low", "medium", "high", "xhigh", "max", "auto"]).optional().default("high"),
     response_format: z2.enum(["b64_json", "url"]).optional().default("b64_json"),
     moderation: z2.enum(["low", "auto"]).optional().default("low"),
     user: z2.string().optional(),
-    reference_images: z2.array(AttachmentSpec).max(8).optional()
-  }).passthrough();
+    reference_images: z2.array(AttachmentSpec).max(8).optional(),
+    image: z2.union([AttachmentSpec, z2.array(AttachmentSpec).min(1).max(8)]).optional(),
+    mask: AttachmentSpec.optional(),
+    action: z2.enum(["generate", "edit", "auto"]).optional(),
+    background: z2.enum(["transparent", "opaque", "auto"]).optional(),
+    output_format: z2.enum(["png", "jpeg", "webp"]).optional().default("png"),
+    output_compression: z2.number().int().min(0).max(100).optional(),
+    input_fidelity: z2.enum(["high", "low"]).optional(),
+    outpaint: z2.object({ left: z2.number().int().min(0).max(2048).optional(), right: z2.number().int().min(0).max(2048).optional(), top: z2.number().int().min(0).max(2048).optional(), bottom: z2.number().int().min(0).max(2048).optional() }).strict().optional()
+  }).passthrough().superRefine((req, ctx) => {
+    if (req.background === "transparent" && req.output_format === "jpeg") ctx.addIssue({ code: "custom", path: ["output_format"], message: "transparent background requires png or webp" });
+    if (req.output_compression !== undefined && req.output_format === "png") ctx.addIssue({ code: "custom", path: ["output_compression"], message: "compression is only supported for jpeg/webp" });
+    if (req.input_image_mask !== undefined) ctx.addIssue({ code: "custom", path: ["input_image_mask"], message: "use mask with the standard image API" });
+    if (req.stream === true) ctx.addIssue({ code: "custom", path: ["stream"], message: "use Responses for streaming images" });
+  });
 });
 
 // src/server.ts
@@ -1097,12 +1102,12 @@ function createApp(cfg) {
       return asResponse(c, errBody(u.message, u.upstreamCode ?? "UPSTREAM_ERROR", u.status ?? 502));
     }
   });
-  app.post("/v1/images/generations", async (c) => {
+  app.on("POST", ["/v1/images/generations", "/v1/images/edits"], async (c) => {
     let raw;
     try {
-      raw = await c.req.json();
-    } catch {
-      return asResponse(c, errBody("invalid JSON body", "BAD_REQUEST", 400));
+      raw = await parseImageTransport(Buffer.from(await c.req.arrayBuffer()), c.req.header("content-type") || "", c.req.path === "/v1/images/edits");
+    } catch (error) {
+      return asResponse(c, errBody(error.message, "BAD_REQUEST", 400));
     }
     const parsed = ImageRequest.safeParse(raw);
     if (!parsed.success) {

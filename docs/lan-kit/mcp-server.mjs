@@ -18,6 +18,52 @@ import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
+// Shared image MCP mapping (kept inline so this client remains standalone).
+// Keep the HTTP MCP and stdio MCP image entry points consistent.
+const imageToolProperties = {
+  edit_session_id: { type:'string', description:'素材页保存的标注编辑任务 ID；网关自动读取原图、标注和父版本，勿再传 image。' },
+  edit_revision: { type:'integer', minimum:0, description:'与素材页复制的编辑任务版本一致。' },
+  size: { type:'string', description:'auto、预设或符合约束的 WIDTHxHEIGHT；实际尺寸以返回图为准。' },
+  quality: { type:'string', enum:['low','medium','high','xhigh','max','auto'], description:'默认 high；xhigh/max 需上游支持。' },
+  background: { type:'string', enum:['transparent','opaque','auto'], description:'透明背景使用 PNG 或 WebP。' },
+  image: { type:'string', description:'编辑原图：PNG data-URL 或网关 references 目录内路径；无蒙版编辑也可用 JPEG/WebP URL。' },
+  mask: { type:'string', description:'与原图同尺寸 PNG 蒙版的 data-URL 或 references 内路径；透明区域可编辑。' },
+  outpaint: { type:'object', additionalProperties:false, properties:Object.fromEntries(['left','right','top','bottom'].map(k=>[k,{type:'integer',minimum:0,maximum:2048}])), description:'自动扩图各边增加的像素数；须同时提供 PNG image，不与 mask 同用。' },
+  output_format: { type:'string', enum:['png','jpeg','webp'] },
+  output_compression: { type:'integer', minimum:0, maximum:100, description:'仅用于 JPEG/WebP。' },
+  input_fidelity: { type:'string', enum:['high','low'], description:'仅部分上游接受；不保证人脸与细节完全一致。' },
+}
+function imageToolRequest(args) {
+  const prompt = String(args?.prompt || '').trim()
+  if (!prompt) throw new Error('prompt 不能为空')
+  const body = { prompt, size:args?.size || 'auto', quality:args?.quality || 'high', response_format:'b64_json' }
+  for (const field of ['background','image','mask','outpaint','output_format','output_compression','input_fidelity','edit_session_id','edit_revision']) if (args?.[field] !== undefined) body[field] = args[field]
+  if (args?.reference_paths !== undefined) {
+    if (!Array.isArray(args.reference_paths) || args.reference_paths.length > 8 || args.reference_paths.some(p=>typeof p !== 'string')) throw new Error('reference_paths 最多接受 8 个图片路径或 URL。')
+    if (args.reference_paths.length) body.reference_images = args.reference_paths
+  }
+  if ((body.mask || body.outpaint) && !body.image) throw new Error('蒙版编辑和扩图必须提供 image。')
+  if (body.mask && body.outpaint) throw new Error('mask 和 outpaint 不能同时使用。')
+  if (body.image && body.reference_images) throw new Error('image 与 reference_paths 请只使用其中一种。')
+  return { endpoint:body.image || body.edit_session_id ? '/v1/images/edits' : '/v1/images/generations', body }
+}
+
+function imagePresentation(base, item) {
+  const gallery = new URL('/gallery', base)
+  const filename = String(item.download_url || item.url || '').split('?')[0].split('/').pop()
+  if (/^[A-Za-z0-9_-]+\.(png|jpeg|webp)$/.test(filename)) gallery.searchParams.set('image',filename)
+  gallery.searchParams.set('refresh',Date.now().toString(36) + Math.random().toString(36).slice(2,8))
+  const gallery_url = gallery.href
+  const instruction = `每次出图成功后，请用可用的浏览器/预览工具打开或激活素材页：${gallery_url}。优先复用侧边浏览器并刷新到本次图片；若没有浏览器工具，给用户可点击链接并说明需要手动打开。首次访问使用与 MCP 相同的 API Key；不要把 Key 放入 URL。`
+  return { gallery_url, instruction }
+}
+
+function imageToolResult(result) {
+  const content = [{type:'text',text:result.text}]
+  if (result.gallery_url) content.push({type:'resource_link',uri:result.gallery_url,name:'GPT 图片生成 · 素材页',mimeType:'text/html',description:'每次出图后打开或刷新，查看本次图片并管理个人素材。'})
+  return {content,...(result.gallery_url ? {structuredContent:{gallery_url:result.gallery_url,open_gallery:true}} : {})}
+}
+
 // 版本号以仓库根 package.json 为准，不在这里硬编码——历史上这里写死 1.1.0，
 // 落后了三个版本，客户端 initialize 拿到的版本号是错的。
 // 只认 name = codex-gateway 的那份（gateway/package.json 是 0.1.0，读了会报错版本），
@@ -51,7 +97,7 @@ const TOOLS = [
       properties: {
         prompt: { type: 'string', description: '图像描述（建议具体：主体/风格/构图/色调）' },
         size: { type: 'string', enum: ['1024x1024', '1024x1536', '1536x1024', 'auto'], description: '请求尺寸，缺省 auto（由上游选择）。实际像素尺寸可能与请求不同，以返回原图及结果说明为准；网关不会自动缩放。' },
-        quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], description: '质量，缺省 high（网关最高质量策略）' },
+        ...imageToolProperties,
         reference_paths: {
           type: 'array', items: { type: 'string' },
           description: '可选：参考图（最多 8 张），生成风格/构图与之协调的新图。可传 http(s) URL 或 data-URL；若传本地路径，必须位于网关的参考图目录内（相对路径按该目录解析），越界会被拒绝。注意：本地路径以「网关主机」磁盘视角解析——局域网模式传客户端本机路径无效'
@@ -68,18 +114,12 @@ const TOOLS = [
 ]
 
 async function generateImage(args) {
-  const prompt = String(args?.prompt || '').trim()
-  if (!prompt) return { ok: false, error: 'prompt 不能为空' }
-
-  const body = { prompt, size: args?.size || 'auto', quality: args?.quality || 'high', response_format: 'b64_json' }
-  if (Array.isArray(args?.reference_paths) && args.reference_paths.length) {
-    // bridge AttachmentSpec 支持 { path }（网关本机路径，由 bridge 自行读盘）
-    body.reference_images = args.reference_paths.slice(0, 8).map((p) => ({ path: String(p) }))
-  }
+  let body, endpoint
+  try { ({body,endpoint} = imageToolRequest(args)) } catch (error) { return {ok:false,error:error.message} }
 
   let res, j
   try {
-    res = await fetch(CGW_BASE + '/v1/images/generations', {
+    res = await fetch(CGW_BASE + endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -93,7 +133,7 @@ async function generateImage(args) {
     return { ok: false, error: '网关请求失败：' + e.message }
   }
   if (!res.ok || !j?.data?.[0]?.b64_json) {
-    const detail = j?.error?.message || j?.error?.reason || ('HTTP ' + res.status)
+    const detail = j?.detail || j?.error?.message || j?.error?.reason || ('HTTP ' + res.status)
     return { ok: false, error: '生图失败：' + detail }
   }
   const item = j.data[0]
@@ -101,6 +141,7 @@ async function generateImage(args) {
   const lines = [
     '✓ 图片已生成',
     item.cgw_image_size?.message || '实际尺寸请以下载的原图为准。',
+    item.cgw_warning || null,
     item.url ? `下载：${item.url}（${item.download_url ? '请求需携带当前 API Key 的 Bearer 请求头；也可在素材站输入 Key 查看' : '访问权限取决于网关配置，本机可在控制台查看'}）` : null,
     IS_LOCAL
       ? (item.local_path ? `文件：${item.local_path}（用 Read 工具查看可做视觉理解）` : null)
@@ -111,7 +152,9 @@ async function generateImage(args) {
     item.revised_prompt ? `优化后的提示词：${item.revised_prompt}` : null,
     '该图片已自动进入网关控制台「图片素材 → 生成图库」。'
   ].filter(Boolean)
-  return { ok: true, text: lines.join('\n'), localPath: item.local_path || null, url: item.url || null }
+  const presentation = imagePresentation(CGW_BASE,item)
+  lines.push(presentation.instruction)
+  return {ok:true,text:lines.join('\n'),localPath:item.local_path || null,url:item.url || null,gallery_url:presentation.gallery_url}
 }
 
 function listImages(args) {
@@ -122,7 +165,7 @@ function listImages(args) {
   let out = []
   try {
     out = fs.readdirSync(dir)
-      .filter((n) => /^[A-Za-z0-9_-]+\.png$/.test(n))
+      .filter((n) => /^[A-Za-z0-9_-]+\.(?:png|jpeg|webp)$/.test(n))
       .map((n) => {
         const st = fs.statSync(path.join(dir, n))
         return { name: n, size: st.size, mtime: st.mtimeMs }
@@ -164,7 +207,7 @@ async function dispatch(id, method, params, res) {
     else if (name === 'list_generated_images') r = listImages(args)
     else return res({ id, error: { code: -32602, message: 'unknown tool: ' + name } })
     if (!r.ok) return res({ id, result: { content: [{ type: 'text', text: '✗ ' + r.error }], isError: true } })
-    return res({ id, result: toolResult(r.text) })
+    return res({ id, result: imageToolResult(r) })
   }
   if (method === 'ping') return res({ id, result: {} })
   if (id !== undefined && id !== null) {

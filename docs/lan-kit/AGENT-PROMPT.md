@@ -3,6 +3,8 @@
 > 用法：把对应角色的 Prompt 整段复制给你的 AI Agent（WorkBuddy / Claude Code 等），
 > 先把 `<尖括号>` 占位符替换成实际值。Agent 会按步骤执行并自验。
 
+推荐先打开实际网关地址的 `/setup`，验证自己的 Key 后，点击 **「复制给 Agent 的配置提示词」**。该提示词自动带入本机／局域网地址、实际端口、连接器名称和 Key，包含 MCP 合并、Skill 安装与连接验证步骤；预览隐藏 Key，复制时才填入。只做配置检查，不自动生成图片。
+
 ---
 
 ## Prompt A：宿主机部署（拿到发布包 zip 的机器）
@@ -39,7 +41,7 @@
 ```text
 请把我的 WorkBuddy（或本机其他 Agent 工具）接入局域网里的 codex-gateway 网关。
 这是我拿到的接入信息：
-  宿主机地址：<例如 192.168.1.188:4173>
+  宿主机地址：<例如 192.168.1.188:4174，以实际共享端口为准>
   我的 API Key：<cgw-xxxxxxxx>
 
 优先方式（推荐，最省事）：如果网关宿主机给了我 lan-kit 安装包，先找到里面的
@@ -54,8 +56,10 @@ setup-client.mjs，然后执行：
        "headers": { "Authorization": "Bearer <我的Key>" }
      }
    其他已有条目必须原样保留。
-2. （可选）安装 ImageGen 2.5 skill：把安装包里 skills/codex-gateway-image 文件夹
-   复制到 ~/.workbuddy/skills/ 下。
+2. 安装生图 Skill：从 http://<宿主机IP>:<端口>/lan-kit/skills/codex-gateway-image/SKILL.md
+   下载，验证包含有效 YAML frontmatter，然后安装到客户端的用户 Skill 目录。
+   WorkBuddy 使用 ~/.workbuddy/skills/gpt-image/SKILL.md；其他客户端按实际支持配置。
+   修改前备份；保留其他连接器及用户配置，不将 Key 写进 Skill。
 3. （可选）生成模型配置文件 workbuddy-models-codex-gateway-lan.json，内容指向
    http://<宿主机IP>:<端口>/v1/chat/completions，apiKey 用我的 Key。
 
@@ -71,6 +75,8 @@ setup-client.mjs，然后执行：
      并在 WorkBuddy 侧边浏览器里帮我打开它（首次需输入我的 Key）
 
 注意：不要把我的 Key 写进任何会同步到云端的文件，也不要发给别人。
+只把 Key 保存到客户端私有配置／凭据存储，最终回复显示掩码。
+只验证连接，不生成或删除图片；分别报告文件已配置、API 已验证、当前会话工具是否已加载。
 ```
 
 ---
@@ -81,3 +87,12 @@ setup-client.mjs，然后执行：
 |---|---|---|
 | 网关宿主机（服务提供者） | Prompt A | 本机跑起 `--lan` 网关 + OAuth 登录 + 分发 Key |
 | 局域网用户（服务使用者） | Prompt B | mcp.json 远程 MCP + skill + 模型配置，全程零安装 |
+
+
+## 更新 Skill / MCP（推荐 Prompt）
+
+在桌面「客户端接入 → 更新 Skill / MCP」或网页 `/setup` 复制更新 Prompt，交给目标 Agent 执行。它会读取 `/client-assets.json`，对比 Skill、MCP 工具定义与配置 Prompt 的 SHA-256；备份并合并配置、验证工具加载后保存本地版本记录。HTTP MCP 的服务端随网关更新，客户端需要重新连接以刷新工具定义。无需生成图片来验证更新。
+
+生图 Skill 的名称为 `gpt-image`（`/gpt-image`），中文「GPT 图片生成」。旧 `codex-gateway-image` 安装应备份到 Skill 发现目录之外再迁移，保留自定义内容，避免启用两份。每次生成成功后由 Agent 的浏览器工具打开/刷新素材页；无浏览器工具时返回链接。素材站使用同一 Key，不能在 URL 中传密钥。
+
+调用日志记录真实连接 IP、密钥名称与 ID；可选 `X-CGW-Device-Name` 请求头为 URI 编码的自报设备标签，不能作为鉴权依据。建议每人/每设备使用独立 Key，不共享密钥，便于区分与停用。

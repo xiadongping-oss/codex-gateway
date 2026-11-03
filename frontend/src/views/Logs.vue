@@ -10,6 +10,7 @@ import Pagination from '../components/Pagination.vue'
 const { gwLogs, logs, refreshLogs, logsLoaded: loaded, logsError, gwLogsLoaded, gwLogsError } = useLiveData()
 
 const filter = ref('all')
+const callerSearch=ref('')
 // 页内 Tab：业务调用日志 / Bridge 进程运行日志（自原「网关控制」页并入）
 const tab = ref('calls')
 
@@ -27,7 +28,7 @@ const filterDefs = [
 ]
 const shown = computed(() => {
   const def = filterDefs.find((f) => f.key === filter.value) || filterDefs[0]
-  return logs.value.filter((l) => def.match(l.status))
+  return logs.value.filter((l) => def.match(l.status) && (!callerSearch.value.trim() || [l.caller?.ip,l.caller?.device,l.caller?.keyName,l.caller?.keyId].some(v=>String(v || '').toLowerCase().includes(callerSearch.value.trim().toLowerCase()))))
 })
 const countOf = (def) => logs.value.filter((l) => def.match(l.status)).length
 const {page,pages,visible}=usePagination(shown,30)
@@ -62,16 +63,19 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
       </div>
     </div>
 
-    <div class="card">
+    <input class="caller-search" v-model="callerSearch" @input="page=1" placeholder="搜索来源 IP、设备名或密钥名称" aria-label="搜索调用来源" />
+    <p class="caller-note">设备名为客户端自报标签，来源 IP 取自实际连接；未携带设备名的客户端仍可按 IP 和密钥区分。历史日志不补写来源。</p>
+    <div class="card calls-card">
       <div class="table" v-if="shown.length">
         <div class="tr th">
-          <span>方法</span><span>端点</span><span>模型</span><span>状态</span>
+          <span>方法</span><span>端点</span><span>模型</span><span>调用来源 / 密钥</span><span>状态</span>
           <span>延迟</span><span>Token</span><span>时间</span>
         </div>
         <div class="tr" v-for="l in visible" :key="l.id">
           <span class="mono m-post">{{ l.method }}</span>
           <span class="mono ep">{{ l.endpoint }}</span>
           <span class="mono">{{ l.model }}</span>
+          <span class="caller" :title="l.caller?.keyId || ''"><strong>{{l.caller?.device || l.caller?.ip || '历史记录'}}</strong><small v-if="l.caller?.device">{{l.caller.ip}} · 自报设备</small><small>{{l.caller?.keyName || (l.caller ? '未使用 API Key' : '未记录来源')}}<template v-if="l.caller?.keyId"> · {{l.caller.keyId.slice(-8)}}</template></small></span>
           <span class="mono" :class="statusClass(l.status)">{{ l.status }}</span>
           <span class="mono">{{ l.latency }}ms</span>
           <span class="mono">{{ l.tokens ?? '—' }}</span>
@@ -114,7 +118,7 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
 
 <style scoped>
 .log-warning { color: var(--amber); background: var(--card); border: 1px solid var(--border-strong); border-radius: 14px; padding: 12px 16px; }
-.table { min-width: 640px; }
+.table { min-width: 970px; }.calls-card{overflow-x:auto}.caller{display:flex;flex-direction:column;gap:4px;min-width:0}.caller strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis}.caller small{color:var(--text-3);font-size:10px;overflow-wrap:anywhere}.caller-search{border:1px solid var(--border);background:var(--card);color:var(--text);padding:10px 14px;border-radius:9px;width:min(100%,440px)}.caller-note{font-size:11px;color:var(--text-3);line-height:1.6}
 .log-line { overflow-wrap: anywhere; }
 .tabs { display: flex; gap: 4px; margin-bottom: 16px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 4px; width: fit-content; }
 .tab {
@@ -144,7 +148,7 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
 .chip .n { font-family: var(--mono); font-size: 10.5px; opacity: 0.75; }
 .table { display: flex; flex-direction: column; }
 .tr {
-  display: grid; grid-template-columns: 54px 1fr 0.8fr 60px 64px 72px 84px;
+  display: grid; grid-template-columns: 54px minmax(120px,1fr) minmax(110px,.8fr) minmax(170px,1.1fr) 48px 64px 60px 78px;
   gap: 12px; align-items: center; padding: 11px 4px;
   border-top: 1px solid var(--border); font-size: 12.5px;
 }

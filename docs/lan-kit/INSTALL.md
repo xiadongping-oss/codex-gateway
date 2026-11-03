@@ -20,9 +20,13 @@
 
 ## 0. 最快路径：打开一个网页（零命令行，推荐从这里开始）
 
+桌面版默认本机端口为 **4173**、局域网共享端口为 **4174**。下文示例中的端口请以「局域网共享」页面实际地址为准；命令行版历史配置可能仍为 4173。下载接入脚本会保留页面的共享端口。
+
+只配置对话模型不等于配置了生图工具。Agent 推荐连接同一地址的 `/mcp`，加载 `generate_image` 后再发出图片请求。素材页本身负责管理图片，不是出图表单。
+
 1. 浏览器打开 **`http://<宿主机IP>:4173/setup`**（地址由主人提供，或用主人控制台「接入」按钮复制来的邀请）
 2. 输入主人发给你的 `cgw-` Key → 验证通过，页面显示你的身份（Key 名 · 已生成图片数）
-3. 按页面提示逐项**复制 / 下载**：MCP JSON → 模型配置 JSON → （可选）Skill / 一键脚本
+3. 推荐点击 **「复制给 Agent 的配置提示词」**，粘贴给能操作本机文件的 Agent，由它合并 MCP、安装生图 Skill 并验证连接。提示词包含当前 Key，页面预览已隐藏密钥。也可以继续按页面逐项手动复制／下载配置。
 4. 验证：重启 WorkBuddy 后对 Agent 说「画一张测试图」；素材站在 `http://<宿主机IP>:4173/gallery`
    （Key 只存你自己浏览器、输入一次即可，页面头部会显示「我是谁 · 几张图」）
 
@@ -36,7 +40,7 @@
 node setup-client.mjs --host 192.168.1.188 --key cgw-主人发给你的Key
 ```
 
-一条命令同时完成：mcp.json 写入远程 MCP 条目 + 安装 ImageGen 2.5 skill + 生成模型配置 JSON。
+一条命令同时完成：mcp.json 写入远程 MCP 条目 + 安装 GPT 图片生成 skill + 生成模型配置 JSON。
 加 `--dry-run` 可先预览不写入；`--no-skill` / `--no-model-config` 可按需跳过。
 **不带任何参数直接运行也可以**——会进入交互式问答，逐项询问地址和 Key。
 （从接入页 `/setup` 下载的脚本已自动内嵌宿主机地址，只需再给 `--key`。）
@@ -107,7 +111,7 @@ node setup-client.mjs --host 192.168.1.188 --key cgw-主人发给你的Key
 
 ## 3. 安装 Skill（可选但推荐，复制即用）
 
-把本 kit 的 `skills/codex-gateway-image` **整个文件夹**复制到你的 `~/.workbuddy/skills/` 下，重启 WorkBuddy。
+把本 kit 的 `skills/codex-gateway-image` **文件夹内容**复制到你的 `~/.workbuddy/skills/gpt-image/` 下（源文件夹名称保留用于兼容，安装名为 `gpt-image`），重启 WorkBuddy。
 
 Skill 的作用：教任意模型在生图任务时正确调用 MCP 工具（或 HTTP 回退）、处理返回的链接/路径。
 没装 skill 时 MCP 工具也能被模型发现，但触发可靠性和迭代引导会差一些。
@@ -126,8 +130,10 @@ Skill 的作用：教任意模型在生图任务时正确调用 MCP 工具（或
 | 登录 | 首次打开输入你自己的 `cgw-` Key（浏览器记住，之后免输） |
 | 隔离 | **只显示你自己的 Key 生成的图片**；别人的看不到，宿主机控制台才可见全部 |
 | 预览 | 点击缩略图看大图 |
-| 复制链接 | 复制局域网内可直接打开的图片链接 |
+| 复制链接 | 复制需携带同一个 API Key 的下载地址；普通浏览器查看图片请打开 `/gallery` 并输入该 Key |
 | 下载 / 删除 | 下载原图；只能删除自己生成的图 |
+
+宿主机控制台的「图片素材」可查看全部生成图；`/gallery` 是个人图库，只列出登录 Key 生成的图片。不带 Key 的本机请求不会自动归属某位用户。Agent 侧边浏览器可打开同一 `/gallery` 页面；每个浏览器分别记住登录 Key。内置浏览器若限制下载，可在系统浏览器打开同一素材页。
 
 工作原理：页面本身是网关主机伺服的静态单文件（局域网可达）；数据走 `/v1/gen-images/list`
 与 `DELETE /v1/gen-images/<name>`，凭 Bearer Key 鉴权并按 Key 隔离。MCP 的
@@ -229,4 +235,13 @@ Skill 的作用：教任意模型在生图任务时正确调用 MCP 工具（或
 ---
 
 > 本 kit 内的 `mcp-server.mjs` / `SKILL.md` 为分发快照；最新版以网关仓库
-> `gateway/mcp-server.mjs` 与 `~/.workbuddy/skills/codex-gateway-image/` 为准。
+> `gateway/mcp-server.mjs` 与 `~/.workbuddy/skills/gpt-image/` 为准。
+
+
+## 更新 Skill / MCP（推荐 Prompt）
+
+在桌面「客户端接入 → 更新 Skill / MCP」或网页 `/setup` 复制更新 Prompt，交给目标 Agent 执行。它会读取 `/client-assets.json`，对比 Skill、MCP 工具定义与配置 Prompt 的 SHA-256；备份并合并配置、验证工具加载后保存本地版本记录。HTTP MCP 的服务端随网关更新，客户端需要重新连接以刷新工具定义。无需生成图片来验证更新。
+
+生图 Skill 的名称为 `gpt-image`（`/gpt-image`），中文「GPT 图片生成」。旧 `codex-gateway-image` 安装应备份到 Skill 发现目录之外再迁移，保留自定义内容，避免启用两份。每次生成成功后由 Agent 的浏览器工具打开/刷新素材页；无浏览器工具时返回链接。素材站使用同一 Key，不能在 URL 中传密钥。
+
+调用日志记录真实连接 IP、密钥名称与 ID；可选 `X-CGW-Device-Name` 请求头为 URI 编码的自报设备标签，不能作为鉴权依据。建议每人/每设备使用独立 Key，不共享密钥，便于区分与停用。

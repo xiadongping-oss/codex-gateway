@@ -101,7 +101,6 @@ const authOk = computed(() => account.value?.loggedIn !== false)
       <button v-for="item in workspaceLinks" :key="item.key" class="quick-card" @click="$emit('navigate',item.key)"><span class="quick-icon"><AppIcon :name="item.key" /></span><span class="quick-copy"><b>{{ item.title }}</b><small>{{ item.description }}</small></span><span class="arrow" aria-hidden="true">→</span></button>
     </div>
     <QuotaMiniCard @open="$emit('navigate', 'account')" />
-    <footer class="overview-footer"><span class="footer-dot"></span>你的服务，运行在本机。<span>Codex Gateway</span></footer>
     <SetupModal v-if="showSetup" @close="showSetup = false" @changed="showSetup = false" />
   </div>
 </template>
@@ -113,7 +112,7 @@ const authOk = computed(() => account.value?.loggedIn !== false)
 .hero-copy { min-width: 0; }
 .eyebrow { color: var(--primary); font-size: 10px; font-weight: 700; letter-spacing: 1.8px; display: flex; align-items: center; gap: 14px; }
 .hero-status { font-size: 10px; letter-spacing: 0; display: inline-flex; align-items: center; gap: 5px; color: var(--success); }
-.hero-status i, .footer-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.hero-status i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .hero-status.stopped { color: var(--text-3); }
 h2 { font-size: 27px; font-weight: 650; letter-spacing: -.8px; margin-top: 15px; }
 .hero-copy p { color: var(--text-2); font-size: 12px; margin-top: 7px; }
@@ -157,7 +156,6 @@ h2 { font-size: 27px; font-weight: 650; letter-spacing: -.8px; margin-top: 15px;
 .quick-icon.mint { background: var(--emerald-dim); color: var(--success); }.quick-icon.peach { background: var(--card-2); color: var(--amber); }
 .quick-card b { display: block; font-size: 12px; font-weight: 600; }.quick-card small { display: block; color: var(--text-3); font-size: 10px; margin-top: 4px; }
 .arrow { margin-left: auto; color: var(--text-3); }
-.overview-footer { display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--text-3); padding: 0 4px; }.overview-footer > span:last-child { margin-left: auto; }
 .connection-note { color: var(--amber); background: var(--card); padding: 10px 16px; border: 1px solid var(--border); border-radius: 12px; font-size: 12px; }
 .overview :deep(.quota-strip), .overview :deep(.lan-strip) { border-radius: 18px; }
 @media(max-width:1150px) { .gateway-hero { padding: 24px; gap: 16px; }.hero-facts { gap: 18px; }.power-button { width: 70px; height: 70px; border-radius: 24px; }.quick-card { padding: 14px; gap: 9px; }.quick-card small { font-size: 9px; } }

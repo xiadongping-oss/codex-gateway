@@ -41,10 +41,10 @@
   #bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
   #bar .count { color: var(--sub); font-size: 13px; }
   /* 卡片网格 */
-  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--card-size, 240px)), 1fr)); gap: 14px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); display: flex; flex-direction: column; }
-  .card .thumb { aspect-ratio: 1 / 1; background: var(--acc-weak); display: flex; align-items: center; justify-content: center; cursor: zoom-in; }
-  .card .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .card .thumb { aspect-ratio: 4 / 3; background: repeating-conic-gradient(#eeedf2 0% 25%, #fff 0% 50%) 0 / 16px 16px; display: flex; align-items: center; justify-content: center; cursor: zoom-in; }
+  .card .thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .card .meta { padding: 9px 12px 4px; }
   .card .name { font-size: 12px; color: var(--sub); word-break: break-all; }
   .card .info { font-size: 12.5px; color: var(--txt); margin-top: 2px; }
@@ -58,6 +58,32 @@
   dialog::backdrop { background: rgba(0,0,0,.45); }
   dialog img { display: block; max-width: 100%; max-height: 82vh; }
   dialog .dacts { display: flex; gap: 8px; padding: 10px; justify-content: center; }
+
+  input, select { font: inherit; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--txt); }
+  #search { flex: 1; min-width: 160px; }
+  #bar label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--sub); }
+  #cardSize { width: 90px; accent-color: var(--acc); }
+  #pager { display: flex; gap: 8px; align-items: center; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
+  #pager[hidden] { display: none; }
+  #pageInput { width: 65px; }
+  button:disabled { opacity: .5; cursor: default; }
+  button[aria-pressed="true"] { color: var(--acc); background: var(--acc-weak); }
+  .card .name { color: var(--txt); font-weight: 600; }
+  .card .info { color: var(--sub); font-size: 12px; }
+  .prompt-info { padding: 10px 16px; max-height: 30vh; overflow: auto; }
+  .prompt-info pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; background: var(--bg); padding: 8px; user-select: text; }
+  .prompt-info button { margin: 4px 4px 4px 0; }
+  dialog { width: min(92vw, 900px); max-height: 94vh; overflow: auto; }
+  dialog > img { max-height: 58vh; margin: auto; object-fit: contain; }
+  #loadError { color: var(--danger); padding: 10px 0; }
+  .more-actions summary { cursor: pointer; padding: 3px 8px; font-size: 12.5px; border: 1px solid var(--line); border-radius: 7px; }
+  .more-actions[open] { flex-basis: 100%; }
+  .more-actions > div { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  #editorDialog { width: 98vw; max-width: 1400px; height: 96vh; max-height: 96vh; overflow: hidden; }
+  #editorFrame { width: 100%; height: 100%; border: 0; display: block; }
+  #renameForm { padding: 20px; }
+  #renameTitle { display: block; width: 100%; margin: 12px 0; }
+  .rename-actions { display: flex; justify-content: flex-end; gap: 8px; }
 </style>
 </head>
 <body>
@@ -67,6 +93,7 @@
   <span class="tag" id="userChip" hidden></span>
   <span class="sp"></span>
   <span class="host" id="hostInfo"></span>
+  <button id="btnLibrary">整理 / 回收站 / 对比</button>
   <button id="btnRefresh" title="重新拉取列表">刷新</button>
   <button id="btnKey" title="更换 API Key">换 Key</button>
 </header>
@@ -81,26 +108,42 @@
 
 <main id="app" hidden>
   <div id="bar">
+    <input id="search" type="search" placeholder="搜索标题、文件名或提示词" aria-label="搜索素材">
+    <button id="favorites" aria-pressed="false">☆ 只看收藏</button>
+    <select id="sort" aria-label="素材排序"><option value="newest">最新优先</option><option value="name">名称排序</option></select>
+    <label>卡片大小 <input id="cardSize" type="range" min="160" max="380" step="20" aria-label="卡片大小"></label>
     <span class="count" id="count"></span>
     <span class="sp" style="flex:1"></span>
   </div>
+  <div id="loadError" role="alert" hidden></div>
   <div id="grid"></div>
+  <nav id="pager" aria-label="素材分页" hidden><button id="prevPage">上一页</button><span id="pageInfo"></span><label>跳至 <input id="pageInput" type="number" min="1" value="1" aria-label="跳转页码"></label><button id="goPage">跳转</button><button id="nextPage">下一页</button></nav>
   <div class="empty" id="empty" hidden>
     你的图库还是空的 —— 在 WorkBuddy 里对 Agent 说「生成一张图」即可开始。<br>
     生成后图片会自动出现在这里（仅限你自己的 Key 生成的内容）。
   </div>
 </main>
 
-<footer>图片链接可在局域网内直接分享打开 · 宿主机控制台可见全部图片 · codex-gateway</footer>
-<dialog id="viewer"><img id="viewerImg" alt=""><div class="dacts"><button id="viewerCopy">复制链接</button><button id="viewerClose">关闭</button></div></dialog>
-<div class="toast" id="toast"></div>
+<footer>素材按 API Key 隔离 · 图片下载地址需要同一 Key · 宿主机控制台可见全部图片</footer>
+<dialog id="viewer"><img id="viewerImg" alt=""><div id="viewerInfo" class="prompt-info"></div><div class="dacts"><button id="viewerImageCopy">复制图片</button><button id="viewerCopy">复制鉴权链接</button><button id="viewerClose">关闭</button></div></dialog>
+<dialog id="renameDialog"><form id="renameForm"><label for="renameTitle">展示标题</label><input id="renameTitle" maxlength="160" placeholder="留空使用原文件名"><p>修改展示标题，保留原文件名。</p><div class="rename-actions"><button id="renameCancel" type="button">取消</button><button id="renameSave" class="primary">保存</button></div></form></dialog>
+<dialog id="editorDialog"><iframe id="editorFrame" title="图片标注与复用"></iframe></dialog>
+<div class="toast" id="toast" role="status"></div>
 
 <script>
 (function () {
   'use strict';
   var KEY_STORE = 'cgw_gallery_key'
   var $ = function (id) { return document.getElementById(id) }
-  var key = localStorage.getItem(KEY_STORE) || ''
+  var key = ''
+  try { key = localStorage.getItem(KEY_STORE) || '' } catch {}
+  var pendingTarget = new URL(location.href).searchParams.get('image')
+  if (pendingTarget) $('search').value = pendingTarget
+  var page = 1, pageSize = 24, totalPages = 1, favoriteOnly = false, searchTimer, renameItem = null, viewerCopyFn = null
+  var size = 240
+  try { size = Math.max(160, Math.min(380, Number(localStorage.getItem('cgw_gallery_card_size')) || 240)) } catch {}
+  $('cardSize').value = size
+  document.documentElement.style.setProperty('--card-size', size + 'px')
   var generation = 0, imageUrls = [], observer = null, requests = new AbortController()
   $('hostInfo').textContent = location.host
 
@@ -129,7 +172,7 @@
     generation++
     requests.abort(); requests = new AbortController()
     if (observer) { observer.disconnect(); observer = null }
-    $('viewer').close(); $('viewerImg').removeAttribute('src'); $('viewerImg')._url = ''
+    $('viewer').close(); viewerCopyFn = null; $('viewerInfo').replaceChildren(); $('viewerImg').removeAttribute('src'); $('viewerImg')._url = ''
     imageUrls.forEach(function (url) { URL.revokeObjectURL(url) }); imageUrls = []
     $('grid').innerHTML = ''
   }
@@ -145,19 +188,21 @@
   function showApp() { $('gate').hidden = true; $('app').hidden = false }
 
   function load() {
+    clearTimeout(searchTimer)
+    $('loadError').hidden = true
     if (!key) return showGate()
     resetImages()
     var current = generation
     fetchMe(current)
-    fetch('/v1/gen-images/list?limit=200', { headers: authHeaders(), signal: requests.signal })
+    fetch('/v1/gen-images/list?' + new URLSearchParams({ limit: pageSize, offset: (page - 1) * pageSize, q: $('search').value, favorite: favoriteOnly, sort: $('sort').value }), { headers: authHeaders(), signal: requests.signal })
       .then(function (r) {
         if (current !== generation) return null
-        if (r.status === 401) { localStorage.removeItem(KEY_STORE); key = ''; throw new Error('Key 无效或已被禁用，请重新输入') }
+        if (r.status === 401) { try { localStorage.removeItem(KEY_STORE) } catch {}; key = ''; throw new Error('Key 无效或已被禁用，请重新输入') }
         if (!r.ok) throw new Error('HTTP ' + r.status)
         return r.json()
       })
       .then(function (data) { if (data && current === generation) render(data, current) })
-      .catch(function (e) { if (current === generation) showGate(e.message) })
+      .catch(function (e) { if (current === generation) { if (!key) showGate(e.message); else { showApp(); $('loadError').hidden = false; $('loadError').textContent = '加载失败：' + e.message + '，请重试'; $('pager').hidden = true; $('empty').hidden = true } } })
   }
 
   function fetchMe(current) {
@@ -177,6 +222,13 @@
   function render(data, current) {
     showApp()
     var imgs = data.images || []
+    totalPages = Math.max(1, Math.ceil(data.total / pageSize))
+    if (page > totalPages) { page = totalPages; load(); return }
+    $('pager').hidden = totalPages <= 1
+    $('pageInfo').textContent = page + ' / ' + totalPages
+    $('pageInput').value = page; $('pageInput').max = totalPages
+    $('prevPage').disabled = page <= 1; $('nextPage').disabled = page >= totalPages
+    $('empty').textContent = $('search').value || favoriteOnly ? '没有匹配的素材，请调整搜索或取消收藏筛选。' : '你的图库还是空的，生成的图片会显示在这里。'
     $('count').textContent = '共 ' + (data.total != null ? data.total : imgs.length) + ' 张'
     var grid = $('grid'); grid.innerHTML = ''
     $('empty').hidden = imgs.length > 0
@@ -184,6 +236,7 @@
       if (current !== generation) return
       entries.forEach(function (entry) { if (entry.isIntersecting) { activeObserver.unobserve(entry.target); entry.target._load() } })
     }, { rootMargin: '200px' })
+    var targetName = pendingTarget
     imgs.forEach(function (it) {
       var card = document.createElement('div'); card.className = 'card'
       var thumb = document.createElement('div'); thumb.className = 'thumb'
@@ -203,63 +256,155 @@
         return imagePromise
       }
       thumb._load = function () { loadImage().catch(function (e) { if (current === generation) img.alt = e.message }) }
-      thumb.appendChild(img)
+      thumb.setAttribute('role', 'button'); thumb.tabIndex = 0; thumb.setAttribute('aria-label', '预览 ' + (it.title || it.name)); thumb.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); thumb.click() } }); thumb.appendChild(img)
       var meta = document.createElement('div'); meta.className = 'meta'
       meta.innerHTML = '<div class="name"></div><div class="info"></div>'
-      meta.querySelector('.name').textContent = it.name
-      meta.querySelector('.info').textContent = fmtTime(it.mtime) + ' · ' + fmtSize(it.size)
+      meta.querySelector('.name').textContent = (it.title || it.name) + (it.parentId ? ' · 新版本' : '')
+      meta.querySelector('.name').title = it.name
+      meta.querySelector('.info').textContent = (it.generation?.actual?.actual ? it.generation.actual.actual + ' · ' : '') + fmtTime(it.mtime) + ' · ' + fmtSize(it.size)
       var acts = document.createElement('div'); acts.className = 'acts'
       function mkBtn(txt, fn, cls) {
         var b = document.createElement('button'); b.textContent = txt
         if (cls) b.className = cls; b.addEventListener('click', fn); return b
       }
-      acts.appendChild(mkBtn('复制链接', function () {
-        copyText(it.url).then(function () { toast('链接已复制，局域网内可直接打开') }, function () { toast('复制失败，请手动选择地址栏') })
+      function copyImage() {
+        if (!window.isSecureContext || !navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+          toast('此环境不支持图片复制，请下载原图后添加到 Agent'); return
+        }
+        var png = loadImage().then(function (url) {
+          return fetch(url).then(function (r) { return r.blob() }).then(function (blob) {
+            if (blob.type === 'image/png') return blob
+            return new Promise(function (resolve, reject) {
+              var image = new Image()
+              image.onload = function () {
+                var canvas = document.createElement('canvas'); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight
+                try {
+                  canvas.getContext('2d').drawImage(image, 0, 0)
+                  canvas.toBlob(function (b) { canvas.width = canvas.height = 0; b ? resolve(b) : reject(new Error('图片转换失败')) }, 'image/png')
+                } catch (e) { reject(e) }
+              }
+              image.onerror = function () { reject(new Error('图片读取失败')) }; image.src = url
+            })
+          })
+        })
+        png.catch(function () {})
+        try {
+          navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]).then(function () { toast('图片已复制，可粘贴到 Agent 输入框') }, function () { toast('复制失败，请下载原图后添加到 Agent') })
+        } catch (e) { toast('复制失败，请下载原图后添加到 Agent') }
+      }
+      acts.appendChild(mkBtn('标注 / 使用', function () {
+        $('viewer').close()
+        $('editorFrame').src = '/asset-editor?' + new URLSearchParams({ surface: 'gallery', name: it.name })
+        $('editorDialog').showModal()
+      }, 'primary'))
+      acts.appendChild(mkBtn('复制图片', copyImage))
+      var fav = mkBtn(it.favorite ? '★ 已收藏' : '☆ 收藏', function () {
+        fav.disabled = true
+        updateMetadata(it, { favorite: !it.favorite }).then(function (metadata) {
+          Object.assign(it, metadata); fav.textContent = it.favorite ? '★ 已收藏' : '☆ 收藏'; fav.setAttribute('aria-pressed', String(it.favorite))
+          if (favoriteOnly) load()
+        }).catch(function (e) { toast(e.message) }).finally(function () { fav.disabled = false })
+      })
+      fav.setAttribute('aria-pressed', String(it.favorite)); acts.appendChild(fav)
+      var more = document.createElement('details'); more.className = 'more-actions'; var summary = document.createElement('summary'); summary.textContent = '更多'; more.appendChild(summary); var secondary = document.createElement('div'); more.appendChild(secondary); acts.appendChild(more)
+      secondary.appendChild(mkBtn('重命名', function () { renameItem = it; $('renameTitle').value = it.title || ''; $('renameDialog').showModal(); $('renameTitle').focus() }))
+      secondary.appendChild(mkBtn('复制鉴权链接', function () {
+        copyText(it.download_url || it.url).then(function () { toast('下载地址已复制，访问时需携带同一 API Key') }, function () { toast('复制失败，请手动选择地址栏') })
       }))
-      acts.appendChild(mkBtn('下载', function () {
+      secondary.appendChild(mkBtn('下载', function () {
         loadImage().then(function (url) {
           if (current !== generation) return
           var a = document.createElement('a'); a.href = url; a.download = it.name
           document.body.appendChild(a); a.click(); document.body.removeChild(a)
         }).catch(function (e) { if (current === generation) toast('下载失败：' + e.message) })
       }))
-      acts.appendChild(mkBtn('删除', function () {
-        if (!confirm('确定删除 ' + it.name + ' ？删除后不可恢复。')) return
+      secondary.appendChild(mkBtn('删除', function () {
+        if (!confirm('确定删除 ' + it.name + ' 移入回收站？可以恢复，编辑草稿和其他版本仍保留。')) return
         fetch('/v1/gen-images/' + encodeURIComponent(it.name), { method: 'DELETE', headers: authHeaders() })
           .then(function (r) {
             if (r.status === 403) { toast('删除失败：这张图不属于你'); return null }
             if (!r.ok) { toast('删除失败：HTTP ' + r.status); return null }
-            toast('已删除'); load()
+            toast('已移入回收站'); load()
           })
           .catch(function () { toast('删除失败：网络错误') })
       }, 'danger'))
       thumb.addEventListener('click', function () {
         loadImage().then(function (url) {
           if (current !== generation) return
-          $('viewerImg').src = url; $('viewerImg')._url = it.url; $('viewer').showModal()
+          $('viewerImg').src = url; $('viewerImg').alt = it.title || it.name; $('viewerImg')._url = it.download_url || it.url; viewerCopyFn = copyImage; showInfo(it); $('viewer').showModal()
         }).catch(function (e) { if (current === generation) toast(e.message) })
       })
       card.appendChild(thumb); card.appendChild(meta); card.appendChild(acts)
       grid.appendChild(card)
       if (observer) observer.observe(thumb); else thumb._load()
+      if (targetName === it.name) {
+        loadImage().then(function(url) {
+          if (current !== generation) return
+          card.scrollIntoView({block:'center'})
+          $('viewerImg').src=url; $('viewerImg').alt=it.title || it.name; $('viewerImg')._url=it.download_url || it.url; viewerCopyFn=copyImage; showInfo(it); pendingTarget=null
+          if (!$('viewer').open) $('viewer').showModal()
+        }).catch(function(e) {if (current === generation) toast(e.message)})
+      }
     })
   }
+
+  function updateMetadata(it, changes) {
+    var current = generation
+    return fetch('/v1/gen-images/metadata', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ name: it.name, changes }), signal: AbortSignal.timeout(15000) })
+      .then(function (r) { return r.json().then(function (data) { if (!r.ok) throw new Error(data.detail || '保存失败'); if (current !== generation) throw new Error('列表已更新，请重试'); return data.metadata }) })
+  }
+  function showInfo(it) {
+    var root = $('viewerInfo'); root.replaceChildren()
+    function line(text, pre) { var el = document.createElement(pre ? 'pre' : 'p'); el.textContent = text; root.appendChild(el) }
+    function copyButton(label, text) { var b = document.createElement('button'); b.textContent = label; b.onclick = function () { copyText(text).then(function () { toast('已复制') }, function () { toast('复制失败') }) }; root.appendChild(b) }
+    line((it.title || it.name) + ' · ' + it.id)
+    var g = it.generation
+    if (!g) { line('此图片的生成提示词和参数未记录。'); return }
+    line('原始提示词'); line(g.prompt || '未记录', true)
+    if (g.prompt) copyButton('复制提示词', g.prompt)
+    if (g.revisedPrompt) { line('模型改写提示词'); line(g.revisedPrompt, true); copyButton('复制改写提示词', g.revisedPrompt) }
+    line('请求参数'); line(JSON.stringify(g.requested || {}, null, 2), true)
+    line('实际返回信息'); line(JSON.stringify(g.actual || {}, null, 2), true)
+    copyButton('复制生成配置', JSON.stringify(g, null, 2))
+  }
+  window.addEventListener('message', function (event) {
+    if (event.origin === location.origin && event.source === $('editorFrame').contentWindow && event.data?.type === 'cgw:editor-close') {
+      $('editorDialog').close(); $('editorFrame').removeAttribute('src'); load()
+    }
+  })
+  $('btnLibrary').onclick = function () { $('viewer').close(); $('editorFrame').src = '/asset-library?surface=gallery'; $('editorDialog').showModal() }
+  $('editorDialog').addEventListener('cancel', function (event) { event.preventDefault(); $('editorFrame').contentWindow.postMessage({ type: 'cgw:editor-request-close' }, location.origin) })
+  $('viewerImageCopy').onclick = function () { if (viewerCopyFn) viewerCopyFn() }
+  $('renameCancel').onclick = function () { $('renameDialog').close() }
+  $('renameForm').onsubmit = function (e) {
+    e.preventDefault(); $('renameSave').disabled = true
+    updateMetadata(renameItem, { title: $('renameTitle').value }).then(function () { $('renameDialog').close(); load(); toast('标题已保存') }).catch(function (e) { toast(e.message) }).finally(function () { $('renameSave').disabled = false })
+  }
+  $('search').oninput = function () { clearTimeout(searchTimer); page = 1; searchTimer = setTimeout(load, 250) }
+  $('favorites').onclick = function () { favoriteOnly = !favoriteOnly; this.setAttribute('aria-pressed', String(favoriteOnly)); this.textContent = favoriteOnly ? '★ 已收藏' : '☆ 只看收藏'; page = 1; load() }
+  $('sort').onchange = function () { page = 1; load() }
+  $('cardSize').oninput = function () { document.documentElement.style.setProperty('--card-size', this.value + 'px'); try { localStorage.setItem('cgw_gallery_card_size', this.value) } catch {} }
+  $('prevPage').onclick = function () { if (page > 1) { page--; load() } }
+  $('nextPage').onclick = function () { if (page < totalPages) { page++; load() } }
+  function goPage() { page = Math.max(1, Math.min(totalPages, Math.floor(Number($('pageInput').value)) || 1)); load() }
+  $('goPage').onclick = goPage
+  $('pageInput').onkeydown = function (e) { if (e.key === 'Enter') goPage() }
 
   $('btnSave').addEventListener('click', function () {
     var v = $('keyInput').value.trim()
     if (!v) { $('gateErr').textContent = '请输入 Key'; return }
-    key = v; localStorage.setItem(KEY_STORE, v); $('gateErr').textContent = ''
+    key = v; page = 1; try { localStorage.setItem(KEY_STORE, v) } catch {}; $('gateErr').textContent = ''
     load()
   })
   $('keyInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('btnSave').click() })
   $('btnKey').addEventListener('click', function () {
     if (key && !confirm('更换/退出当前身份？本机保存的 Key 将被清除，需重新输入。')) return
-    localStorage.removeItem(KEY_STORE); key = ''; showGate()
+    try { localStorage.removeItem(KEY_STORE) } catch {}; key = ''; showGate()
   })
   $('btnRefresh').addEventListener('click', function () { load(); toast('已刷新') })
   $('viewerClose').addEventListener('click', function () { $('viewer').close() })
   $('viewerCopy').addEventListener('click', function () {
-    copyText($('viewerImg')._url || '').then(function () { toast('链接已复制') })
+    copyText($('viewerImg')._url || '').then(function () { toast('下载地址已复制，访问时需携带同一 API Key') }, function () { toast('复制失败，请重试') })
   })
 
   load()

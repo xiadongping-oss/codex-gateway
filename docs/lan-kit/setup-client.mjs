@@ -4,7 +4,7 @@
 // 作用：把「你（局域网成员）」的 WorkBuddy / AGENT 工具接到局域网网关宿主机上，
 //       一次完成三件事：
 //         1. 写入 mcp.json 远程 MCP 条目（url + Key，零安装，无需本机 Node 以外的任何东西）
-//         2. 安装 ImageGen 2.5 skill（可选，让 Agent 生图更可靠）
+//         2. 安装 GPT 图片生成 skill（可选，让 Agent 生图更可靠）
 //         3. 生成 WorkBuddy 模型配置 JSON（可选，对话走宿主机模型）
 //
 // 用法（三选一）：
@@ -32,6 +32,7 @@ const has = (f) => argv.includes(f)
 
 // ↑↑ 此行会被网关 /lan-kit/setup-client.mjs?host=<IP> 分发时自动替换为宿主机地址 ↑↑
 const EMBEDDED_HOST = ''
+const EMBEDDED_PORT = ''
 
 function die(msg) {
   console.error('✗ ' + msg)
@@ -59,7 +60,8 @@ async function main() {
   }
   if (!key.startsWith('cgw-')) console.warn('⚠ 提示：Key 通常以 cgw- 开头，请确认是否填对。')
 
-  const port = Number(argOf('--port') || 4173)
+  const port = Number(argOf('--port') || EMBEDDED_PORT || 4173)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) die('端口必须是 1–65535 的整数。')
   const name = argOf('--name') || 'codex-gateway-lan'
   const mcpJsonPath = argOf('--mcp-json') || path.join(os.homedir(), '.workbuddy', 'mcp.json')
   const dryRun = has('--dry-run')
@@ -99,16 +101,29 @@ async function main() {
     console.log('  已写入。')
   }
 
-  // ---------- 2. ImageGen 2.5 skill（可选） ----------
+  // ---------- 2. GPT 图片生成 skill（可选） ----------
   if (doSkill) {
     const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'skills', 'codex-gateway-image')
-    const dstDir = path.join(os.homedir(), '.workbuddy', 'skills', 'codex-gateway-image')
+    const dstDir = path.join(os.homedir(), '.workbuddy', 'skills', 'gpt-image')
     const srcFile = path.join(srcDir, 'SKILL.md')
     if (fs.existsSync(srcFile)) {
-      console.log(`+ skill ImageGen 2.5 → ${dstDir}`)
+      console.log(`+ skill GPT 图片生成 → ${dstDir}`)
       if (!dryRun) {
         fs.mkdirSync(dstDir, { recursive: true })
-        fs.copyFileSync(srcFile, path.join(dstDir, 'SKILL.md'))
+        const installed = path.join(dstDir, 'SKILL.md')
+        const backupRoot = path.join(os.homedir(), '.workbuddy', 'backups', 'gateway-skill-' + Date.now())
+        if (fs.existsSync(installed) && !fs.readFileSync(installed).equals(fs.readFileSync(srcFile))) {
+          fs.mkdirSync(backupRoot,{recursive:true})
+          fs.cpSync(dstDir,path.join(backupRoot,'gpt-image'),{recursive:true,errorOnExist:true,force:false})
+          console.log('  已备份现有 Skill：' + backupRoot)
+        }
+        fs.copyFileSync(srcFile, installed)
+        const legacy = path.join(os.homedir(), '.workbuddy', 'skills', 'codex-gateway-image')
+        if (fs.existsSync(legacy)) {
+          fs.mkdirSync(backupRoot,{recursive:true})
+          fs.renameSync(legacy,path.join(backupRoot,'codex-gateway-image'))
+          console.log('  旧名称已移到备份目录：' + backupRoot)
+        }
       }
     } else {
       console.log('· 未找到随包 skill 文件（skills/codex-gateway-image/SKILL.md），跳过。不影响 MCP 生图，仅少一层触发保障。')

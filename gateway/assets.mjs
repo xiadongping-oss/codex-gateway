@@ -1,7 +1,11 @@
+import { handleLibraryRoute, generatedRestorePath } from './asset-library-routes.mjs'
+import { trashFile } from './asset-trash.mjs'
+import { handleEditRoute } from './asset-edit-routes.mjs'
 // 素材源适配层（Asset Sources Adapter Layer）
 // 统一管理多来源图片素材：生成图库（bridge image_generation 落盘）/ 本地目录 /
 // S3 兼容对象存储（R2 / OSS / COS / MinIO）/ Lsky Pro / SM.MS
 // 由 gateway/launcher.mjs 挂载到 /__gw/assets/*，逻辑只此一份。
+import { decorateAssets, updateAssetMetadata } from './asset-metadata.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -15,7 +19,7 @@ const STORAGE = resolveStoragePaths(process.env, MOD_DIR)
 const STORE_PATH = STORAGE.assets
 
 const genImagesDir = () => STORAGE.generated
-const GEN_IMAGE_RE = /^[A-Za-z0-9_-]+\.png$/
+const GEN_IMAGE_RE = /^[A-Za-z0-9_-]+\.(?:png|jpeg|webp)$/
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg'])
 const CT_BY_EXT = {
@@ -336,15 +340,15 @@ export function listLocalDir(dir) {
 }
 
 export function listAssets(sourceId) {
-  if (!sourceId || sourceId === 'generated') return listGenerated()
+  if (!sourceId || sourceId === 'generated') return decorateAssets(STORAGE, 'generated', listGenerated())
   const src = findSource(sourceId)
   if (!src) throw new Error('素材源不存在：' + sourceId)
   if (src.type === 'local') {
-    return listLocalDir(src.config.dir).map((x) => ({ ...x, url: assetFileUrl(sourceId, x.name) }))
+    return decorateAssets(STORAGE, sourceId, listLocalDir(src.config.dir).map((x) => ({ ...x, url: assetFileUrl(sourceId, x.name) })))
   }
   // 云端源：返回上传记录（含外链）
   const recs = store().uploads[sourceId] || []
-  return recs.map((u) => ({ ...u, remote: true }))
+  return decorateAssets(STORAGE, sourceId, recs.map((u) => ({ ...u, remote: true })))
 }
 
 export function getUploads(sourceId) {
@@ -591,38 +595,17 @@ export function deleteUploadRecord(sourceId, name) {
 }
 
 // ---------- 批量删除 / 清空（生成图库 + 本地目录源；云端源不支持删文件） ----------
-export function deleteAssets(sourceId, names, all = false) {
-  if (!sourceId || sourceId === 'generated') {
-    const dir = genImagesDir()
-    const indexFile = path.join(dir, 'index.json')
-    const index = fs.existsSync(indexFile) ? JSON.parse(fs.readFileSync(indexFile, 'utf8')) : {}
-    if (!index || typeof index !== 'object' || Array.isArray(index)) throw new Error('生成图库归属索引损坏，未删除图片')
-    let targets = []
-    if (all) {
-      try { targets = fs.readdirSync(dir).filter((n) => GEN_IMAGE_RE.test(n)) } catch { targets = [] }
-    } else {
-      targets = (Array.isArray(names) ? names : []).filter((n) => GEN_IMAGE_RE.test(n))
-    }
-    let deleted = 0
-    for (const n of targets) {
-      try { fs.unlinkSync(path.join(dir, n)); deleted++; delete index[n] } catch {}
-    }
-    if (deleted && fs.existsSync(indexFile)) writeJsonAtomic(indexFile, index)
-    return { ok: true, deleted }
-  }
-  const src = findSource(sourceId)
-  if (!src || src.type !== 'local') throw new Error('该素材源不支持删除文件（云端源请移除记录）')
-  const base = path.resolve(src.config.dir)
-  const targets = all
-    ? listLocalDir(base).map((x) => x.name)
-    : (Array.isArray(names) ? names : []).filter((n) => NAME_RE.test(n) && !n.startsWith('.') && !n.includes('..'))
-  let deleted = 0
-  for (const n of targets) {
-    const full = path.resolve(base, n)
-    if (full === base || !full.startsWith(base + path.sep)) continue // 路径防逃逸
-    try { fs.unlinkSync(full); deleted++ } catch {}
-  }
-  return { ok: true, deleted }
+export function deleteAssets(sourceId = 'generated', names, all = false) {
+  sourceId ||= 'generated'
+  const images = listAssets(sourceId)
+  const wanted = new Set(Array.isArray(names) ? names : [])
+  const targets = all ? images : images.filter(image => wanted.has(image.name))
+  if (sourceId !== 'generated' && findSource(sourceId)?.type !== 'local') throw new Error('云端源请移除上传记录')
+  const results = targets.map(image => {
+    try { const file = resolveFile(sourceId, image.name); if (!file) throw new Error('素材不可读'); return { name: image.name, ok: true, trashId: trashFile(STORAGE, sourceId, image, file) } }
+    catch (e) { return { name: image.name, ok: false, error: e.message } }
+  })
+  return { ok: true, deleted: results.filter(r => r.ok).length, results }
 }
 
 // ---------- 路由处理器（/__gw/assets*） ----------
@@ -666,6 +649,17 @@ function readBody(req) {
 export async function handleAssets(req, res, p) {
   const q = new URL(req.url, 'http://127.0.0.1').searchParams
 
+  if (p === '/__gw/assets/edit-sessions') {
+    const { listApiKeys } = await import('./apikeys.mjs')
+    const index = (() => { try { return JSON.parse(fs.readFileSync(path.join(STORAGE.generated, 'index.json'), 'utf8')) } catch (e) { if (e.code === 'ENOENT') return {}; throw e } })()
+    return handleEditRoute(req, res, { paths: STORAGE, admin: true, readBody, resolveFile, validKeyIds: listApiKeys().map(k => k.id),
+      listImages: source => listAssets(source).map(image => ({ ...image, ownerKeyId: source === 'generated' ? index[image.name]?.keyId : null })) })
+  }
+  if (p === '/__gw/assets/library') {
+    return handleLibraryRoute(req, res, { paths: STORAGE, admin: true, readBody, listImages: listAssets, resolveFile,
+      sources: [{ id: 'generated', name: '生成图库' }, ...listSources().map(s => ({ id: s.id, name: s.name }))],
+      restorePath: entry => generatedRestorePath(STORAGE, entry) || (() => { const source = findSource(entry.sourceId); if (!source || source.type !== 'local' || !NAME_RE.test(entry.name) || entry.name.startsWith('.') || !IMAGE_EXTS.has(path.extname(entry.name).toLowerCase())) return null; return path.join(path.resolve(source.config.dir), entry.name) })() })
+  }
   // 素材源 CRUD
   if (p === '/__gw/assets/sources' && req.method === 'GET') {
     return json(res, 200, { sources: listSources() })
@@ -704,6 +698,15 @@ export async function handleAssets(req, res, p) {
     } catch (e) {
       return json(res, 400, { error: 'bad_source', detail: e.message })
     }
+  }
+
+  if (p === '/__gw/assets/metadata' && req.method === 'POST') {
+    try {
+      const body = await readBody(req)
+      const source = body.src || 'generated'
+      if (!listAssets(source).some(image => image.name === body.name)) return json(res, 404, { error: 'not_found' })
+      return json(res, 200, { ok: true, metadata: updateAssetMetadata(STORAGE, source, body.name, body.changes) })
+    } catch (e) { return json(res, 400, { error: 'bad_metadata', detail: e.message }) }
   }
 
   // 本地文件伺服（generated / local 源）

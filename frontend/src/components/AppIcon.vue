@@ -1,6 +1,7 @@
 <script setup>
 defineProps({name:{type:String,default:'overview'}})
 const paths={
+ access:'M8 3H3v18h5M14 8l5 4-5 4M8 12h11',
  runtime:'M3 12h4l3-8 4 16 3-8h4',
  lan:'M9 3h6v5H9zM2 16h6v5H2zM16 16h6v5h-6zM12 8v4M5 16v-4h14v4',
 

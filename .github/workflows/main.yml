@@ -60,10 +60,18 @@ jobs:
         run: npm run scan:secrets
       - name: Gateway unit tests
         run: npm run test:unit
+      - name: Asset library integration tests
+        run: npm run test:assets
+      - name: Frontend tests
+        run: npm --prefix frontend test
       - name: Build release tests
         run: npm run test:build
+      - name: Install desktop tooling
+        run: npm ci --prefix desktop --ignore-scripts --no-audit --no-fund
       - name: Desktop UI contract tests
         run: npm run test:desktop:ui
+      - name: Desktop updater tests
+        run: npm run test:desktop:updater
       - name: Frontend build and dist drift check
         run: npm run check:dist-drift
       - name: Desktop Rust build

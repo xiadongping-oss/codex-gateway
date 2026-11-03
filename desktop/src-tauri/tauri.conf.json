@@ -1,9 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Codex Gateway",
-  "version": "1.13.1",
+  "version": "1.14.0",
   "identifier": "com.codexgateway.desktop",
-  "build": { "frontendDist": "../ui" },
+  "build": {
+    "frontendDist": "../ui"
+  },
   "app": {
     "withGlobalTauri": true,
     "windows": [],
@@ -12,5 +14,27 @@
       "capabilities": []
     }
   },
-  "bundle": { "active": false, "targets": ["nsis"], "icon": ["icons/icon.ico", "icons/icon.png", "icons/icon.icns"] }
+  "bundle": {
+    "active": false,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png",
+      "icons/icon.icns"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERGOTU3NzhEMzVCOUNEQTkKUldTcHpiazFqWGVWMzlTUVBBbzZiVnFtVzVydExldFNqdFNpRi9wRExJYTdRS29pTE1SQXA3bVIK",
+      "endpoints": [
+        "https://github.com/xiadongping-oss/codex-gateway/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      },
+      "requireSignedVersion": true
+    }
+  }
 }

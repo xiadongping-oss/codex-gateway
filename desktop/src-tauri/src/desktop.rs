@@ -39,6 +39,7 @@ pub fn business_page(page: &str) -> bool {
             | "account"
             | "images"
             | "models"
+            | "access"
             | "apikeys"
             | "logs"
             | "settings"

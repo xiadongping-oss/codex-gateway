@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod asset_drag;
 mod autostart;
 #[cfg(windows)]
 mod cold_recovery;
@@ -10,6 +11,7 @@ mod diagnostics;
 mod mac_recovery;
 mod migration;
 mod migration_check;
+mod preferences;
 mod process_tree;
 mod protocol;
 mod recovery;
@@ -17,6 +19,7 @@ mod resources;
 #[cfg(debug_assertions)]
 mod soak_check;
 mod supervisor;
+mod updater;
 #[cfg(debug_assertions)]
 mod workspace_check;
 
@@ -80,10 +83,24 @@ fn workspace_state(
 ) -> Result<serde_json::Value, String> {
     local(&window)?;
     Ok(
-        serde_json::json!({ "page": state.page.lock().unwrap().clone(), "autostart": autostart::enabled(&app).ok(), "notice": state.notice.lock().unwrap().clone(), "migration": desktop::migration_state(&app), "legacyMigration": state.isolated }),
+        serde_json::json!({ "page": state.page.lock().unwrap().clone(), "autostart": autostart::enabled(&app).ok(), "notice": state.notice.lock().unwrap().clone(), "migration": desktop::migration_state(&app), "legacyMigration": state.isolated, "preferences": preferences::snapshot(&app), "preferencesError": app.state::<preferences::Store>().read_error.lock().unwrap().clone(), "updater": app.state::<updater::Store>().snapshot() }),
     )
 }
 
+#[tauri::command]
+fn workspace_preferences(
+    window: Webview,
+    app: tauri::AppHandle,
+    patch: preferences::Patch,
+) -> Result<serde_json::Value, String> {
+    local(&window)?;
+    preferences::update(&app, patch)
+}
+#[tauri::command]
+async fn workspace_update(window: Webview, app: tauri::AppHandle, action: String) -> Result<updater::Snapshot, String> {
+    local(&window)?;
+    updater::action(app, &action).await
+}
 #[tauri::command]
 fn workspace_navigate(
     window: Webview,
@@ -159,6 +176,8 @@ fn main() {
         args: autostart_args.clone(),
     });
     let builder = builder
+        .manage(updater::Store::new(env!("CARGO_PKG_VERSION").into()))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(desktop::Desktop {
             background: AtomicBool::new(args.iter().any(|s| s == "--from-autostart")),
             duplicates: std::sync::atomic::AtomicUsize::new(0),
@@ -196,11 +215,14 @@ fn main() {
             workspace_state,
             workspace_navigate,
             workspace_autostart,
+            workspace_preferences,
+            workspace_update,
             migration_request
         ])
         .setup(|app| {
             let settings = Settings::resolve(app.handle())?;
             std::fs::create_dir_all(&settings.webview_data)?;
+            app.manage(preferences::Store::load(settings.webview_data.parent().ok_or("Missing preferences parent")?.join("preferences.json")));
             let quitting = Arc::new(AtomicBool::new(false));
             desktop::install(app.handle())?;
             let window =
@@ -224,7 +246,9 @@ fn main() {
                     )
                     .data_directory(settings.webview_data.clone())
                     .on_navigation(startup_origin)
+                    .initialization_script("window.addEventListener('cgw:appearance',event=>window.applyWorkspaceTheme?.(event.detail.resolvedAppearance));")
                     .build()?;
+            preferences::apply(app.handle());
             let controller = Controller::start(app.handle().clone(), settings, quitting.clone());
             app.manage(controller);
             let handle = app.handle().clone();
@@ -232,9 +256,12 @@ fn main() {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     if !quitting.load(Ordering::Relaxed) {
                         api.prevent_close();
-                        desktop::hide(&handle);
+                        if handle.state::<preferences::Store>().get().close_behavior == preferences::CloseBehavior::Quit {
+                            let _ = handle.state::<Controller>().action("quit");
+                        } else { desktop::hide(&handle); }
                     }
                 }
+                if let tauri::WindowEvent::ThemeChanged(theme) = event { preferences::system_changed(&handle,*theme); }
             });
             Ok(())
         })

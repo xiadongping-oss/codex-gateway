@@ -2,7 +2,7 @@
 import { vModalFocus } from '../composables/modalFocus'
 import { usePagination } from '../composables/usePagination'
 import Pagination from '../components/Pagination.vue'
-import { ref, computed, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, reactive, watch, onMounted, onBeforeUnmount } from 'vue'
 import * as api from '../api/gateway'
 import { copyText } from '../api/client'
 
@@ -10,7 +10,64 @@ import { copyText } from '../api/client'
 const sources = ref([])
 const active = ref('generated')
 const assets = ref([])
-const {page,pages,visible}=usePagination(assets)
+const editorUrl = ref('')
+function openLibrary() { viewerOpen.value = false; editorUrl.value = '/asset-library?surface=workspace' }
+function openEditor(img) {
+  viewerOpen.value = false
+  editorUrl.value = '/asset-editor?' + new URLSearchParams({ surface: 'workspace', src: active.value, name: img.name })
+}
+function editorMessage(event) {
+  if (event.origin !== location.origin || event.source !== document.getElementById('assetEditorFrame')?.contentWindow || event.data?.type !== 'cgw:editor-close') return
+  editorUrl.value = ''; load()
+}
+onMounted(() => window.addEventListener('message', editorMessage))
+onBeforeUnmount(() => window.removeEventListener('message', editorMessage))
+const search = ref('')
+const favoritesOnly = ref(false)
+const sort = ref('newest')
+const cardSize = ref(260)
+try { cardSize.value = Math.max(180, Math.min(420, Number(localStorage.getItem('cgw_asset_card_size')) || 260)) } catch {}
+watch(cardSize, value => { try { localStorage.setItem('cgw_asset_card_size', String(value)) } catch {} })
+const filteredAssets = computed(() => {
+  const terms = search.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
+  return assets.value.filter(img => (!favoritesOnly.value || img.favorite) && terms.every(term =>
+    [img.title, img.name, img.notes, ...(img.tags || []), ...(img.collections || []), img.generation?.prompt, img.generation?.revisedPrompt].filter(Boolean).join(' ').toLocaleLowerCase().includes(term)))
+    .sort(sort.value === 'name' ? (a, b) => (a.title || a.name).localeCompare(b.title || b.name, 'zh-CN') : (a, b) => (b.mtime || b.at || 0) - (a.mtime || a.at || 0))
+})
+const {page,pages,visible}=usePagination(filteredAssets)
+watch([search, favoritesOnly, sort], () => { page.value = 1; selected.value = new Set() })
+const metadataBusy = ref(new Set())
+async function updateMetadata(img, changes) {
+  if (metadataBusy.value.has(img.id)) return
+  const source = active.value
+  metadataBusy.value.add(img.id)
+  try {
+    const metadata = await api.updateAssetMetadata(source, img.name, changes)
+    if (source === active.value) {
+      const current = assets.value.find(item => item.id === img.id)
+      if (current) Object.assign(current, metadata)
+      if (viewerOpen.value && !filteredAssets.value.some(item => item.id === viewerImg.value?.id)) viewerOpen.value = false
+    }
+    flashTip('素材信息已保存')
+    return true
+  } catch (e) { tip.value = e.message }
+  finally { metadataBusy.value.delete(img.id) }
+}
+const renaming = ref(null)
+const titleDraft = ref('')
+let returnToViewer = false
+function rename(img) { returnToViewer = viewerOpen.value; viewerOpen.value = false; renaming.value = img; titleDraft.value = img.title || '' }
+function closeRename() { renaming.value = null; if (returnToViewer) viewerOpen.value = true; returnToViewer = false }
+async function saveTitle() {
+  if (await updateMetadata(renaming.value, { title: titleDraft.value })) closeRename()
+}
+async function copyGeneration(img, config = false) {
+  try {
+    const g = img.generation
+    await copyText(config ? JSON.stringify({ prompt: g.prompt, revisedPrompt: g.revisedPrompt, requested: g.requested, actual: g.actual }, null, 2) : g.prompt)
+    flashTip(config ? '生成配置已复制' : '提示词已复制')
+  } catch (e) { tip.value = '复制失败：' + e.message }
+}
 const loaded = ref(false)
 const manageMode = ref(false)
 
@@ -40,14 +97,22 @@ async function loadSources() {
   }
 }
 
+let loadSequence = 0
+const loadError = ref('')
 async function load() {
-  await loadSources()
-  assets.value = await api.getAssets(active.value)
-  // 首轮必须把指纹回填：lastGenKeys 初始是空串，若这里不写，
-  // 4 秒后的第一次 pollTick 会把整张已有列表全判成「新图」，
-  // 于是每次进页面都必然弹一次「检测到 N 张新生成图片」的假告警。
-  if (active.value === 'generated') lastGenKeys = genFingerprint(assets.value)
-  loaded.value = true
+  const sequence = ++loadSequence
+  loadError.value = ''
+  try {
+    await loadSources()
+    const source = active.value
+    const list = await api.getAssets(source)
+    if (sequence !== loadSequence || source !== active.value) return
+    const viewingName = viewerImg.value?.name
+    assets.value = list
+    if (viewingName) { const index = list.findIndex(img => img.name === viewingName); if (index >= 0) viewerIdx.value = index; else viewerOpen.value = false }
+    if (source === 'generated') lastGenKeys = genFingerprint(list)
+  } catch (e) { if (sequence === loadSequence) loadError.value = '加载失败：' + e.message }
+  finally { if (sequence === loadSequence) loaded.value = true }
 }
 onMounted(load)
 
@@ -104,13 +169,14 @@ async function copyLink(url) {
 }
 
 async function removeImg(img) {
-  if (!window.confirm('删除这张图片？文件将从磁盘移除，不可恢复。')) return
+  if (!window.confirm('将这张素材移入回收站？可以恢复，编辑草稿和其他版本仍保留。')) return
   deleting.value = img.name
   const r = await api.deleteAssets(active.value, [img.name])
   deleting.value = ''
   if (r?.ok) {
+    if (r.deleted !== 1) { tip.value = r.results?.find(x => !x.ok)?.error || '移入回收站失败'; return }
     assets.value = assets.value.filter((x) => x.name !== img.name)
-    flashTip('已删除')
+    flashTip('已移入回收站')
   } else {
     tip.value = '删除失败，请重试'
   }
@@ -132,7 +198,7 @@ function toggleSelect(name) {
   selected.value = s
 }
 function selectAll() {
-  selected.value = new Set(assets.value.map((i) => i.name))
+  selected.value = new Set(filteredAssets.value.map((i) => i.name))
 }
 function onCardImgClick(img) {
   if (manageMode.value && isBatchable.value) toggleSelect(img.name)
@@ -142,28 +208,32 @@ function onCardImgClick(img) {
 async function deleteSelected() {
   const n = selected.value.size
   if (!n || batchBusy.value) return
-  if (!window.confirm(`删除所选 ${n} 张图片？本地文件将被移除，不可恢复。`)) return
+  if (!window.confirm(`删除所选 ${n} 张图片？素材将移入回收站，可恢复，编辑草稿和其他版本仍保留。`)) return
   batchBusy.value = true
   const r = await api.deleteAssets(active.value, [...selected.value])
   batchBusy.value = false
   if (r?.ok) {
-    flashTip(`已删除 ${r.deleted} 张图片`)
-    selected.value = new Set()
+    const failed = r.results?.filter(x => !x.ok) || []
+    selected.value = new Set(failed.map(x => x.name))
     await load()
+    if (failed.length) tip.value = `已移入回收站 ${r.deleted} 张，失败 ${failed.length} 张：${failed.map(x => x.error).join('；')}`
+    else flashTip(`已移入回收站 ${r.deleted} 张图片`)
   } else tip.value = '批量删除失败，请重试'
 }
 
 async function clearSource() {
   if (!assets.value.length || batchBusy.value) return
   const label = active.value === 'generated' ? '生成图库' : `「${activeSource.value.name}」`
-  if (!window.confirm(`清空${label}的全部 ${assets.value.length} 张图片？本地文件将被移除，不可恢复。`)) return
+  if (!window.confirm(`清空${label}的全部 ${assets.value.length} 张图片？素材将移入回收站，可恢复，编辑草稿和其他版本仍保留。`)) return
   batchBusy.value = true
   const r = await api.deleteAssets(active.value, [], true)
   batchBusy.value = false
   if (r?.ok) {
-    flashTip(`已清空 ${r.deleted} 张图片`)
-    selected.value = new Set()
+    const failed = r.results?.filter(x => !x.ok) || []
+    selected.value = new Set(failed.map(x => x.name))
     await load()
+    if (failed.length) tip.value = `已移入回收站 ${r.deleted} 张，失败 ${failed.length} 张：${failed.map(x => x.error).join('；')}`
+    else flashTip(`已移入回收站 ${r.deleted} 张图片`)
   } else tip.value = '清空失败，请重试'
 }
 
@@ -173,7 +243,7 @@ let pollTimer = null
 let lastGenKeys = '' // 已知生成图的 name|size|mtime 指纹集合
 
 function genFingerprint(list) {
-  return list.map((i) => `${i.name}|${i.size}|${i.mtime || i.at || 0}`).join('\n')
+  return list.map((i) => `${i.name}|${i.size}|${i.mtime || i.at || 0}|${i.title}|${i.favorite}|${JSON.stringify([i.tags, i.collections, i.notes])}`).join('\n')
 }
 
 async function pollTick() {
@@ -186,9 +256,10 @@ async function pollTick() {
   const fresh = list.filter((i) => !known.has(i.name))
   if (active.value === 'generated') {
     // 当前就在生成图库：就地合并刷新，不打断浏览（新图按 mtime 倒序插在队首）
+    const viewingName = viewerImg.value?.name
     assets.value = list
+    if (viewingName) { const index = list.findIndex(img => img.name === viewingName); if (index >= 0) viewerIdx.value = index; else viewerOpen.value = false }
     if (fresh.length && loaded.value) {
-      if (viewerOpen.value) viewerIdx.value += fresh.length
       flashTip(`检测到 ${fresh.length} 张新生成图片`)
     }
   } else if (fresh.length) {
@@ -219,8 +290,12 @@ function openViewer(img) {
 }
 function closeViewer() { viewerOpen.value = false }
 function viewerStep(d) {
-  const n = assets.value.length
-  if (n > 1) viewerIdx.value = (viewerIdx.value + d + n) % n
+  const list = filteredAssets.value
+  const n = list.length
+  if (n > 1) {
+    const index = list.findIndex(img => img.id === viewerImg.value?.id)
+    viewerIdx.value = assets.value.findIndex(img => img.id === list[(index + d + n) % n].id)
+  }
 }
 async function viewerRemove(img) {
   const wasRemote = !!img.remote
@@ -234,7 +309,7 @@ async function viewerRemove(img) {
   if (!assets.value.length) viewerOpen.value = false
 }
 function onViewerKey(e) {
-  if (!viewerOpen.value) return
+  if (!viewerOpen.value || renaming.value || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target?.tagName)) return
   if (e.key === 'Escape') closeViewer()
   else if (e.key === 'ArrowLeft') viewerStep(-1)
   else if (e.key === 'ArrowRight') viewerStep(1)
@@ -397,6 +472,7 @@ const emptyText = computed(() => {
     <div class="page-head">
       <div class="live-tag"><span class="dot"></span>图片素材 · 多来源统一管理 · 共 {{ assets.length }} 项</div>
       <div class="head-actions">
+        <button class="refresh" @click="openLibrary">整理 / 回收站 / 对比</button>
         <select v-if="cloudSources.length > 1" class="target-select" v-model="uploadTargetId" title="上传目标">
           <option v-for="s in cloudSources" :key="s.id" :value="s.id">上传到 {{ s.name }}</option>
         </select>
@@ -430,32 +506,44 @@ const emptyText = computed(() => {
       </button>
     </div>
 
+    <div class="asset-tools">
+      <input v-model="search" type="search" placeholder="搜索标题、文件名或提示词" aria-label="搜索素材" />
+      <button class="refresh" :aria-pressed="favoritesOnly" :class="{ primary: favoritesOnly }" @click="favoritesOnly = !favoritesOnly">{{ favoritesOnly ? '★ 已收藏' : '☆ 只看收藏' }}</button>
+      <select v-model="sort" aria-label="素材排序"><option value="newest">最新优先</option><option value="name">名称排序</option></select>
+      <label>卡片大小 <input v-model.number="cardSize" type="range" min="180" max="420" step="20" aria-label="卡片大小" /></label>
+      <span class="sub">{{ filteredAssets.length }} / {{ assets.length }} 项</span>
+    </div>
+
     <!-- 批量操作栏（管理模式 + 本地两类源：批量删除 / 清空） -->
     <div class="manage-bar" v-if="manageMode && isBatchable">
       <span class="mb-count mono">已选 {{ selected.size }} / {{ assets.length }}</span>
-      <button class="refresh" @click="selectAll">全选</button>
+      <button class="refresh" @click="selectAll">全选筛选结果</button>
       <button class="refresh" :disabled="!selected.size" @click="selected = new Set()">取消选择</button>
       <button class="refresh danger" :disabled="!selected.size || batchBusy" @click="deleteSelected">{{ batchBusy ? '处理中…' : '删除所选' }}</button>
       <button class="refresh danger" :disabled="!assets.length || batchBusy" @click="clearSource">清空</button>
       <span class="mb-note">点击图片勾选 / 取消勾选</span>
     </div>
 
+    <div v-if="loadError && assets.length" class="error-tip" role="alert">{{ loadError }}</div>
     <!-- 素材网格（本地源支持拖拽导入） -->
     <div
       class="grid drop-zone"
       :class="{ over: dragOver }"
       :data-srcname="activeSource?.name || ''"
-      v-if="assets.length"
+      v-if="filteredAssets.length"
+      :style="{ '--asset-size': cardSize + 'px' }"
       @dragover.prevent="activeSource?.type === 'local' && (dragOver = true)"
       @dragleave="dragOver = false"
       @drop.prevent="onDrop"
     >
-      <div class="card" v-for="img in visible" :key="img.name" :class="{ sel: manageMode && isBatchable && selected.has(img.name) }">
+      <div class="card" v-for="img in visible" :key="img.id" :class="{ sel: manageMode && isBatchable && selected.has(img.name) }">
         <div class="thumb">
+          <button class="favorite-btn" :aria-label="img.favorite ? '取消收藏' : '收藏'" :aria-pressed="img.favorite" :disabled="metadataBusy.has(img.id)" @click.stop="updateMetadata(img, { favorite: !img.favorite })">{{ img.favorite ? '★' : '☆' }}</button>
           <img :src="thumbUrl(img)" :alt="img.name" role="button" tabindex="0" :aria-label="'预览 ' + img.name" draggable="true" loading="lazy" @click="onCardImgClick(img)" @keydown.enter.prevent="onCardImgClick(img)" @keydown.space.prevent="onCardImgClick(img)" />
           <div class="sel-dot" v-if="manageMode && isBatchable" :class="{ on: selected.has(img.name) }">✓</div>
           <div class="overlay" v-if="!manageMode">
             <template v-if="!img.remote">
+              <button class="act" @click="openEditor(img)">标注 / 使用</button>
               <button class="act primary" :class="{ done: copiedName === img.name }" @click="copyImg(img)" :disabled="busyCopy === img.name" title="复制为静态图片；保留原始格式和元数据请下载原文件">
                 {{ busyCopy === img.name ? '复制中…' : copiedName === img.name ? '✓ 已复制' : copyLabel(img) }}
               </button>
@@ -479,15 +567,16 @@ const emptyText = computed(() => {
           </div>
         </div>
         <div class="meta">
-          <span class="name mono" :title="img.name">{{ img.name }}</span>
+          <div class="title-line"><span class="name" :title="img.title || img.name">{{ img.title || img.name }}<small v-if="img.parentId" class="version-badge">新版本</small></span><button class="text-action" @click="rename(img)" :disabled="metadataBusy.has(img.id)" aria-label="重命名素材">重命名</button></div>
           <span class="sub mono">
-            {{ fmtSize(img.size) }} · {{ fmtDate(img.mtime || img.at) }}
+            <template v-if="img.generation?.actual?.actual">{{ img.generation.actual.actual }} · </template>{{ fmtSize(img.size) }} · {{ fmtDate(img.mtime || img.at) }}
             <template v-if="img.remote"> · {{ TYPE_META[sources.find((s) => s.id === active)?.type]?.tag }}</template>
           </span>
         </div>
       </div>
     </div>
 
+    <div v-else-if="loadError" class="card empty" role="alert"><div class="empty-sub">{{ loadError }}</div><button class="refresh" @click="load">重试</button></div>
     <div
       class="card empty drop-zone"
       :class="{ over: dragOver }"
@@ -497,8 +586,8 @@ const emptyText = computed(() => {
       @dragleave="dragOver = false"
       @drop.prevent="onDrop"
     >
-      <div class="empty-title">{{ active === 'generated' ? '生成图库还是空的' : '这里还没有素材' }}</div>
-      <div class="empty-sub">{{ emptyText }}</div>
+      <div class="empty-title">{{ assets.length ? '没有匹配的素材' : active === 'generated' ? '生成图库还是空的' : '这里还没有素材' }}</div>
+      <div class="empty-sub">{{ assets.length ? '调整搜索词或取消收藏筛选后重试。' : emptyText }}</div>
       <div class="empty-hint" v-if="activeSource?.type === 'local'">把图片拖到这里，或点右上角「导入图片」</div>
     </div>
     <div class="card empty" v-else>
@@ -510,7 +599,16 @@ const emptyText = computed(() => {
       <div class="ok-tip" v-if="okTip">{{ okTip }}</div>
     </div>
 
-    <Pagination v-model="page" :pages="pages" :total="assets.length" />
+    <Pagination v-model="page" :pages="pages" :total="filteredAssets.length" />
+    <div v-if="renaming" class="modal-mask" @click.self="closeRename">
+      <form class="modal" role="dialog" aria-modal="true" aria-label="重命名素材" v-modal-focus="closeRename" @submit.prevent="saveTitle">
+        <label class="f-label" for="assetTitle">展示标题</label>
+        <input id="assetTitle" v-model="titleDraft" class="f-input" maxlength="160" placeholder="留空使用原文件名" />
+        <p class="f-note">原文件：{{ renaming.name }}，展示标题不会修改磁盘文件名。</p>
+        <div class="modal-actions"><button type="button" class="refresh" @click="closeRename">取消</button><button class="btn-primary" :disabled="metadataBusy.has(renaming.id)">保存</button></div>
+      </form>
+    </div>
+    <div v-if="editorUrl" class="editor-overlay" role="dialog" aria-modal="true" aria-label="图片标注与复用"><iframe id="assetEditorFrame" :src="editorUrl" title="图片标注与复用"></iframe></div>
     <!-- 添加素材源弹窗 -->
     <div class="modal-mask" v-if="showAdd" @click.self="showAdd = false">
       <div class="modal" role="dialog" aria-modal="true" aria-label="添加素材源" v-modal-focus="() => showAdd = false">
@@ -577,18 +675,34 @@ const emptyText = computed(() => {
     </div>
 
     <!-- 图片查看器（页面内 Lightbox，Esc 关闭 / ←→ 切换；两侧空白点击同样翻页） -->
-    <div class="lightbox" v-if="viewerOpen && viewerImg" @wheel.prevent role="dialog" aria-modal="true" aria-label="图片预览" v-modal-focus="closeViewer">
+    <div class="lightbox" v-if="viewerOpen && viewerImg" @wheel.self.prevent role="dialog" aria-modal="true" aria-label="图片预览" v-modal-focus="closeViewer">
       <button class="lb-close" title="关闭 (Esc)" @click="closeViewer">✕</button>
-      <button v-if="assets.length > 1" class="lb-nav prev" title="上一张 (←)" @click="viewerStep(-1)">
+      <button v-if="filteredAssets.length > 1" class="lb-nav prev" title="上一张 (←)" @click="viewerStep(-1)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
       </button>
-      <div class="lb-zone" :class="{ multi: assets.length > 1 }" title="上一张" @click="viewerStep(-1)"></div>
+      <div class="lb-zone" :class="{ multi: filteredAssets.length > 1 }" title="上一张" @click="viewerStep(-1)"></div>
       <div class="lb-stage">
         <img :src="thumbUrl(viewerImg)" :alt="viewerImg.name" @dragstart.prevent />
+        <details class="generation-info">
+          <summary>素材信息与生成记录</summary>
+          <div class="generation-body">
+            <div class="info-actions"><button v-if="!viewerImg.remote" class="refresh primary" @click="openEditor(viewerImg)">标注 / 继续编辑</button><button class="refresh" @click="rename(viewerImg)">重命名</button><button class="refresh" :disabled="metadataBusy.has(viewerImg.id)" @click="updateMetadata(viewerImg, { favorite: !viewerImg.favorite })">{{ viewerImg.favorite ? '★ 已收藏' : '☆ 收藏' }}</button></div>
+            <p class="sub">原文件：{{ viewerImg.name }} · ID：{{ viewerImg.id }}</p>
+            <template v-if="viewerImg.generation">
+              <p>原始提示词</p><pre>{{ viewerImg.generation.prompt || '未记录' }}</pre>
+              <button class="refresh" :disabled="!viewerImg.generation.prompt" @click="copyGeneration(viewerImg)">复制提示词</button>
+              <button class="refresh" @click="copyGeneration(viewerImg, true)">复制生成配置</button>
+              <template v-if="viewerImg.generation.revisedPrompt"><p>模型改写提示词</p><pre>{{ viewerImg.generation.revisedPrompt }}</pre><button class="refresh" @click="copyGeneration({ generation: { prompt: viewerImg.generation.revisedPrompt } })">复制改写提示词</button></template>
+              <p>请求参数</p><pre>{{ JSON.stringify(viewerImg.generation.requested, null, 2) }}</pre>
+              <p>实际返回信息</p><pre>{{ JSON.stringify(viewerImg.generation.actual, null, 2) }}</pre>
+            </template>
+            <p v-else class="sub">此图片的生成提示词和参数未记录。</p>
+          </div>
+        </details>
         <div class="lb-bar">
           <div class="lb-info">
-            <span class="lb-name mono" :title="viewerImg.name">{{ viewerImg.name }}</span>
-            <span class="lb-sub mono">{{ fmtSize(viewerImg.size) }} · {{ fmtDate(viewerImg.mtime || viewerImg.at) }}<template v-if="viewerImg.remote"> · 云端</template> · {{ viewerIdx + 1 }} / {{ assets.length }}</span>
+            <span class="lb-name mono" :title="viewerImg.name">{{ viewerImg.title || viewerImg.name }}</span>
+            <span class="lb-sub mono">{{ fmtSize(viewerImg.size) }} · {{ fmtDate(viewerImg.mtime || viewerImg.at) }}<template v-if="viewerImg.remote"> · 云端</template> · {{ Math.max(1, filteredAssets.findIndex(img => img.id === viewerImg.id) + 1) }} / {{ filteredAssets.length }}</span>
           </div>
           <div class="lb-actions">
             <template v-if="!viewerImg.remote">
@@ -615,8 +729,8 @@ const emptyText = computed(() => {
           </div>
         </div>
       </div>
-      <div class="lb-zone" :class="{ multi: assets.length > 1 }" title="下一张" @click="viewerStep(1)"></div>
-      <button v-if="assets.length > 1" class="lb-nav next" title="下一张 (→)" @click="viewerStep(1)">
+      <div class="lb-zone" :class="{ multi: filteredAssets.length > 1 }" title="下一张" @click="viewerStep(1)"></div>
+      <button v-if="filteredAssets.length > 1" class="lb-nav next" title="下一张 (→)" @click="viewerStep(1)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
       </button>
     </div>
@@ -624,6 +738,24 @@ const emptyText = computed(() => {
 </template>
 
 <style scoped>
+.editor-overlay { position: fixed; inset: 0; z-index: 100; background: var(--bg); }
+.editor-overlay iframe { width: 100%; height: 100%; border: 0; }
+.version-badge { color: var(--emerald); background: var(--emerald-bg); margin-left: 6px; font-size: 10px; padding: 1px 4px; border-radius: 4px; }
+.asset-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+.asset-tools > input { flex: 1; min-width: 180px; }
+.asset-tools input[type="search"], .asset-tools select { padding: 8px 10px; background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
+.asset-tools label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+.asset-tools input[type="range"] { width: 100px; accent-color: var(--emerald); }
+.favorite-btn { position: absolute; top: 8px; right: 8px; z-index: 2; width: 30px; height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--emerald); cursor: pointer; font-size: 20px; }
+.title-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.text-action { background: none; border: none; color: var(--emerald); font-size: 11px; cursor: pointer; flex-shrink: 0; }
+.generation-info { background: var(--card); color: var(--text); flex-shrink: 0; }
+.generation-info summary { padding: 10px 14px; cursor: pointer; font-size: 12px; }
+.generation-body { padding: 0 14px 14px; max-height: 32vh; overflow: auto; font-size: 12px; }
+.generation-body pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px; background: var(--bg); user-select: text; }
+.info-actions { display: flex; gap: 8px; margin-bottom: 8px; }
+.modal-mask:has(#assetTitle) { z-index: 90; }
+
 img[role="button"]:focus-visible { outline: 3px solid var(--primary); outline-offset: -3px; }
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .live-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--emerald-light); font-family: var(--mono); }
@@ -659,7 +791,7 @@ img[role="button"]:focus-visible { outline: 3px solid var(--primary); outline-of
   animation: pulse 1.5s infinite;
 }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--asset-size, 260px)), 1fr)); gap: 16px; }
 .grid.drop-zone { position: relative; border-radius: 12px; }
 .grid.drop-zone.over { outline: 2px dashed var(--emerald); outline-offset: 6px; }
 .grid.drop-zone.over::after {
@@ -683,9 +815,9 @@ img[role="button"]:focus-visible { outline: 3px solid var(--primary); outline-of
   transition: all 0.12s ease;
 }
 .sel-dot.on { background: var(--emerald); border-color: var(--emerald); color: var(--on-primary); }
-.thumb { position: relative; height: 168px; background: #0b0d10; }
+.thumb { position: relative; aspect-ratio: 4 / 3; background: repeating-conic-gradient(#eeedf2 0% 25%, #fff 0% 50%) 0 / 16px 16px; }
 .thumb img {
-  width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in;
+  width: 100%; height: 100%; object-fit: contain; display: block; cursor: zoom-in;
   transition: transform 0.2s ease;
 }
 .card:hover .thumb img { transform: scale(1.03); }
@@ -695,7 +827,7 @@ img[role="button"]:focus-visible { outline: 3px solid var(--primary); outline-of
   display: flex; gap: 6px; align-items: center; justify-content: center; flex-wrap: wrap;
   opacity: 0; transition: opacity 0.15s ease;
 }
-.card:hover .overlay { opacity: 1; }
+.card:focus-within .overlay, .card:hover .overlay { opacity: 1; }
 .act {
   background: rgba(255, 255, 255, 0.12); color: #fff; border: none; border-radius: 7px;
   padding: 6px 10px; font-size: 11px; cursor: pointer; text-decoration: none;
