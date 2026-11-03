@@ -15,7 +15,7 @@
 
 > 使用前请务必阅读[合规与使用须知](#合规与使用须知)。
 
-## Windows 桌面版 v1.14.0
+## Windows 桌面版 v1.14.1
 
 从 [最新版本](https://github.com/xiadongping-oss/codex-gateway/releases/latest) 下载 Setup 安装包或免安装 ZIP。桌面版无需单独安装 Node；Setup 会在需要时安装 WebView2。
 
