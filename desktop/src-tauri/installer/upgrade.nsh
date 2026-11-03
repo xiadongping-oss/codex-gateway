@@ -49,11 +49,10 @@ Function CgwPrepareAutomaticUpgrade
   ${EndIf}
 
   ClearErrors
-  ${If} ${Silent}
-    ExecWait '"$CgwOldInstallDir\uninstall.exe" /UPDATE /S _?=$CgwOldInstallDir' $CgwUninstallResult
-  ${Else}
-    ExecWait '"$CgwOldInstallDir\uninstall.exe" /UPDATE /P _?=$CgwOldInstallDir' $CgwUninstallResult
-  ${EndIf}
+  ; The new installer owns the progress UI. /P can still show an old
+  ; uninstaller's language selector before it parses passive arguments.
+  ; /S suppresses that selector as well as the redundant old wizard.
+  ExecWait '"$CgwOldInstallDir\uninstall.exe" /UPDATE /S _?=$CgwOldInstallDir' $CgwUninstallResult
   ${If} ${Errors}
   ${OrIf} $CgwUninstallResult != 0
   ${OrIf} ${FileExists} "$CgwOldInstallDir\${MAINBINARYNAME}.exe"

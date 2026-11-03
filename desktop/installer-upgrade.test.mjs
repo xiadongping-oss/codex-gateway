@@ -62,7 +62,6 @@ Name "Isolated CGW upgrade fixture"
 OutFile "${escaped(out)}"
 InstallDir "${escaped(install)}"
 RequestExecutionLevel user
-SilentUnInstall silent
 AutoCloseWindow true
 Page instfiles
 UninstPage instfiles
@@ -87,6 +86,12 @@ Function .onInit
   \${EndIf}
 FunctionEnd
 Function un.onInit
+  ; An old language chooser can run before /P is parsed. Require intrinsic
+  ; silent mode so this regression fails instead of opening a blocking dialog.
+  IfSilent fixture_uninstaller_silent
+    SetErrorLevel 9
+    Quit
+  fixture_uninstaller_silent:
   StrCpy $UpdateMode 0
   \${GetOptions} $CMDLINE "/UPDATE" $0
   \${IfNot} \${Errors}
