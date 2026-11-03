@@ -82,6 +82,8 @@ Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
 
+!insertmacro CGW_DECLARE_AUTOMATIC_UPGRADE
+
 Name "${PRODUCTNAME}"
 BrandingText "Codex Gateway"
 SetFont "Microsoft YaHei UI" 9
@@ -336,17 +338,19 @@ Function PageReinstallUpdateSelection
   ${EndIf}
 FunctionEnd
 Function PageLeaveReinstall
-  ${NSD_GetState} $R2 $R1
-
   ; If migrating from Wix, always uninstall
   ${If} $WixMode = 1
     Goto reinst_uninstall
   ${EndIf}
 
-  ; In update mode, always proceeds without uninstalling
+  ; Automatic upgrades clean up in the Install section, after the running-app
+  ; check. Passive pages have no radio controls, so do not read their handles.
   ${If} $UpdateMode = 1
+  ${OrIf} $PassiveMode = 1
     Goto reinst_done
   ${EndIf}
+
+  ${NSD_GetState} $R2 $R1
 
   ; $R0 holds whether same(0)/upgrading(1)/downgrading(-1) version
   ; $R1 holds the radio buttons state:
@@ -488,6 +492,8 @@ LangString CGW_FinishText ${LANG_SIMPCHINESE} "Codex Gateway 已安装。$\r$\n$
 LangString CGW_FinishText ${LANG_ENGLISH} "Codex Gateway is installed.$\r$\n$\r$\nClosing the window keeps the gateway running in the background. To stop it, choose Exit from the desktop or tray menu.$\r$\n$\r$\nClick Finish to close setup."
 LangString CGW_UninstallText ${LANG_SIMPCHINESE} "将移除 Codex Gateway 的程序文件。账号、配置、图片和日志将保留在用户目录。$\r$\n$\r$\n请先退出应用，再点击“卸载”继续。"
 LangString CGW_UninstallText ${LANG_ENGLISH} "This removes Codex Gateway program files. Accounts, settings, images and logs remain in your user data folder.$\r$\n$\r$\nExit the app, then click Uninstall to continue."
+LangString CGW_UpgradeCleanupFailed ${LANG_SIMPCHINESE} "无法完整移除旧程序，升级已停止。账号、配置和图片保留。请重试，或先卸载旧程序后再安装。"
+LangString CGW_UpgradeCleanupFailed ${LANG_ENGLISH} "The previous installation could not be removed completely. Upgrade stopped before copying new files. Accounts, settings and images are retained. Retry or uninstall the old application first."
 {{#each language_files}}
   !include "{{this}}"
 {{/each}}
@@ -673,6 +679,8 @@ Section Install
   !endif
 
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+
+  Call CgwPrepareAutomaticUpgrade
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"

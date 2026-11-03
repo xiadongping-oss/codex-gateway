@@ -1,6 +1,6 @@
 {
   "name": "codex-gateway",
-  "version": "1.14.0",
+  "version": "1.14.1",
   "private": true,
   "type": "module",
   "main": "gateway/launcher.mjs",
@@ -58,6 +58,7 @@
     "hook:install": "cp scripts/git-hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit",
     "check:dist-drift": "node scripts/check-dist-drift.mjs",
     "desktop:updater:init": "node desktop/init-updater.mjs",
-    "test:desktop:updater": "node --test --test-timeout=30000 desktop/updater.test.mjs"
+    "test:desktop:updater": "node --test --test-timeout=30000 desktop/updater.test.mjs",
+    "test:desktop:installer": "node --test --test-timeout=120000 desktop/installer.test.mjs desktop/installer-upgrade.test.mjs"
   }
 }
