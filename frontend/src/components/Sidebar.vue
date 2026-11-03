@@ -9,7 +9,7 @@ const emit=defineEmits(['navigate','toggle'])
 const endpoint=computed(()=>{const {host,port}=parseBase();return `${host}:${port}`})
 const groups=[
  {label:'工作区',items:[{key:'overview',label:'概览'},{key:'account',label:'账号管理'},{key:'images',label:'图片素材'},{key:'models',label:'模型能力'}]},
- {label:'开发接入',items:[{key:'apikeys',label:'API Key'},{key:'lan',label:'局域网共享'},{key:'logs',label:'调用日志'}]},
+ {label:'开发接入',items:[{key:'access',label:'客户端接入'},{key:'apikeys',label:'API Key'},{key:'lan',label:'局域网共享'},{key:'logs',label:'调用日志'}]},
  {label:'管理',items:[{key:'runtime',label:'运行详情'},...(isDesktopWorkspace()?[{key:'service',label:'服务与诊断',native:true},{key:'data',label:'数据与备份',native:true}]:[]),{key:'settings',label:'设置'}]}
 ]
 function navigate(item){if(item.native)openDesktopWorkspace(item.key);else emit('navigate',item.key)}

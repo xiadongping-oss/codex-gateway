@@ -1,6 +1,13 @@
 import http from 'node:http'
 
 export const DEFAULT_LAN_PORT = 4174
+// Public client shells/downloads only. Their data APIs retain per-Key auth;
+// desktop account/configuration/control routes remain loopback-only.
+const CLIENT_GET_PATHS = new Set([
+  '/setup', '/setup/', '/gallery', '/gallery/', '/client-setup.js', '/client-assets.json',
+  '/lan-kit/setup-client.mjs', '/lan-kit/INSTALL.md', '/lan-kit/AGENT-PROMPT.md',
+  '/lan-kit/skills/codex-gateway-image/SKILL.md',
+])
 
 function failure(code, message) { return Object.assign(new Error(message), { code }) }
 function listenError(error, port) {
@@ -27,8 +34,9 @@ export function createDesktopLan({ handler, consolePort, persist }) {
       res.on('error', () => {})
       let pathname
       try { pathname = new URL(req.url, 'http://localhost').pathname } catch {}
-      const image = req.method === 'GET' && /^\/__gw\/gen-images\/[A-Za-z0-9_-]+\.png$/.test(pathname || '')
-      if (!pathname || !(pathname.startsWith('/v1/') || pathname === '/health' || pathname === '/mcp' || image)) {
+      const image = req.method === 'GET' && /^\/__gw\/gen-images\/[A-Za-z0-9_-]+\.(?:png|jpeg|webp)$/.test(pathname || '')
+      const clientPage = req.method === 'GET' && CLIENT_GET_PATHS.has(pathname)
+      if (!pathname || !(pathname.startsWith('/v1/') || pathname === '/health' || pathname === '/mcp' || image || clientPage)) {
         res.writeHead(403, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
         return res.end(JSON.stringify({ error: 'control_plane_local_only', message: '共享端口仅提供模型接口，管理功能请在本机使用。' }))
       }

@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+import { handleEditRoute } from './asset-edit-routes.mjs'
+import { resolveEditRequest } from './asset-edits.mjs'
+import { handleLibraryRoute, generatedRestorePath } from './asset-library-routes.mjs'
+import { deleteAssets, resolveFile as resolveAssetFile } from './assets.mjs'
+import { decorateAssets, updateAssetMetadata, queryAssets } from './asset-metadata.mjs'
+import { clientAssets } from './client-assets.mjs'
+import { requestCaller, withCaller, issueCallerTransfer, consumeCallerTransfer } from './request-context.mjs'
 // Codex 网关 · 本地启动器（零依赖）
 //
 // 职责：
@@ -29,7 +36,11 @@
 //   DISABLE_AUTOSTART=1  不自动启动 bridge
 
 import { gatewayWork } from './work-tracker.mjs'
-import { imageSizeInfo } from './image-size.mjs'
+import { parseImageTransport, imageAttachmentSpecs, alphaInfo } from './image-edit.mjs'
+import { imageFileInfo } from './image-file.mjs'
+import { gatewayCapabilities } from './capabilities.mjs'
+import { readImageVerification } from './image-verification.mjs'
+import { imageToolProperties, imageToolRequest, imagePresentation, imageToolResult } from './image-mcp.mjs'
 import { createShutdownManager } from './shutdown-manager.mjs'
 import { createDesktopLan, DEFAULT_LAN_PORT } from './desktop-lan.mjs'
 import { storagePaths, storageLease } from './storage-bootstrap.mjs'
@@ -387,7 +398,7 @@ function browserOriginGuard(req, res) {
   const h = hostOf(req.headers['host'])
   // HTTP/1.0 或无 Host 头时无法判断，放行以免影响本机命令行工具
   if (h && !LOCAL_HOSTS.has(h) && !EXTRA_ALLOWED_HOSTS.has(h)) {
-    recordCallLog({ method: req.method, endpoint: req.url?.split('?')[0] || '/', model: '—', status: 403, latency: 0, tokens: null })
+    recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: req.url?.split('?')[0] || '/', model: '—', status: 403, latency: 0, tokens: null })
     res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify({
       error: 'host_not_allowed',
@@ -397,7 +408,7 @@ function browserOriginGuard(req, res) {
   }
   const bad = crossSiteOrigin(req)
   if (bad) {
-    recordCallLog({ method: req.method, endpoint: req.url?.split('?')[0] || '/', model: '—', status: 403, latency: 0, tokens: null })
+    recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: req.url?.split('?')[0] || '/', model: '—', status: 403, latency: 0, tokens: null })
     res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify({
       error: 'cross_origin_denied',
@@ -417,7 +428,7 @@ function browserOriginGuard(req, res) {
 function controlPlaneGuard(req, res) {
   if (browserOriginGuard(req, res)) return true
   if (adminAuth && !adminAuth.verifyRequest(req).ok) {
-    recordCallLog({ method: req.method, endpoint: req.url?.split('?')[0] || '/__gw', model: '—', status: 401, latency: 0, tokens: null })
+    recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: req.url?.split('?')[0] || '/__gw', model: '—', status: 401, latency: 0, tokens: null })
     const hint = '控制台已启用管理令牌保护。浏览器请用一次性登录链接进入：在本机运行 ' +
       `\`node launcher.mjs admin\`；脚本调用请带 Authorization: Bearer <管理令牌>（用 \`node launcher.mjs admin-token\` 查看）。`
     res.writeHead(401, {
@@ -1119,7 +1130,7 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
     // 于是「取消 / 中断」这类请求在调用日志里完全不可见 —— 排障时最想看的
     // 恰恰是这些。close 在成功与中断两种路径下都会触发。
     res.once('close', () => {
-      recordCallLog({
+      recordCallLog({ caller:req.__cgwCaller,
         method: req.method,
         endpoint: targetPath.split('?')[0],
         model: callModel || '—',
@@ -1380,13 +1391,19 @@ function proxy(req, res, targetPath, keyId, owner) {
     })
   }
   // 生图端点：bridge 模式下缓冲响应，b64 落盘并附加 url / local_path 后返回
-  if (req.method === 'POST' && isJson && basePath === '/v1/images/generations' && gwConfig.mode !== 'openai') {
-    return collectBody(req, (err, raw) => {
+  if (req.method === 'POST' && ['/v1/images/generations', '/v1/images/edits'].includes(basePath) && gwConfig.mode !== 'openai') {
+    return collectBody(req, async (err, raw) => {
       if (err || !raw) {
         if (!res.headersSent) res.writeHead(400, { 'Content-Type': 'application/json' })
         return res.end(JSON.stringify({ error: 'body_read_failed', detail: err ? err.message : 'empty body' }))
       }
-      return imagesGenProxy(req, res, targetPath, keyId, raw, owner)
+      try {
+        const parsed = await parseImageTransport(raw, String(req.headers['content-type'] || ''), basePath === '/v1/images/edits')
+        const request = resolveEditRequest(storagePaths, parsed, keyId)
+        return imagesGenProxy(req, res, targetPath, keyId, Buffer.from(JSON.stringify(request)), owner)
+      } catch (error) {
+        return sendJson(res, error.status || 400, { error: 'invalid_image_input', detail: error.message })
+      }
     })
   }
   return pipeProxy(req, res, targetPath, keyId, null)
@@ -1398,8 +1415,8 @@ function checkReferencePathsIn(bodyBuf) {
   let list = null
   try {
     const j = JSON.parse(bodyBuf.toString('utf8'))
-    if (j && Array.isArray(j.reference_images)) list = j.reference_images
-    else if (j && Array.isArray(j.reference)) list = j.reference
+    list = imageAttachmentSpecs(j).filter(spec => typeof spec === 'string' || (spec && typeof spec.path === 'string'))
+    if (!list.length && Array.isArray(j?.reference)) list = j.reference
   } catch {
     return null // 解析不了的请求体交给下游去报错，不在这里抢答
   }
@@ -1411,7 +1428,10 @@ function checkReferencePathsIn(bodyBuf) {
 function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
   const t0 = Date.now()
   let model = null
+  let generationRequest = {}
+  let editContext = null
   let requestedSize = 'auto'
+  let requestedBackground = 'auto'
   let body = bodyBuf
   // 调用方缺省时注入 quality=high + size=auto；实际像素尺寸以返回文件为准。
   try {
@@ -1419,9 +1439,12 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
     if (j && typeof j === 'object') {
       model = j.model || null
       let injected = false
+      if (j.cgw_edit) { editContext = j.cgw_edit; delete j.cgw_edit; injected = true }
       if (!j.quality) { j.quality = 'high'; injected = true }
       if (!j.size) { j.size = 'auto'; injected = true }
+      generationRequest = Object.fromEntries(['prompt', 'model', 'size', 'quality', 'background', 'output_format', 'output_compression', 'action'].filter(k => j[k] !== undefined).map(k => [k, j[k]]))
       requestedSize = j.size
+      requestedBackground = j.background || 'auto'
       if (injected) {
         body = Buffer.from(JSON.stringify(j), 'utf8')
         pushLog('🖼 生图参数补全：quality=high size=auto（最高质量策略）')
@@ -1435,7 +1458,7 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
   // 否则报错本身就变成了探测网关主机上有哪些文件的 oracle。
   const refCheck = checkReferencePathsIn(body)
   if (refCheck && !refCheck.ok) {
-    recordCallLog({ method: req.method, endpoint: '/v1/images/generations', model: model || '—', status: 400, latency: Date.now() - t0, tokens: null })
+    recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: targetPath.split('?')[0], model: model || '—', status: 400, latency: Date.now() - t0, tokens: null })
     pushLog('⛔ 参考图路径越界，已拒绝：' + refCheck.reason)
     return sendJson(res, 400, {
       error: 'reference_path_outside_root',
@@ -1444,6 +1467,7 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
   }
   const port = req.__bridgePort || defaultBridgePort()
   const headers = { ...req.headers, host: `127.0.0.1:${port}` }
+  headers['content-type'] = 'application/json'
   delete headers['content-length']
   headers['content-length'] = String(body.length)
   let lastUp = null
@@ -1476,9 +1500,13 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
         const j = JSON.parse(buf)
         const b64 = j?.data?.[0]?.b64_json
         if (j?.data?.[0] && typeof b64 === 'string' && b64.length > 0) {
-          j.data[0].cgw_image_size = imageSizeInfo(b64, requestedSize)
+          j.data[0].cgw_image_size = imageFileInfo(b64, requestedSize)
+          if (j.data[0].cgw_image_size.format === 'png') {
+            try { j.data[0].cgw_image_alpha = alphaInfo(Buffer.from(b64, 'base64')) } catch {}
+          }
+          if (requestedBackground === 'transparent' && j.data[0].cgw_image_alpha && !j.data[0].cgw_image_alpha.hasTransparentBackground) j.data[0].cgw_warning = '已请求透明背景，但返回图未检测到有效透明背景，请检查原图。'
           if (j.data[0].cgw_image_size.matchesRequested === false) pushLog('🖼 ' + j.data[0].cgw_image_size.message)
-          const name = saveGenImageB64(b64, owner || (keyId ? { keyId } : null))
+          const name = saveGenImageB64(b64, owner || (keyId ? { keyId } : null), { prompt: generationRequest.prompt || '', revisedPrompt: j.data[0].revised_prompt || null, requested: generationRequest, actual: { model: IMAGE_MODEL, ...j.data[0].cgw_image_size }, edit: editContext })
           if (name) {
             // url 跟随请求的 Host：本机调用=127.0.0.1:4173（行为不变）；
             // 局域网调用=http://<局域网IP>:4173/...，客户端浏览器可直接打开取图
@@ -1517,9 +1545,9 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
       if (model && model !== IMAGE_MODEL) {
         pushLog(`🖼 生图模型占位被忽略：请求填的是 ${model}，实际由 ${IMAGE_MODEL} + image_generation 工具渲染`)
       }
-      recordCallLog({
+      recordCallLog({ caller:req.__cgwCaller,
         method: 'POST',
-        endpoint: '/v1/images/generations',
+        endpoint: targetPath.split('?')[0],
         model: `${model || '—'} → ${realModel}`,
         status: up.statusCode || 200,
         latency: Date.now() - t0,
@@ -1542,6 +1570,8 @@ const MIME = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
   '.json': 'application/json',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2'
@@ -1781,6 +1811,7 @@ async function handleModels(res, { force = false } = {}) {
   return sendJson(res, 200, {
     ...payload,
     upstreamError: up.error,
+    capabilities: gatewayCapabilities(gwConfig.mode, readImageVerification(storagePaths.cache, primaryAccountId(), IMAGE_MODEL)),
     defaultModel: defaultChatModel(),
     imageModel: IMAGE_MODEL,
     imageModelVia: `${IMAGE_MODEL} + image_generation 工具`
@@ -1789,7 +1820,7 @@ async function handleModels(res, { force = false } = {}) {
 
 // ---- 生成图片：与 bridge 共用 storagePaths.generated ----
 // 控制面提供列表 / 原图伺服 / 删除，供前端「生成图片」页下载、复制、拖拽
-const GEN_IMAGE_RE = /^[A-Za-z0-9_-]+\.png$/
+const GEN_IMAGE_RE = /^[A-Za-z0-9_-]+\.(?:png|jpeg|webp)$/
 // 取 URL 里的文件名。名称由对方构造，可能压根不是合法百分号编码
 // （%zz / %c0%ae 之类），此时 decodeURIComponent 会抛 URIError。
 // serveStatic（1260 行）早就拦了这一手，两条 gen-images 路由却漏掉了，
@@ -1845,24 +1876,26 @@ function writeImageIndex(idx) {
     return false
   }
 }
-function saveGenImageB64(b64, owner) {
+function saveGenImageB64(b64, owner, generation = null) {
   // 文件名必须在这里生成。曾有一次重构把这一行删掉了，而下面的 catch 是空的 ——
   // 于是 ReferenceError: name is not defined 被静默吞掉，函数恒返回 null：
   // 图不落盘、index.json 不写入、素材站与 MCP 图库永远空，界面却照样显示「已生成」。
   // 所以这里除了恢复生成，catch 也必须出声。
-  const name = `${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}.png`
+  const extension = imageFileInfo(b64).format || 'png'
+  const name = `${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}.${extension}`
   try {
     fs.mkdirSync(genImagesDir(), { recursive: true })
     const filePath = path.join(genImagesDir(), name)
     fs.writeFileSync(filePath, Buffer.from(b64, 'base64'))
-    if (owner && owner.keyId) {
+    {
       // 顺手把 size / mtime 记进 index：列表接口的调用频率远高于生图，
       // 在这里多花一次 stat（每张图一生一次）换掉列表时每张都 stat，非常划算。
       const st = fs.statSync(filePath)
       const idx = readImageIndex()
       idx[name] = {
-        keyId: String(owner.keyId),
-        keyName: owner.keyName || null,
+        keyId: owner?.keyId ? String(owner.keyId) : null,
+        keyName: owner?.keyName || null,
+        generation,
         createdAt: Date.now(),
         size: st.size,
         mtime: st.mtimeMs
@@ -1921,9 +1954,7 @@ function deleteGenImage(name, keyId) {
   if (keyId && (!meta || meta.keyId !== keyId)) return { ok: false, error: 'not_owner_or_not_found' }
   const full = path.join(genImagesDir(), name)
   if (!isInsideDir(genImagesDir(), full)) return { ok: false, error: 'bad_name' }
-  try { fs.unlinkSync(full) } catch (e) { return { ok: false, error: e.message } }
-  if (meta) { delete idx[name]; writeImageIndex(idx) }
-  return { ok: true }
+  try { const result = deleteAssets('generated', [name]); return result.deleted === 1 ? { ok: true, trashed: true } : { ok: false, error: result.results[0]?.error || 'not_found' } } catch (e) { return { ok: false, error: e.message } }
 }
 
 // listApiKeys() 每次都重新映射 + 排序整个列表。/ __gw/status 之前连着调了它两遍，
@@ -1977,19 +2008,19 @@ function strictAuthReject(req, res, p) {
   if (raw) {
     // 带了凭据但前缀不对：明确告诉用户贴错厂商了，而不是含糊说"缺少 key"
     if (!raw.startsWith(KEY_PREFIX_AUTH)) {
-      recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
+      recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
       res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify(authRejectBody({ reason: 'bad_prefix' })))
       return true
     }
     const v = verifyApiKey(raw)
     if (v.ok) return false
-    recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
+    recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
     res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify(authRejectBody(v)))
     return true
   }
-  recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
+  recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
   res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify({
     error: 'missing_api_key',
@@ -2019,7 +2050,7 @@ const MCP_HTTP_TOOLS = [
       properties: {
         prompt: { type: 'string', description: '图像描述（建议具体：主体/风格/构图/色调）' },
         size: { type: 'string', enum: ['1024x1024', '1024x1536', '1536x1024', 'auto'], description: '请求尺寸，缺省 auto（由上游选择）。实际像素尺寸可能与请求不同，以返回原图及结果说明为准；网关不会自动缩放。' },
-        quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], description: '质量，缺省 high（网关最高质量策略）' },
+        ...imageToolProperties,
         reference_paths: {
           type: 'array', items: { type: 'string' },
           description: '可选：参考图（最多 8 张），生成风格/构图与之协调的新图。可传 http(s) URL 或 data-URL；若传本地路径，必须位于网关的参考图目录内（相对路径按该目录解析），越界会被拒绝。注意：本地路径以「网关主机」磁盘视角解析——局域网客户端传客户端本机路径无效'
@@ -2067,18 +2098,15 @@ function mcpSse(res, obj, headers = {}) {
 // 生图：内部走 /v1/images/generations，完整复用鉴权 / 按 key 账号热切 / b64 落盘 / 调用日志。
 // 唯一补充：把响应里的 127.0.0.1 链接改写成调用方 Host，局域网客户端拿到可携带当前 Key 下载的地址。
 async function mcpGenerateImage(args, req) {
-  const prompt = String(args?.prompt || '').trim()
-  if (!prompt) return { ok: false, error: 'prompt 不能为空' }
-  const body = { prompt, size: args?.size || 'auto', quality: args?.quality || 'high', response_format: 'b64_json' }
-  if (Array.isArray(args?.reference_paths) && args.reference_paths.length) {
-    body.reference_images = args.reference_paths.slice(0, 8).map((p) => ({ path: String(p) }))
-  }
+  let body, endpoint
+  try { ({body,endpoint} = imageToolRequest(args)) } catch (error) { return {ok:false,error:error.message} }
   let r, j
   try {
-    r = await fetch(`http://127.0.0.1:${LAUNCHER_PORT}/v1/images/generations`, {
+    r = await fetch(`http://127.0.0.1:${LAUNCHER_PORT}${endpoint}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-CGW-Internal-Call': issueCallerTransfer() || '',
         ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
       },
       body: JSON.stringify(body),
@@ -2089,7 +2117,7 @@ async function mcpGenerateImage(args, req) {
     return { ok: false, error: '网关请求失败：' + (e && e.message || e) }
   }
   if (!r.ok || !j?.data?.[0]?.b64_json) {
-    const detail = (j && j.error && (j.error.message || j.error.reason)) || ('HTTP ' + r.status)
+    const detail = j?.detail || (j && j.error && (j.error.message || j.error.reason)) || ('HTTP ' + r.status)
     return { ok: false, error: '生图失败：' + detail }
   }
   const item = j.data[0]
@@ -2100,6 +2128,7 @@ async function mcpGenerateImage(args, req) {
   const lines = [
     '✓ 图片已生成',
     item.cgw_image_size?.message || '实际尺寸请以下载的原图为准。',
+    item.cgw_warning || null,
     item.url ? `下载：${item.url}（${item.download_url ? '请求需携带当前 API Key 的 Bearer 请求头；也可在素材站输入 Key 查看' : '访问权限取决于网关配置，本机可在控制台查看'}）` : null,
     loopback
       ? (item.local_path ? `文件：${item.local_path}（用 Read 工具查看可做视觉理解）` : null)
@@ -2112,7 +2141,9 @@ async function mcpGenerateImage(args, req) {
       ? '该图片已自动进入网关控制台「图片素材 → 生成图库」。'
       : `网页素材站：http://${hostHeader}/gallery ← 请用侧边浏览器/内置浏览器打开，输入你的 cgw- Key 即可管理你生成的全部图片（预览/复制链接/下载/删除）。`
   ].filter(Boolean)
-  return { ok: true, text: lines.join('\n'), localPath: item.local_path || null, url: item.url || null }
+  const presentation = imagePresentation('http://' + hostHeader, item)
+  lines.push(presentation.instruction)
+  return { ok:true, text:lines.join('\n'), localPath:item.local_path || null, url:item.url || null, gallery_url:presentation.gallery_url }
 }
 
 // 图库列表：由网关主机代读（远程 MCP 下三个工具都完整可用，比 stdio 版在客户端跑更合理）。
@@ -2187,7 +2218,7 @@ async function handleMcpEndpoint(req, res) {
   if (token) {
     const v = verifyApiKey(token)
     if (!v.ok) {
-      recordCallLog({ method: req.method, endpoint: '/mcp', model: '—', status: 401, latency: 0, tokens: null })
+      recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: '/mcp', model: '—', status: 401, latency: 0, tokens: null })
       res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
       return res.end(JSON.stringify(authRejectBody(v)))
     }
@@ -2234,9 +2265,9 @@ async function handleMcpEndpoint(req, res) {
         replies.push({ jsonrpc: '2.0', id, error: { code: -32602, message: 'unknown tool: ' + name } })
         continue
       }
-      recordCallLog({ method: 'POST', endpoint: '/mcp:' + name, model: name === 'generate_image' ? IMAGE_MODEL : '—', status: r.ok ? 200 : 500, latency: Date.now() - t0, tokens: null })
+      recordCallLog({ caller:req.__cgwCaller, method: 'POST', endpoint: '/mcp:' + name, model: name === 'generate_image' ? IMAGE_MODEL : '—', status: r.ok ? 200 : 500, latency: Date.now() - t0, tokens: null })
       replies.push({ jsonrpc: '2.0', id, result: r.ok
-        ? { content: [{ type: 'text', text: r.text }] }
+        ? imageToolResult(r)
         : { content: [{ type: 'text', text: '✗ ' + r.error }], isError: true } })
     } else if (method === 'ping') {
       replies.push({ jsonrpc: '2.0', id, result: {} })
@@ -2258,6 +2289,23 @@ async function handleMcpEndpoint(req, res) {
 async function handleHttpRequest(req, res) {
   const url = new URL(req.url, `http://127.0.0.1:${LAUNCHER_PORT}`)
   const p = url.pathname
+
+  if (req.method === 'GET' && p === '/client-setup.js') {
+    res.writeHead(200, {'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'no-cache'})
+    return res.end(fs.readFileSync(path.join(__dirname,'client-setup.js')))
+  }
+  if (req.method === 'GET' && p === '/client-assets.json') {
+    res.setHeader('Cache-Control','no-store')
+    try { return sendJson(res,200,clientAssets(__dirname,APP_VERSION,MCP_HTTP_TOOLS)) }
+    catch { return sendJson(res,503,{error:'client_assets_unavailable'}) }
+  }
+
+  const editorFiles = { '/asset-library': ['asset-library.html', 'text/html'], '/asset-library.js': ['asset-library.js', 'text/javascript'], '/asset-library.css': ['asset-library.css', 'text/css'], '/asset-editor': ['asset-editor.html', 'text/html'], '/asset-editor.js': ['asset-editor.js', 'text/javascript'], '/asset-editor.css': ['asset-editor.css', 'text/css'] }
+  if (req.method === 'GET' && editorFiles[p]) {
+    const [file, type] = editorFiles[p]
+    res.writeHead(200, { 'Content-Type': type + '; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Frame-Options': 'SAMEORIGIN', 'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'" })
+    return res.end(fs.readFileSync(path.join(__dirname, file)))
+  }
 
   // ---- 远程 MCP（streamable HTTP）：局域网客户端零安装接入（mcp.json 填 url 即可） ----
   if (p === '/mcp') {
@@ -2342,6 +2390,13 @@ async function handleHttpRequest(req, res) {
           }
           buf = Buffer.from(src.replace(LAN_KIT_HOST_ANCHOR, `const EMBEDDED_HOST = '${h}'`))
         }
+        const clientPort = String(url.searchParams.get('port') || '').trim()
+        if (clientPort) {
+          if (!/^\d{1,5}$/.test(clientPort) || Number(clientPort) < 1 || Number(clientPort) > 65535) return sendJson(res, 400, { error: 'invalid_client_port' })
+          const source = buf.toString('utf8'), anchor = "const EMBEDDED_PORT = ''"
+          if (!source.includes(anchor)) return sendJson(res, 500, { error: 'client_port_anchor_missing' })
+          buf = Buffer.from(source.replace(anchor, `const EMBEDDED_PORT = '${Number(clientPort)}'`))
+        }
         res.writeHead(200, { 'Content-Type': entry.type, 'Cache-Control': 'no-cache' })
       } else {
         res.writeHead(200, { 'Content-Type': entry.type, 'Cache-Control': 'no-store' })
@@ -2357,9 +2412,9 @@ async function handleHttpRequest(req, res) {
   if (p.startsWith('/__gw/')) {
     // 局域网放行例外：单个生成图 GET（文件名=时间戳36进制+随机UUID片段，不可枚举，视作能力令牌）。
     // 图库列表 / 删除 / 其余控制面（账号/密钥/配置/日志）仍仅限本机。
-    const lanGenImageGet = req.method === 'GET' && /^\/__gw\/gen-images\/[A-Za-z0-9_-]+\.png$/.test(p)
+    const lanGenImageGet = req.method === 'GET' && /^\/__gw\/gen-images\/[A-Za-z0-9_-]+\.(?:png|jpeg|webp)$/.test(p)
     if ((LAN_ENABLED || req.desktopLan) && !isLoopbackReq(req) && !lanGenImageGet) {
-      recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 403, latency: 0, tokens: null })
+      recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: p.split('?')[0], model: '—', status: 403, latency: 0, tokens: null })
       res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' })
       return res.end(JSON.stringify({
         error: 'control_plane_local_only',
@@ -2547,7 +2602,7 @@ async function handleHttpRequest(req, res) {
         }
         const buf = fs.readFileSync(full)
         res.writeHead(200, {
-          'Content-Type': 'image/png',
+          'Content-Type': MIME[path.extname(name)] || 'application/octet-stream',
           'Content-Length': buf.length,
           'Access-Control-Allow-Origin': '*',
           'Cache-Control': 'no-cache',
@@ -2559,12 +2614,13 @@ async function handleHttpRequest(req, res) {
       }
     }
     if (p === '/__gw/strict-auth' && req.method === 'GET') {
-      return sendJson(res, 200, { enabled: !!gwConfig.strictAuth, enforced: LAN_ENABLED || !!gwConfig.strictAuth })
+      return sendJson(res, 200, { enabled: !!gwConfig.strictAuth, enforced: LAN_ENABLED || !!desktopLan?.snapshot().enabled || !!gwConfig.strictAuth })
     }
     if (p === '/__gw/strict-auth' && req.method === 'POST') {
       const body = await readOptionalBody(req)
-      gwConfig.strictAuth = !!body.enabled
-      saveConfig(gwConfig)
+      const next = { ...gwConfig, strictAuth: !!body.enabled }
+      if (!saveConfig(next)) return sendJson(res, 503, { error:'strict_auth_not_saved',detail:'鉴权设置未能保存，原设置已保留。' })
+      gwConfig.strictAuth = next.strictAuth
       if (LAN_ENABLED) {
         pushLog(gwConfig.strictAuth
           ? '● 严格鉴权已开启（局域网模式下本就强制生效）'
@@ -2574,7 +2630,7 @@ async function handleHttpRequest(req, res) {
           ? '● 严格鉴权已开启：/v1 必须携带有效 cgw- API Key'
           : '● 严格鉴权已关闭：未带 key 的 /v1 请求放行（不进按 key 统计）')
       }
-      return sendJson(res, 200, { ok: true, enabled: gwConfig.strictAuth, enforced: LAN_ENABLED || !!gwConfig.strictAuth })
+      return sendJson(res, 200, { ok: true, enabled: gwConfig.strictAuth, enforced: LAN_ENABLED || !!desktopLan?.snapshot().enabled || !!gwConfig.strictAuth })
     }
     if (p === '/__gw/config' && req.method === 'GET') {
       return sendJson(res, 200, {
@@ -3092,7 +3148,7 @@ async function handleHttpRequest(req, res) {
     if (strictAuthReject(req, res, p)) return
     const mT0 = Date.now()
     return await handleModels(res).finally(() => {
-      recordCallLog({ method: 'GET', endpoint: '/v1/models', model: '—', status: res.statusCode || 0, latency: Date.now() - mT0, tokens: null })
+      recordCallLog({ caller:req.__cgwCaller, method: 'GET', endpoint: '/v1/models', model: '—', status: res.statusCode || 0, latency: Date.now() - mT0, tokens: null })
     })
   }
 
@@ -3138,7 +3194,7 @@ async function handleHttpRequest(req, res) {
     // 匿名跑、用量还记不到自己头上。下面的 warn 仅用于运维可观测，不改变拒绝结果。
     if (!token && rawBearer(req)) {
       console.warn(`[auth] 拒绝非 cgw- 前缀的 Bearer（疑似贴错厂商 Key），来源 ${req.socket?.remoteAddress || 'unknown'}`)
-      recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
+      recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
       res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
       return res.end(JSON.stringify(authRejectBody({ reason: 'bad_prefix' })))
     }
@@ -3147,7 +3203,7 @@ async function handleHttpRequest(req, res) {
     if (token) {
       const v = verifyApiKey(token)
       if (!v.ok) {
-        recordCallLog({ method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
+        recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
         res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
         return res.end(JSON.stringify(authRejectBody(v)))
       }
@@ -3198,15 +3254,32 @@ async function handleHttpRequest(req, res) {
     }
     if (p === '/v1/gen-images/list' && req.method === 'GET') {
       const hostHeader = req.headers.host || `127.0.0.1:${LAUNCHER_PORT}`
-      const all = scopedGenImages(authKeyId)
+      const all = queryAssets(decorateAssets(storagePaths, 'generated', scopedGenImages(authKeyId)), { q: url.searchParams.get('q'), favorite: url.searchParams.get('favorite') === 'true', sort: url.searchParams.get('sort') })
+      const offset = Math.max(0, Math.floor(Number(url.searchParams.get('offset')) || 0))
       const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit')) || 100))
-      const images = all.slice(0, limit).map((i) => ({
+      const images = all.slice(offset, offset + limit).map((i) => ({
         ...i,
         url: `http://${hostHeader}/__gw/gen-images/${i.name}`,
         download_url: `http://${hostHeader}/v1/gen-images/${i.name}`,
         local_path: path.join(genImagesDir(), i.name)
       }))
-      return sendJson(res, 200, { ok: true, total: all.length, images, gallery: `http://${hostHeader}/gallery` })
+      return sendJson(res, 200, { ok: true, total: all.length, offset, limit, images, gallery: `http://${hostHeader}/gallery` })
+    }
+    if (p === '/v1/gen-images/library') {
+      return handleLibraryRoute(req, res, { paths: storagePaths, keyId: authKeyId, readBody, sources: [{ id: 'generated', name: '生成图库' }],
+        listImages: () => decorateAssets(storagePaths, 'generated', scopedGenImages(authKeyId)), resolveFile: resolveAssetFile, restorePath: entry => generatedRestorePath(storagePaths, entry) })
+    }
+    if (p === '/v1/gen-images/edit-sessions') {
+      return handleEditRoute(req, res, { paths: storagePaths, admin: false, keyId: authKeyId, readBody, resolveFile: resolveAssetFile,
+        listImages: () => decorateAssets(storagePaths, 'generated', scopedGenImages(authKeyId)) })
+    }
+    if (p === '/v1/gen-images/metadata' && req.method === 'POST') {
+      if (!authKeyId) return sendJson(res, 401, { error: 'api_key_required' })
+      try {
+        const body = await readBody(req)
+        if (!scopedGenImages(authKeyId).some(image => image.name === body.name)) return sendJson(res, 404, { error: 'not_found' })
+        return sendJson(res, 200, { ok: true, metadata: updateAssetMetadata(storagePaths, 'generated', body.name, body.changes) })
+      } catch (e) { return sendJson(res, 400, { error: 'bad_metadata', detail: e.message }) }
     }
     if (p.startsWith('/v1/gen-images/') && req.method === 'GET') {
       if (!authKeyId) return sendJson(res, 401, { error: 'api_key_required' })
@@ -3216,7 +3289,7 @@ async function handleHttpRequest(req, res) {
       if (!scopedGenImages(authKeyId).some(image => image.name === name)) return sendJson(res, 404, { error: 'not_found' })
       try {
         const bytes = fs.readFileSync(path.join(genImagesDir(), name))
-        res.writeHead(200, { 'Content-Type': 'image/png', 'Content-Length': bytes.length, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' })
+        res.writeHead(200, { 'Content-Type': MIME[path.extname(name)] || 'application/octet-stream', 'Content-Length': bytes.length, 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' })
         return res.end(bytes)
       } catch { return sendJson(res, 404, { error: 'not_found' }) }
     }
@@ -3224,7 +3297,7 @@ async function handleHttpRequest(req, res) {
       const name = safeDecodeName(p.slice('/v1/gen-images/'.length))
       if (!name || !GEN_IMAGE_RE.test(name)) return sendJson(res, 400, { error: 'bad_name' })
       const r = deleteGenImage(name, authKeyId)
-      recordCallLog({ method: 'DELETE', endpoint: p.split('?')[0], model: '—', status: r.ok ? 200 : (r.error === 'not_owner_or_not_found' ? 403 : 400), latency: 0, tokens: null })
+      recordCallLog({ caller:req.__cgwCaller, method: 'DELETE', endpoint: p.split('?')[0], model: '—', status: r.ok ? 200 : (r.error === 'not_owner_or_not_found' ? 403 : 400), latency: 0, tokens: null })
       if (!r.ok) return sendJson(res, r.error === 'not_owner_or_not_found' ? 403 : 400, { ok: false, error: r.error })
       pushLog('🗑 素材站删除（分用户）：' + name)
       return sendJson(res, 200, { ok: true })
@@ -3313,7 +3386,11 @@ function serveRequest(req, res) {
   })
   let replied = false
   res.once('finish', () => { replied = true })
-  handleHttpRequest(req, res).catch((e) => {
+  const bearer = extractBearerToken(req.headers.authorization)
+  const verified = bearer ? verifyApiKey(bearer, {touch:false}) : null
+  const caller = consumeCallerTransfer(req, requestCaller(req, verified?.ok ? verified : null))
+  req.__cgwCaller = caller
+  withCaller(caller, () => handleHttpRequest(req, res)).catch((e) => {
     if (replied) return
     const brief = e && e.stack ? String(e.stack).split('\n').slice(0, 3).join(' ⏎ ') : String(e)
     pushLog('✗ 请求处理异常（已降级为 500）：' + brief)

@@ -312,7 +312,7 @@ export function disableApiKey(id, disabled = true) {
 //   - 命中：返回登记信息（含 accountIds 用于反代切账号）
 //   - 失败：返回 { ok: false, reason }
 // 命中时顺手写 lastUsed（内存更新 + 防抖刷盘，不阻塞主请求）
-export function verifyApiKey(token) {
+export function verifyApiKey(token, { touch = true } = {}) {
   if (!token || !token.startsWith(KEY_PREFIX + '-')) return { ok: false, reason: 'bad_prefix' }
   const hash = sha256(token)
   const r = reg()
@@ -324,7 +324,7 @@ export function verifyApiKey(token) {
   if (!k) return { ok: false, reason: 'not_found' }
   if (k.disabled) return { ok: false, reason: 'disabled' }
   // 命中后异步更新 lastUsed（不 await，失败也不影响请求）
-  updateLastUsed(k.id)
+  if (touch) updateLastUsed(k.id)
   const ids = normalizeAccountIds(k.accountIds, k.accountId)
   return { ok: true, accountIds: ids, keyId: k.id, name: k.name }
 }

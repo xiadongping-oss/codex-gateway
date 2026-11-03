@@ -247,7 +247,7 @@ body {
 }
 :root[data-theme="dark"] { color-scheme: dark; }
 body { font-family: "Segoe UI", "Microsoft YaHei", -apple-system, sans-serif; }
-button { font-family: inherit; }
+button { font-family: inherit; appearance: none; -webkit-appearance: none; }
 button:focus-visible, a:focus-visible, summary:focus-visible, :root input:focus-visible, :root select:focus-visible, :root textarea:focus-visible { outline: 3px solid var(--primary); outline-offset: 3px; }
 button:disabled { cursor: not-allowed; opacity: .55; }
 .card { border-radius: 20px; }

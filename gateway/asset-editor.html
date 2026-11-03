@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>图片标注与复用</title><link rel="stylesheet" href="/asset-editor.css"><script src="/asset-editor.js" defer></script></head>
+<body>
+<header><div><h1>图片标注与复用</h1><p id="imageTitle">载入中…</p></div><span id="saveStatus" role="status"></span><button id="close">返回素材库</button></header>
+<div id="error" role="alert" hidden></div>
+<section id="identity" hidden><label>使用此 Key 在 WorkBuddy 继续编辑 <select id="keyChoice"></select></label><button id="create">打开编辑草稿</button><p>选择与 WorkBuddy MCP 相同的 Key，原图与修改要求仅对该身份可用。</p></section>
+<main id="editor" hidden>
+  <section class="drawing">
+    <nav aria-label="标注工具" id="tools"><button data-tool="rect" aria-pressed="true">矩形</button><button data-tool="ellipse" aria-pressed="false">圈选</button><button data-tool="arrow" aria-pressed="false">箭头</button><button data-tool="pen" aria-pressed="false">画笔</button><button data-tool="point" aria-pressed="false">编号点</button><button id="undo" disabled>撤销</button><button id="redo" disabled>重做</button><label>缩放 <input id="zoom" aria-label="画布缩放" type="range" min="30" max="200" value="100"></label><label><input type="checkbox" id="compare">查看无标注原图</label></nav>
+    <div id="stage" tabindex="0" aria-label="图片标注画布，可使用工具圈选位置"><canvas id="canvas" aria-label="在图片上拖动添加标注"></canvas></div>
+    <p class="hint">选择工具并在图片上圈画，为每个编号补充修改要求。原图会单独保留；放大后可滚动查看。</p>
+  </section>
+  <aside>
+    <label class="field">整体修改要求<textarea id="instruction" maxlength="16000" placeholder="例如：茶壶改为白色陶瓷，保持当前构图"></textarea></label>
+    <label class="field">需要保留<textarea id="preserve" maxlength="16000" placeholder="例如：保留壶嘴、把手、光线和图片尺寸"></textarea></label>
+    <section><h2>编号标注</h2><div id="marks"><p class="hint">还没有标注，也可以仅填写整体要求。</p></div></section>
+    <div class="actions"><button id="save">保存草稿</button><button id="handoff" class="primary">带标注继续编辑</button><button id="copyOriginal">复制原图</button><button id="copyPreview">复制标注图</button><button id="downloadOriginal">下载原图</button><button id="downloadPreview">下载标注图</button><button id="prepareDrag">准备文件拖拽</button></div>
+    <button id="drag" hidden draggable="true">按住此处拖到 WorkBuddy 输入框</button>
+    <section id="handoffPanel" hidden><h2>在 WorkBuddy 继续</h2><p>复制编辑指令，粘贴到 WorkBuddy 当前输入框后发送。MCP 会读取此草稿的原图与标注，并将结果保存为新版本。</p><textarea id="handoffText" readonly aria-label="WorkBuddy 编辑指令"></textarea><button id="copyHandoff" class="primary">复制编辑指令</button><p id="handoffStatus" role="status"></p></section>
+    <section><h2>版本记录 <button id="refreshVersions">刷新</button></h2><div id="versions"></div></section>
+  </aside>
+</main>
+</body></html>

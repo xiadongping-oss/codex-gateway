@@ -78,6 +78,26 @@ pub struct Policy {
     pub external_count: AtomicUsize,
 }
 impl Policy {
+    fn appearance(&self, url: &Url) -> Option<crate::preferences::Appearance> {
+        if !self.active.load(Ordering::SeqCst)
+            || !self.alive.load(Ordering::SeqCst)
+            || url.scheme() != "cgw-workspace"
+            || url.host_str() != Some("appearance")
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return None;
+        }
+        match url.path() {
+            "/light" => Some(crate::preferences::Appearance::Light),
+            "/dark" => Some(crate::preferences::Appearance::Dark),
+            "/system" => Some(crate::preferences::Appearance::System),
+            _ => None,
+        }
+    }
     fn workspace_page(&self, url: &Url) -> Option<&'static str> {
         if !self.active.load(Ordering::SeqCst)
             || !self.alive.load(Ordering::SeqCst)
@@ -125,10 +145,9 @@ impl Policy {
                         Some(Value::String(text)) => serde_json::from_str::<Value>(&text).ok(),
                         value => value,
                     }.unwrap_or(Value::Null);
-                    let theme = if presentation["theme"] == "dark" { "dark" } else { "light" };
                     let collapsed = presentation["collapsed"] == true;
                     if let Some(main) = handle.get_webview("main") {
-                        let _ = main.eval(format!("window.applyWorkspaceTheme?.('{}'); window.applyWorkspaceCollapsed?.({})", theme, collapsed));
+                        let _ = main.eval(format!("window.applyWorkspaceCollapsed?.({})", collapsed));
                     }
                     crate::desktop::open_local(&handle, page);
                 },
@@ -203,8 +222,10 @@ impl Console {
         launch_id: &str,
         port: u16,
         isolated: bool,
+        automated_smoke: bool,
         alive: Arc<AtomicBool>,
         webview_data: &std::path::Path,
+        asset_exports: &std::path::Path,
     ) -> Result<Self, String> {
         let policy = Arc::new(Policy::new(port, &url, alive));
         let nav = policy.clone();
@@ -214,6 +235,7 @@ impl Console {
         let popup_app = app.clone();
         let label = format!("console-{launch_id}-{}", uuid::Uuid::new_v4());
         let nav_label = label.clone();
+        let drag_exports = asset_exports.to_path_buf();
         let popup_label = label.clone();
         let frame = app.get_window("main").ok_or("CONSOLE_FRAME_MISSING")?;
         let builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
@@ -221,8 +243,28 @@ impl Console {
             .incognito(true)
             .data_directory(webview_data.to_path_buf())
             .initialization_script(include_str!("../scripts/session.js").replace("/*__CGW_ORIGIN__*/null",&serde_json::to_string(&format!("http://127.0.0.1:{port}")).unwrap()))
+            .initialization_script(crate::preferences::initialization(app))
+            .initialization_script("window.__cgwNativeAssetDrag = true;")
             .on_navigation(move |url| {
-                if let Some(page) = nav.workspace_page(url) {
+                if let Some(ticket) = crate::asset_drag::ticket(url) {
+                    if !nav.active.load(Ordering::SeqCst) || !nav.alive.load(Ordering::SeqCst) { return false; }
+                    let handle = nav_app.clone(); let label = nav_label.clone(); let root = drag_exports.clone(); let policy = nav.clone();
+                    let _ = nav_app.run_on_main_thread(move || {
+                        if policy.active.load(Ordering::SeqCst) && policy.alive.load(Ordering::SeqCst) { crate::asset_drag::start(&handle, &label, &root, &ticket, automated_smoke); }
+                    });
+                    false
+                } else if let Some(appearance) = nav.appearance(url) {
+                    let handle=nav_app.clone();
+                    let policy=nav.clone();
+                    let _=nav_app.run_on_main_thread(move || {
+                        if !policy.active.load(Ordering::SeqCst) || !policy.alive.load(Ordering::SeqCst) { return; }
+                        if crate::preferences::update(&handle,crate::preferences::Patch{appearance:Some(appearance),..Default::default()}).is_err() {
+                            crate::preferences::apply(&handle);
+                            for view in handle.webviews().values() { let _=view.eval("window.dispatchEvent(new CustomEvent('cgw:preference-error',{detail:'外观未能保存，已恢复原设置。'}))"); }
+                        }
+                    });
+                    false
+                } else if let Some(page) = nav.workspace_page(url) {
                     nav.open_workspace(&nav_app, &nav_label, page);
                     false
                 } else if nav.navigate(url) {
@@ -434,6 +476,36 @@ impl Console {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn appearance_navigation_cannot_become_a_general_native_command() {
+        let (frame, id) = bootstrap();
+        let url = validate_bootstrap(&frame, &id, 4173).unwrap();
+        let policy = Policy::new(4173, &url, Arc::new(AtomicBool::new(true)));
+        for appearance in ["light", "dark", "system"] {
+            assert!(policy
+                .appearance(
+                    &format!("cgw-workspace://appearance/{appearance}")
+                        .parse()
+                        .unwrap()
+                )
+                .is_some());
+        }
+        for url in [
+            "cgw-workspace://appearance/quit",
+            "cgw-workspace://appearance/dark?file=x",
+            "cgw-workspace://appearance/dark#x",
+            "cgw-workspace://user@appearance/dark",
+            "http://appearance/dark",
+            "cgw-workspace://appearance/dark/",
+        ] {
+            assert_eq!(policy.appearance(&url.parse().unwrap()), None);
+        }
+        policy.active.store(false, Ordering::SeqCst);
+        assert_eq!(
+            policy.appearance(&"cgw-workspace://appearance/dark".parse().unwrap()),
+            None
+        );
+    }
     #[test]
     fn workspace_navigation_is_fixed_and_revoked_with_its_session() {
         let (frame, id) = bootstrap();

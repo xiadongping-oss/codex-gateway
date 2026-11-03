@@ -165,6 +165,7 @@ export async function getModels({ refresh = false } = {}) {
   out.modelsOk = !!r && r.upstreamOk !== false
   out.upstreamError = (r && r.upstreamError) || null
   out.defaultModel = (r && r.defaultModel) || ''
+  out.capabilities = r?.capabilities || null
   // 被网关精简掉的上游旧世代条目数（列表只留主力，见 model-catalog.mjs）
   out.hiddenCount = (r && Number(r.hiddenCount)) || 0
   out.hiddenUpstream = (r && Number(r.hiddenUpstream)) || 0
@@ -248,8 +249,9 @@ export async function testAssetSource(body) {
   return j
 }
 export async function getAssets(src = 'generated') {
-  const r = await gwRequest('/__gw/assets?src=' + encodeURIComponent(src), 'GET').catch(() => null)
-  return (r && Array.isArray(r.images)) ? r.images : []
+  const r = await gwRequest('/__gw/assets?src=' + encodeURIComponent(src), 'GET')
+  if (!Array.isArray(r?.images)) throw new Error('素材列表响应无效')
+  return r.images
 }
 export const assetFileUrl = (src, name) =>
   BASE + '/__gw/assets/file?src=' + encodeURIComponent(src || 'generated') + '&n=' + encodeURIComponent(name)
@@ -467,4 +469,14 @@ function formatDuration(secondsOrIso) {
   const m = Math.floor((s % 3600) / 60)
   if (h > 0) return `${h}小时${m}分`
   return `${m}分钟`
+}
+
+export async function updateAssetMetadata(src, name, changes) {
+  const res = await fetch('/__gw/assets/metadata', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ src, name, changes }), signal: timeoutSignal(30000)
+  })
+  const data = await res.json()
+  if (!res.ok || !data.ok) throw new Error(data.detail || data.error || '保存失败')
+  return data.metadata
 }

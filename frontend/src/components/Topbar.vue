@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { loadAccessConfig, loadAccessConfigWithKey, formatAccessConfig } from '../api/access-config'
 import { copyText } from '../api/client'
+import { useTheme } from '../composables/useTheme'
 
 // 构建时由 vite define 注入（根 package.json 的 version）。
 // 双保险判空：测试环境 / 直接引源码跑 dev 时未 define 也不炸。
@@ -15,13 +16,7 @@ const props = defineProps({
   showCopyConfig: { type: Boolean, default: true }
 })
 
-const theme = ref(localStorage.getItem('cgw.theme') === 'dark' ? 'dark' : 'light')
-document.documentElement.dataset.theme = theme.value
-function toggleTheme() {
-  theme.value = theme.value === 'light' ? 'dark' : 'light'
-  document.documentElement.dataset.theme = theme.value
-  localStorage.setItem('cgw.theme', theme.value)
-}
+const { theme, themeError, toggleTheme } = useTheme()
 const copied = ref(false)
 const copyErr = ref('')
 const access = ref({ baseUrl: props.address, apiKey: null })
@@ -37,7 +32,8 @@ async function copyConfig() {
   copyErr.value = ''
   try {
     const cfg = await loadAccessConfigWithKey()
-    access.value = { ...access.value, ...cfg }
+    access.value = { baseUrl:cfg.baseUrl, apiKey:null }
+    if (!cfg.apiKey) throw new Error('请先在 API Key 页面创建密钥，再复制接入配置。')
     const text = formatAccessConfig(cfg.baseUrl, cfg.apiKey, cfg.model)
     await copyText(text)
     copied.value = true
@@ -68,6 +64,7 @@ async function copyConfig() {
     </div>
   </header>
   <div v-if="copyErr && showCopyConfig" class="copy-err">{{ copyErr }}</div>
+  <div v-if="themeError" class="copy-err" role="alert">{{ themeError }}</div>
 </template>
 
 <style scoped>

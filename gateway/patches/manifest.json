@@ -3,7 +3,7 @@
   "package": "chatgpt-bridge",
   "version": "0.3.0",
   "files": {
-    "cli.js": "1262e66aed470aa7cfa6587d481b98486194e7fb6beb1458c095557c911459b5",
-    "index.js": "f3771f0e4f37e023a070e504d017a72e8e06533288abef3f2cbc228000f64502"
+    "cli.js": "4500c9adf198c329105a6d67bffcc288ad2652009fe46d9d5af416469b3b257d",
+    "index.js": "27ad5054a75c2b477e10d8065fc9892c0756a3e000abf74df0fd77379a2c2e0f"
   }
 }

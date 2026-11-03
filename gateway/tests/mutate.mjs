@@ -69,7 +69,7 @@ const MUTANTS = [
         "  if (!name || typeof name !== 'string') return null"],
       ['  if (full !== base && !full.startsWith(base + path.sep)) return null', '  if (false) return null'],
       ['  if (!IMAGE_EXTS.has(path.extname(full).toLowerCase())) return null', '  if (false) return null'],
-      ['const GEN_IMAGE_RE = /^[A-Za-z0-9_-]+\\.png$/', 'const GEN_IMAGE_RE = /^[\\s\\S]+$/'],
+      ['const GEN_IMAGE_RE = /^[A-Za-z0-9_-]+\\.(?:png|jpeg|webp)$/', 'const GEN_IMAGE_RE = /^[\\s\\S]+$/'],
       ['  if (checkGen && !GEN_IMAGE_RE.test(name)) return null', '  if (false) return null']
     ]
   },

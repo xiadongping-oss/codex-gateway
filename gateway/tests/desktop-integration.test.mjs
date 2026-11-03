@@ -83,6 +83,29 @@ test('desktop handshake does not initialize storage; wrong version cannot start 
   assert.equal(fs.existsSync(r.root), false)
 })
 
+test('desktop publishes audited capabilities and authentication switches only after durable save',async t=>{
+  const r=await fixture(t), ready=await r.start()
+  const login=await fetch((await r.command('bootstrap')).payload.url,{redirect:'manual'})
+  const headers={Cookie:login.headers.get('set-cookie').split(';')[0],'Content-Type':'application/json'}
+  const catalog=await(await fetch(ready.origin+'/__gw/models',{headers})).json()
+  assert.equal(catalog.capabilities.mode,'bridge')
+  assert.equal(catalog.capabilities.image.find(f=>f.id==='mask').status,'wired')
+  assert.equal(catalog.capabilities.verification,null,'fresh workspaces do not inherit another account’s live evidence')
+  const update=enabled=>fetch(ready.origin+'/__gw/strict-auth',{method:'POST',headers,body:JSON.stringify({enabled})})
+  assert.equal((await update(true)).status,200)
+  assert.equal((await fetch(ready.origin+'/v1/models')).status,401)
+  const config=path.join(r.root,'.gw-config.json'), original=path.join(r.root,'config-before-failed-save.json')
+  fs.renameSync(config,original);fs.mkdirSync(config)
+  assert.equal((await update(false)).status,503)
+  const state=await(await fetch(ready.origin+'/__gw/strict-auth',{headers})).json()
+  assert.equal(state.enabled,true);assert.equal(state.enforced,true)
+  assert.equal((await fetch(ready.origin+'/v1/models')).status,401,'failed disk write cannot relax access control')
+  fs.rmdirSync(config);fs.renameSync(original,config)
+  assert.equal((await update(false)).status,200)
+  assert.equal((await fetch(ready.origin+'/v1/models')).status,200)
+  await r.command('shutdown',{reason:'user_exit'});await r.exited
+})
+
 test('desktop local import preserves a newer saved login without changing credentials or selection', async t => {
   const r = await fixture(t), ready = await r.start()
   const snapshot = (iat, refresh) => ({ auth_mode: 'chatgpt', last_refresh: new Date(iat * 1000).toISOString(),
@@ -152,6 +175,36 @@ test('desktop LAN: live management, authentication, rollback, persistence and sh
   }
   const key = await (await fetch(ready.origin + '/__gw/apikeys', { method: 'POST', headers, body: '{"name":"LAN fixture"}' })).json()
   assert.equal((await fetch(origin + '/v1/models', { headers: { Authorization: `Bearer ${key.key.token}` } })).status, 200)
+  // Real shared-port browser entrypoints, client download and per-Key gallery.
+  for(const route of ['/setup','/gallery']) {
+    const page=await fetch(origin+route);assert.equal(page.status,200,route)
+    assert.match(page.headers.get('content-type'),/text\/html/)
+    assert.match(await page.text(),/API Key/)
+    assert.equal((await fetch(origin+route,{method:'POST'})).status,403)
+  }
+  const client=await fetch(origin+`/lan-kit/setup-client.mjs?host=192.0.2.1&port=${port}`)
+  assert.equal(client.status,200)
+  const script=await client.text();assert.ok(script.includes("const EMBEDDED_HOST = '192.0.2.1'"));assert.ok(script.includes(`const EMBEDDED_PORT = '${port}'`))
+  assert.equal((await fetch(origin+'/lan-kit/setup-client.mjs?port=1%27;throw')).status,400)
+  assert.equal((await fetch(origin+'/lan-kit/setup-client.mjs?port=65536')).status,400)
+  assert.equal((await fetch(origin+'/lan-kit/skills/codex-gateway-image/SKILL.md')).status,200)
+  const manifest=await(await fetch(origin+'/client-assets.json')).json()
+  assert.match(manifest.skill.sha256,/^[a-f0-9]{64}$/);assert.equal((await fetch(origin+'/client-setup.js')).status,200)
+  const other=await(await fetch(ready.origin+'/__gw/apikeys',{method:'POST',headers,body:'{"name":"Other gallery user"}'})).json()
+  const imageDir=path.join(r.root,'gen-images'),image='shared_fixture.jpeg',imageBytes=Buffer.from([255,216,255,217])
+  fs.mkdirSync(imageDir,{recursive:true});fs.writeFileSync(path.join(imageDir,image),imageBytes)
+  fs.writeFileSync(path.join(imageDir,'index.json'),JSON.stringify({[image]:{keyId:key.key.id,createdAt:Date.now()}}))
+  const ownHeaders={Authorization:`Bearer ${key.key.token}`},otherHeaders={Authorization:`Bearer ${other.key.token}`}
+  assert.equal((await fetch(origin+'/v1/gen-images/list')).status,401)
+  const ownList=await(await fetch(origin+'/v1/gen-images/list',{headers:ownHeaders})).json()
+  assert.equal(ownList.images.length,1);assert.ok(ownList.images[0].download_url.startsWith(origin+'/'))
+  const file=await fetch(ownList.images[0].download_url,{headers:ownHeaders})
+  assert.equal(file.status,200);assert.equal(file.headers.get('content-type'),'image/jpeg');assert.deepEqual(Buffer.from(await file.arrayBuffer()),imageBytes)
+  assert.equal((await(await fetch(origin+'/v1/gen-images/list',{headers:otherHeaders})).json()).images.length,0)
+  assert.equal((await fetch(origin+'/v1/gen-images/'+image,{headers:otherHeaders})).status,404)
+  assert.equal((await fetch(origin+'/v1/gen-images/'+image,{headers:otherHeaders,method:'DELETE'})).status,403)
+  assert.equal((await fetch(origin+'/v1/gen-images/'+image,{headers:ownHeaders,method:'DELETE'})).status,200)
+  assert.equal(fs.existsSync(path.join(imageDir,image)),false)
   const conflict = await control({ enabled: true, port: busyPort })
   assert.equal(conflict.status, 409); assert.equal((await conflict.json()).error, 'lan_port_in_use')
   assert.equal((await fetch(origin + '/v1/models')).status, 401, 'old listener survives failed replacement')
@@ -346,7 +399,7 @@ test('real streaming proxy: shutdown waits for final usage and persists the call
   assert.equal(mode.status, 200); await mode.arrayBuffer()
   const keyResponse = await fetch(ready.origin + '/__gw/apikeys', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: '{"name":"stream fixture"}' })
   const key = await keyResponse.json()
-  const request = http.request(ready.origin + '/v1/chat/completions', { method: 'POST', headers: { Authorization: `Bearer ${key.key.token}`, 'Content-Type': 'application/json' } })
+  const request = http.request(ready.origin + '/v1/chat/completions', { method: 'POST', headers: { Authorization: `Bearer ${key.key.token}`, 'Content-Type': 'application/json', 'X-CGW-Device-Name':encodeURIComponent('日志测试设备'), 'X-Forwarded-For':'198.51.100.9' } })
   const responsePromise = once(request, 'response')
   request.end('{"model":"fixture","stream":true,"messages":[]}')
   const [response] = await responsePromise
@@ -364,4 +417,6 @@ test('real streaming proxy: shutdown waits for final usage and persists the call
   assert.equal(stored.promptTokens, 7); assert.equal(stored.completionTokens, 3)
   const log = JSON.parse(fs.readFileSync(path.join(r.root, 'data/call-logs.json'))).logs[0]
   assert.equal(log.endpoint, '/v1/chat/completions'); assert.equal(log.status, 200)
+  assert.equal(log.caller.ip,'127.0.0.1');assert.equal(log.caller.device,'日志测试设备');assert.equal(log.caller.keyName,'stream fixture');assert.equal(log.caller.keyId,key.key.id)
+  assert.ok(!JSON.stringify(log).includes(key.key.token))
 })

@@ -164,11 +164,11 @@ test('随包 skill 缺失：降级跳过，不阻断主流程', () => {
   assert.ok(fs.existsSync(mcpJson), 'mcp.json 仍要写好')
 })
 
-test('随包 skill 存在：复制到 ~/.workbuddy/skills/codex-gateway-image', () => {
+test('随包 skill 存在：复制到 ~/.workbuddy/skills/gpt-image', () => {
   const home = tmpdir()
   const r = run(['--host', HOST, '--key', KEY, '--mcp-json', path.join(home, 'mcp.json'), '--no-model-config'], { home })
   assert.equal(r.code, 0, r.out)
-  const installed = path.join(home, '.workbuddy', 'skills', 'codex-gateway-image', 'SKILL.md')
+  const installed = path.join(home, '.workbuddy', 'skills', 'gpt-image', 'SKILL.md')
   assert.ok(fs.existsSync(installed), 'skill 未安装到临时 HOME')
   assert.match(fs.readFileSync(installed, 'utf8'), /^---/, 'SKILL.md 应带 frontmatter')
 })
@@ -192,7 +192,7 @@ test('--no-skill --no-model-config：只写 mcp.json，不多造文件', () => {
   const r = run(['--host', HOST, '--key', KEY, '--mcp-json', path.join(home, 'mcp.json'),
     '--no-skill', '--no-model-config'], { home })
   assert.equal(r.code, 0, r.out)
-  assert.equal(fs.existsSync(path.join(home, '.workbuddy', 'skills', 'codex-gateway-image')), false)
+  assert.equal(fs.existsSync(path.join(home, '.workbuddy', 'skills', 'gpt-image')), false)
   assert.equal(fs.existsSync(path.join(home, 'workbuddy-models-codex-gateway-lan.json')), false)
 })
 
@@ -209,4 +209,29 @@ test('契约：EMBEDDED_HOST 注入锚点仍存在且格式未变', () => {
   // 锚点必须是「默认空串」，否则注入逻辑会覆盖掉一个已有地址
   const line = src.split('\n').find((l) => l.includes('EMBEDDED_HOST ='))
   assert.equal(line.trim(), "const EMBEDDED_HOST = ''")
+})
+test('网页下载的脚本保留共享端口，显式 --port 仍可覆盖',()=>{
+  const home=tmpdir(),script=path.join(home,'downloaded-client.mjs')
+  const source=fs.readFileSync(SCRIPT,'utf8').replace("const EMBEDDED_HOST = ''",`const EMBEDDED_HOST = '${HOST}'`).replace("const EMBEDDED_PORT = ''","const EMBEDDED_PORT = '4174'")
+  fs.writeFileSync(script,source)
+  const mcpJson=path.join(home,'mcp.json'),args=['--key',KEY,'--mcp-json',mcpJson,'--no-skill','--no-model-config']
+  assert.equal(run(args,{home,script}).code,0)
+  assert.equal(JSON.parse(fs.readFileSync(mcpJson)).mcpServers['codex-gateway-lan'].url,`http://${HOST}:4174/mcp`)
+  assert.equal(run([...args,'--port','5099'],{home,script}).code,0)
+  assert.equal(JSON.parse(fs.readFileSync(mcpJson)).mcpServers['codex-gateway-lan'].url,`http://${HOST}:5099/mcp`)
+  const before=fs.readFileSync(mcpJson,'utf8')
+  assert.notEqual(run([...args,'--port','65536'],{home,script}).code,0)
+  assert.equal(fs.readFileSync(mcpJson,'utf8'),before)
+})
+
+
+test('Skill rename keeps old customized content outside discovery and backs up an existing new-name skill',()=>{
+  const home=tmpdir(),skills=path.join(home,'.workbuddy','skills')
+  for(const name of ['gpt-image','codex-gateway-image']){fs.mkdirSync(path.join(skills,name),{recursive:true});fs.writeFileSync(path.join(skills,name,'SKILL.md'),'custom-'+name)}
+  const result=run(['--host',HOST,'--key',KEY,'--mcp-json',path.join(home,'mcp.json'),'--no-model-config'],{home})
+  assert.equal(result.code,0,result.out)
+  assert.equal(fs.existsSync(path.join(skills,'codex-gateway-image')),false)
+  assert.match(fs.readFileSync(path.join(skills,'gpt-image','SKILL.md'),'utf8'),/name: gpt-image/)
+  const backups=path.join(home,'.workbuddy','backups'),backup=path.join(backups,fs.readdirSync(backups)[0])
+  for(const name of ['gpt-image','codex-gateway-image'])assert.equal(fs.readFileSync(path.join(backup,name,'SKILL.md'),'utf8'),'custom-'+name)
 })

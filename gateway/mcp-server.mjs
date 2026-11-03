@@ -14,6 +14,7 @@
 //   initialize / notifications/*（忽略）/ tools/list / tools/call / ping
 import readline from 'node:readline'
 import fs from 'node:fs'
+import { imageToolProperties, imageToolRequest, imagePresentation, imageToolResult } from './image-mcp.mjs'
 import path from 'node:path'
 import { resolveStoragePaths } from './storage-paths.mjs'
 import { validateStorageReader } from './storage-init.mjs'
@@ -55,7 +56,7 @@ const TOOLS = [
       properties: {
         prompt: { type: 'string', description: '图像描述（建议具体：主体/风格/构图/色调）' },
         size: { type: 'string', enum: ['1024x1024', '1024x1536', '1536x1024', 'auto'], description: '请求尺寸，缺省 auto（由上游选择）。实际像素尺寸可能与请求不同，以返回原图及结果说明为准；网关不会自动缩放。' },
-        quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], description: '质量，缺省 high（网关最高质量策略）' },
+        ...imageToolProperties,
         reference_paths: {
           type: 'array', items: { type: 'string' },
           description: '可选：参考图（最多 8 张），生成风格/构图与之协调的新图。可传 http(s) URL 或 data-URL；若传本地路径，必须位于网关的参考图目录内（相对路径按该目录解析），越界会被拒绝。注意：本地路径以「网关主机」磁盘视角解析——局域网模式传客户端本机路径无效'
@@ -72,18 +73,12 @@ const TOOLS = [
 ]
 
 async function generateImage(args) {
-  const prompt = String(args?.prompt || '').trim()
-  if (!prompt) return { ok: false, error: 'prompt 不能为空' }
-
-  const body = { prompt, size: args?.size || 'auto', quality: args?.quality || 'high', response_format: 'b64_json' }
-  if (Array.isArray(args?.reference_paths) && args.reference_paths.length) {
-    // bridge AttachmentSpec 支持 { path }（网关本机路径，由 bridge 自行读盘）
-    body.reference_images = args.reference_paths.slice(0, 8).map((p) => ({ path: String(p) }))
-  }
+  let body, endpoint
+  try { ({body,endpoint} = imageToolRequest(args)) } catch (error) { return {ok:false,error:error.message} }
 
   let res, j
   try {
-    res = await fetch(CGW_BASE + '/v1/images/generations', {
+    res = await fetch(CGW_BASE + endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -97,7 +92,7 @@ async function generateImage(args) {
     return { ok: false, error: '网关请求失败：' + e.message }
   }
   if (!res.ok || !j?.data?.[0]?.b64_json) {
-    const detail = j?.error?.message || j?.error?.reason || ('HTTP ' + res.status)
+    const detail = j?.detail || j?.error?.message || j?.error?.reason || ('HTTP ' + res.status)
     return { ok: false, error: '生图失败：' + detail }
   }
   const item = j.data[0]
@@ -105,6 +100,7 @@ async function generateImage(args) {
   const lines = [
     '✓ 图片已生成',
     item.cgw_image_size?.message || '实际尺寸请以下载的原图为准。',
+    item.cgw_warning || null,
     item.url ? `下载：${item.url}（${item.download_url ? '请求需携带当前 API Key 的 Bearer 请求头；也可在素材站输入 Key 查看' : '访问权限取决于网关配置，本机可在控制台查看'}）` : null,
     IS_LOCAL
       ? (item.local_path ? `文件：${item.local_path}（用 Read 工具查看可做视觉理解）` : null)
@@ -115,7 +111,9 @@ async function generateImage(args) {
     item.revised_prompt ? `优化后的提示词：${item.revised_prompt}` : null,
     '该图片已自动进入网关控制台「图片素材 → 生成图库」。'
   ].filter(Boolean)
-  return { ok: true, text: lines.join('\n'), localPath: item.local_path || null, url: item.url || null }
+  const presentation = imagePresentation(CGW_BASE, item)
+  lines.push(presentation.instruction)
+  return { ok:true, text:lines.join('\n'), localPath:item.local_path || null, url:item.url || null, gallery_url:presentation.gallery_url }
 }
 
 function listImages(args) {
@@ -126,7 +124,7 @@ function listImages(args) {
   let out = []
   try {
     out = fs.readdirSync(dir)
-      .filter((n) => /^[A-Za-z0-9_-]+\.png$/.test(n))
+      .filter((n) => /^[A-Za-z0-9_-]+\.(?:png|jpeg|webp)$/.test(n))
       .map((n) => {
         const st = fs.statSync(path.join(dir, n))
         return { name: n, size: st.size, mtime: st.mtimeMs }
@@ -168,7 +166,7 @@ async function dispatch(id, method, params, res) {
     else if (name === 'list_generated_images') r = listImages(args)
     else return res({ id, error: { code: -32602, message: 'unknown tool: ' + name } })
     if (!r.ok) return res({ id, result: { content: [{ type: 'text', text: '✗ ' + r.error }], isError: true } })
-    return res({ id, result: toolResult(r.text) })
+    return res({ id, result: imageToolResult(r) })
   }
   if (method === 'ping') return res({ id, result: {} })
   if (id !== undefined && id !== null) {

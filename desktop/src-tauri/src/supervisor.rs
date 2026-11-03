@@ -259,6 +259,7 @@ enum Work {
     Migration(crate::migration::Request, SyncSender<MigrationReply>),
 }
 pub struct Controller {
+    pub update_reserved: Arc<AtomicBool>,
     pub view: Arc<Mutex<ViewState>>,
     pub quitting: Arc<AtomicBool>,
     pub rendered: Arc<AtomicBool>,
@@ -275,6 +276,9 @@ impl Controller {
             .map_err(|_| "正在处理，请稍后重试".into())
     }
     pub fn action(&self, action: &str) -> Result<(), String> {
+        if self.update_reserved.load(Ordering::SeqCst) && !["update-stop", "continue", "logs"].contains(&action) {
+            return Err("正在准备安装更新，请稍候。".into());
+        }
         if ![
             "retry",
             "reopen",
@@ -287,6 +291,7 @@ impl Controller {
             "fresh-start",
             "maintenance",
             "stop",
+            "update-stop",
         ]
         .contains(&action)
         {
@@ -330,8 +335,11 @@ impl Controller {
             rendered.clone(),
             cancel.clone(),
         );
-        thread::spawn(move || run(app, settings, receiver, v, q, r, c));
+        let update_reserved = Arc::new(AtomicBool::new(false));
+        let update_guard = update_reserved.clone();
+        thread::spawn(move || run(app, settings, receiver, v, q, r, c, update_guard));
         Self {
+            update_reserved,
             view,
             quitting,
             rendered,
@@ -551,8 +559,10 @@ fn open_console(
         &session.launch_id,
         settings.port,
         settings.isolated || settings.smoke,
+        settings.smoke,
         session.alive.clone(),
         &settings.webview_data,
+        &settings.data.join("cache/asset-exports"),
     )
 }
 
@@ -591,6 +601,7 @@ fn run(
     quitting: Arc<AtomicBool>,
     rendered: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+    update_reserved: Arc<AtomicBool>,
 ) {
     let mut session: Option<Session> = None;
     let mut console: Option<Console> = None;
@@ -704,16 +715,21 @@ fn run(
         {
             action = Some("quit".into());
         }
+        if update_reserved.load(Ordering::SeqCst) && action.as_deref().is_some_and(|a| !["update-stop", "continue", "logs", "show", "reopen"].contains(&a)) {
+            action = None;
+        }
         if action.as_deref() == Some("quit") {
             stay_for_backups = false;
         }
-        if matches!(action.as_deref(), Some("maintenance" | "stop"))
+        if matches!(action.as_deref(), Some("maintenance" | "stop" | "update-stop"))
             && !exit_requested
             && !tree_blocked
         {
             crate::desktop::set_page(
                 &app,
-                if action.as_deref() == Some("stop") {
+                if action.as_deref() == Some("update-stop") {
+                    "desktop"
+                } else if action.as_deref() == Some("stop") {
                     "service"
                 } else {
                     "data"

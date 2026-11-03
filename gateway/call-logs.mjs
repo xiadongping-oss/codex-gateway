@@ -4,6 +4,7 @@
 // 读取：GET /__gw/call-logs → getCallLogs(100)。
 // 存储：<数据根>/data/call-logs.json（内存 200 条，磁盘留 500 条，4s 节流刷盘）。
 import fs from 'node:fs'
+import { currentCaller } from './request-context.mjs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveDataRoot } from './data-root.mjs'
@@ -38,7 +39,7 @@ function load() {
 load()
 
 export function recordCallLog(entry) {
-  logs.unshift({ id: ++seq, at: Date.now(), ...entry })
+  logs.unshift({ id: ++seq, at: Date.now(), ...entry, caller: entry.caller || currentCaller() })
   if (logs.length > MAX_MEM) logs.length = MAX_MEM
   dirty = true
   if (!flushTimer) {

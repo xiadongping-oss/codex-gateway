@@ -11,12 +11,13 @@ import ApiKeys from './views/ApiKeys.vue'
 import Settings from './views/Settings.vue'
 import Runtime from './views/Runtime.vue'
 import LanSharing from './views/LanSharing.vue'
+import ClientAccess from './views/ClientAccess.vue'
 import { useLiveData } from './composables/useLiveData'
 
 const activePage = ref('overview')
 function workspaceNavigate(event) {
   const page = event?.detail?.page
-  if (['overview','account','images','models','apikeys','logs','settings','runtime','lan'].includes(page)) activePage.value = page
+  if (['overview','account','images','models','apikeys','logs','settings','runtime','lan','access'].includes(page)) activePage.value = page
 }
 onMounted(() => window.addEventListener('cgw:navigate', workspaceNavigate))
 onUnmounted(() => window.removeEventListener('cgw:navigate', workspaceNavigate))
@@ -67,6 +68,7 @@ const titles = {
   apikeys: { title: 'API Key 管理', subtitle: '给外部客户端用的网关层 Token' },
   logs: { title: '调用日志', subtitle: '实时调用记录 · Bridge 运行日志' },
   runtime: { title: '运行详情', subtitle: '运行状态 · 账号实例 · 自动切换' },
+  access: { title:'客户端接入', subtitle:'Agent 配置 · Skill 与 MCP · 更新指引' },
   lan: { title: '局域网共享', subtitle: '共享状态 · 网络地址 · 客户端接入' },
   settings: { title: '设置', subtitle: '代理与接入配置' }
 }
@@ -77,7 +79,7 @@ const titles = {
     <Sidebar :active="activePage" :gw-running="gw.running" :connected="gwConnected === true" :collapsed="effectiveCollapsed" @navigate="activePage = $event" @toggle="onToggleSidebar" />
 
     <main class="main" :data-workspace-current="activePage">
-      <Topbar :title="titles[activePage].title" :subtitle="titles[activePage].subtitle" :running="gw.running" :show-copy-config="activePage !== 'lan'" />
+      <Topbar :title="titles[activePage].title" :subtitle="titles[activePage].subtitle" :running="gw.running" :show-copy-config="!['lan','settings','models','access'].includes(activePage)" />
 
       <Overview v-if="activePage === 'overview'" @navigate="activePage = $event" />
       <Accounts v-else-if="activePage === 'account'" />
@@ -86,8 +88,9 @@ const titles = {
       <Models v-else-if="activePage === 'models'" @navigate="activePage = $event" />
       <Runtime v-else-if="activePage === 'runtime'" @navigate="activePage = $event" />
       <LanSharing v-else-if="activePage === 'lan'" @navigate="activePage = $event" />
+      <ClientAccess v-else-if="activePage === 'access'" @navigate="activePage = $event" />
       <ApiKeys v-else-if="activePage === 'apikeys'" />
-      <Settings v-else-if="activePage === 'settings'" />
+      <Settings v-else-if="activePage === 'settings'" @navigate="activePage = $event" />
     </main>
   </div>
 </template>

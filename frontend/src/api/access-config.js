@@ -22,7 +22,6 @@ export async function loadAccessConfig() {
 
 // 默认模型兜底：/v1/models 拉不到时也保证复制出的配置可直接用
 const FALLBACK_MODEL = 'gpt-6.1-sol'
-const TEXT_MODELS = ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6.1-terra']
 
 // 点「复制」时才取明文：返回 { baseUrl, apiKey, model }，apiKey 可能为 null（尚未创建 Key）
 export async function loadAccessConfigWithKey() {
@@ -46,23 +45,5 @@ export async function loadAccessConfigWithKey() {
 
 export function formatAccessConfig(baseUrl, apiKey, model) {
   const mdl = model || FALLBACK_MODEL
-  const others = TEXT_MODELS.filter((x) => x !== mdl).join(' / ')
-  return (
-    `# OpenAI 兼容客户端接入（Codex Gateway）\n` +
-    `OPENAI_BASE_URL=${baseUrl}\n` +
-    (apiKey
-      ? `OPENAI_API_KEY=${apiKey}\n`
-      : `OPENAI_API_KEY=<在「API Key」页创建后填入>   # 网关校验 Authorization: Bearer\n`) +
-    `OPENAI_MODEL=${mdl}\n` +
-    `\n` +
-    `# WorkBuddy「添加模型」填写对照：\n` +
-    `#   接口地址 = ${baseUrl}\n` +
-    `#   API Key  = 上面 OPENAI_API_KEY\n` +
-    `#   模型名称 = ${mdl}${others ? `（也可填 ${others}）` : ''}\n` +
-    `#   高级配置：工具调用 ✓（已验证 function calling 可用）  图片输入 ✓  思考模式 ✓\n` +
-    `#             自定义协议 ✗（网关是标准 OpenAI 兼容服务，会自动补全 /chat/completions；\n` +
-    `#             勾上反而 404）\n` +
-    `#   采样参数（temperature / top_p）：客户端怎么填都不会报错，网关会自动剔除\n` +
-    `#             ——上游 Codex 通道不接受这两个参数，转发过去必然 400\n`
-  )
+  return `OPENAI_BASE_URL=${baseUrl}\nOPENAI_API_KEY=${apiKey || '<在 API Key 页创建密钥>'}\nOPENAI_MODEL=${mdl}`
 }

@@ -41,6 +41,10 @@
   .step .desc { color: var(--sub); font-size: 13px; margin-bottom: 10px; }
   .step code.path { font-size: 12px; background: var(--acc-weak); border-radius: 6px; padding: 1px 7px; color: var(--txt); word-break: break-all; }
   pre.json { position: relative; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 12px 12px; font: 12px/1.55 ui-monospace, Consolas, monospace; overflow-x: auto; white-space: pre; }
+  .agent-step { border-color: var(--acc); }
+  .agent-step .tag { font-size:11px; color:var(--acc); background:var(--acc-weak); border-radius:5px; padding:2px 7px; }
+  .prompt-preview { display:block; width:100%; min-height:180px; resize:vertical; border:1px solid var(--line); border-radius:10px; padding:12px; background:var(--bg); color:var(--sub); font:12px/1.65 ui-monospace,Consolas,monospace; }
+  .preview-label { display:block; margin-bottom:6px; color:var(--sub); font-size:12px; }
   .step .acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
   #me { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: var(--acc-weak); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; margin-bottom: 4px; }
   #me .who { font-weight: 650; }
@@ -79,9 +83,18 @@
     <button id="btnChangeKey">换 Key</button>
   </div>
 
+  <div class="step agent-step">
+    <h3>交给 Agent 自动配置 <span class="tag">推荐</span></h3>
+    <div class="desc">复制提示词，粘贴给能操作本机文件的 Agent。它会合并 MCP 配置、安装生图 Skill，再检查连接。支持本机和局域网接入。</div>
+    <label class="preview-label" for="agentPromptPreview">首次配置预览 · 密钥已隐藏</label>
+    <textarea id="agentPromptPreview" class="prompt-preview" readonly rows="7" spellcheck="false"></textarea>
+    <div class="acts"><button class="primary" id="btnCopyAgentPrompt">复制给 Agent 的配置提示词</button><button id="btnCopyUpdatePrompt">复制更新 Prompt</button><span class="ok-note" id="agentPromptOk" role="status"></span></div>
+    <p class="desc" style="margin:8px 0 0">复制内容包含当前地址、端口和已验证的 API Key。连接验证不会自动生成图片。</p>
+  </div>
+
   <div class="step">
     <h3><span class="no">1</span>接入 MCP（生图等工具能力，推荐）</h3>
-    <div class="desc">把下面的 JSON 合并进 <code class="path" id="mcpPath">~/.workbuddy/mcp.json</code> 的 <code>mcpServers</code> 对象里（其他条目保留），重启 WorkBuddy，并在「连接器」页对 <b>codex-gateway-lan</b> 点一次「信任」。</div>
+    <div class="desc">把下面的 JSON 合并进 <code class="path" id="mcpPath">~/.workbuddy/mcp.json</code> 的 <code>mcpServers</code> 对象里（其他条目保留），重新加载连接器，并启用 <b id="mcpName">codex-gateway-lan</b>。</div>
     <pre class="json" id="mcpJson"></pre>
     <div class="acts"><button class="primary" id="btnCopyMcp">复制 MCP JSON</button><span class="ok-note" id="mcpOk"></span></div>
   </div>
@@ -95,7 +108,7 @@
 
   <div class="step">
     <h3><span class="no">3</span>安装生图 Skill（可选，让 Agent 生图更可靠）</h3>
-    <div class="desc">下载后放到 <code class="path" id="skillPath">~/.workbuddy/skills/codex-gateway-image/SKILL.md</code>（目录不存在就新建）。MCP 已能生图，这层只是提高触发准确率。</div>
+    <div class="desc">下载后放到 <code class="path" id="skillPath">~/.workbuddy/skills/gpt-image/SKILL.md</code>（目录不存在就新建）。MCP 已能生图，这层只是提高触发准确率。</div>
     <div class="acts"><a class="btn" id="lnkSkill" href="/lan-kit/skills/codex-gateway-image/SKILL.md" download="SKILL.md">下载 SKILL.md</a></div>
   </div>
 
@@ -112,9 +125,10 @@
   </div>
 </main>
 
-<footer>接入页由网关宿主机提供 · 你的 Key 仅保存在你自己浏览器的 localStorage · codex-gateway</footer>
+<footer>接入配置由当前网关生成 · API Key 不会写入生图 Skill</footer>
 <div class="toast" id="toast"></div>
 
+<script src="/client-setup.js"></script>
 <script>
 (function () {
   'use strict';
@@ -123,6 +137,19 @@
   $('hostInfo').textContent = host
   $('lnkGallery').href = '/gallery'
   var key = ''
+  var verification = 0, pendingVerification = null
+  var connectorName = /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$/i.test(location.hostname) ? 'codex-gateway' : 'codex-gateway-lan'
+
+  function buildAgentPrompt(secret, update) {
+    return CGWClientSetup.buildClientPrompt({base:location.origin,key:secret,update:!!update})
+  }
+
+  function clearConfigs() {
+    key = ''
+    ;['mcpJson','modelJson','mcpOk','modelOk','agentPromptOk'].forEach(function (id) { $(id).textContent = '' })
+    $('agentPromptPreview').value = ''
+    $('app').hidden = true
+  }
 
   function toast(msg) {
     var t = $('toast'); t.textContent = msg; t.classList.add('show')
@@ -139,14 +166,16 @@
   }
 
   function buildConfigs() {
-    var base = 'http://' + host
+    var base = location.origin
     var mcp = { mcpServers: {} }
-    mcp.mcpServers['codex-gateway-lan'] = { url: base + '/mcp', headers: { Authorization: 'Bearer ' + key } }
+    mcp.mcpServers[connectorName] = { url: base + '/mcp', headers: { Authorization: 'Bearer ' + key } }
     $('mcpJson').textContent = JSON.stringify(mcp, null, 2)
+    $('mcpName').textContent = connectorName
+    $('agentPromptPreview').value = buildAgentPrompt('<当前已验证的 API Key，复制时填入>')
     var model = {
       models: [{
-        id: 'codex-gateway-lan',
-        name: 'Codex (局域网网关)',
+        id: connectorName,
+        name: connectorName === 'codex-gateway' ? 'Codex (本机网关)' : 'Codex (局域网网关)',
         vendor: 'Custom',
         url: base + '/v1/chat/completions',
         apiKey: key,
@@ -156,7 +185,7 @@
       }]
     }
     $('modelJson').textContent = JSON.stringify(model, null, 2)
-    $('lnkScript').href = '/lan-kit/setup-client.mjs?host=' + encodeURIComponent(host.split(':')[0])
+    $('lnkScript').href = '/lan-kit/setup-client.mjs?host=' + encodeURIComponent(location.hostname) + '&port=' + encodeURIComponent(location.port || '80')
     $('lnkModels').href = base + '/v1/models'
   }
 
@@ -169,16 +198,21 @@
   }
 
   function verify(v, silent) {
+    var current = ++verification
+    if (pendingVerification) pendingVerification.abort()
+    pendingVerification = new AbortController()
+    clearConfigs()
     $('btnVerify').disabled = true
-    fetch('/v1/gen-images/me', { headers: { Authorization: 'Bearer ' + v } })
+    fetch('/v1/gen-images/me', { headers: { Authorization: 'Bearer ' + v }, signal: pendingVerification.signal })
       .then(function (r) {
-        $('btnVerify').disabled = false
+        if (current !== verification) return null
         if (r.status === 401) throw new Error('Key 无效或已被禁用，请找宿主机管理员确认')
         if (!r.ok) throw new Error('HTTP ' + r.status)
         return r.json()
       })
-      .then(function (me) { if (!me.ok) throw new Error('响应异常'); key = v; showApp(me) })
-      .catch(function (e) { if (!silent) $('gateErr').textContent = e.message })
+      .then(function (me) { if (current !== verification) return; if (!me || !me.ok) throw new Error('响应异常'); key = v; showApp(me) })
+      .catch(function (e) { if (current === verification && !silent && e.name !== 'AbortError') $('gateErr').textContent = e.message })
+      .finally(function () { if (current === verification) { $('btnVerify').disabled = false; pendingVerification = null } })
   }
 
   $('btnVerify').addEventListener('click', function () {
@@ -188,17 +222,22 @@
     verify(v, false)
   })
   $('keyInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('btnVerify').click() })
-  $('btnChangeKey').addEventListener('click', function () { key = ''; $('app').hidden = true; $('gate').hidden = false; $('keyInput').value = ''; setTimeout(function () { $('keyInput').focus() }, 50) })
+  $('btnChangeKey').addEventListener('click', function () { verification++; if (pendingVerification) pendingVerification.abort(); pendingVerification = null; clearConfigs(); $('btnVerify').disabled = false; $('gate').hidden = false; $('keyInput').value = ''; $('gateErr').textContent = ''; setTimeout(function () { $('keyInput').focus() }, 50) })
 
   function bindCopy(btnId, okId, getText) {
     $(btnId).addEventListener('click', function () {
-      copyText(getText()).then(function () { $(okId).textContent = '✓ 已复制'; toast('已复制到剪贴板') }, function () { toast('复制失败，请手动选择文本') })
+      if (!key) return
+      var current = verification, copiedKey = key
+      copyText(getText()).then(function () { if (current !== verification || copiedKey !== key) return; $(okId).textContent = '✓ 已复制'; toast('已复制到剪贴板') }, function () { if (current === verification) toast('复制失败，请手动选择文本') })
     })
   }
   bindCopy('btnCopyMcp', 'mcpOk', function () { return $('mcpJson').textContent })
   bindCopy('btnCopyModel', 'modelOk', function () { return $('modelJson').textContent })
+  bindCopy('btnCopyAgentPrompt', 'agentPromptOk', function () { return buildAgentPrompt(key) })
+  bindCopy('btnCopyUpdatePrompt', 'agentPromptOk', function () { return buildAgentPrompt(key,true) })
   $('btnCopyCmd').addEventListener('click', function () {
-    copyText('node setup-client.mjs --key ' + key).then(function () { toast('已复制：node setup-client.mjs --key …') })
+    if (!key) return
+    copyText('node setup-client.mjs --name ' + connectorName + ' --port ' + (location.port || '80') + ' --key ' + key).then(function () { toast('已复制，包含当前端口和密钥') })
   })
 })()
 </script>

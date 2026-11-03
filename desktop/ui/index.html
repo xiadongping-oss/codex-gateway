@@ -12,6 +12,7 @@
         <button class="nav-item" data-page="models" title="模型能力"><span data-icon="models"></span><span>模型能力</span></button>
       </div>
       <div class="nav-group"><p class="nav-heading">开发接入</p>
+        <button class="nav-item" data-page="access" title="客户端接入"><span data-icon="access"></span><span>客户端接入</span></button>
         <button class="nav-item" data-page="apikeys" title="API Key"><span data-icon="apikeys"></span><span>API Key</span></button>
         <button class="nav-item" data-page="lan" title="局域网共享"><span data-icon="lan"></span><span>局域网共享</span></button>
         <button class="nav-item" data-page="logs" title="调用日志"><span data-icon="logs"></span><span>调用日志</span></button>
@@ -39,7 +40,7 @@
         <button id="continue" hidden>继续等待</button><button id="force" class="danger" hidden>结束任务并退出</button><button id="restart" class="danger" hidden>结束并重启</button>
       </div>
     </section>
-    <section class="card compact-card"><div><h2>诊断与退出</h2><p>查看运行日志，或结束本机服务。关闭窗口后服务在托盘继续运行；「退出应用」会停止网关，进行中的任务会先请求正常结束。</p></div><div class="actions"><button id="logs" class="secondary">诊断日志</button><button id="quit" class="secondary">退出应用</button></div></section>
+    <section class="card compact-card"><div><h2>诊断与退出</h2><p>查看运行日志，或结束本机服务。关闭窗口按应用偏好执行；「退出应用」会停止网关，进行中的任务会先请求正常结束。</p></div><div class="actions"><button id="logs" class="secondary">诊断日志</button><button id="quit" class="secondary">退出应用</button></div></section>
     </section>
     <section data-local-page="data" aria-label="数据与备份" hidden>
       <section class="card compact-card"><div><h2>工作空间数据</h2><p id="data-state">账号、配置与图片保存在本机。</p></div><div class="actions"><button id="maintenance" class="secondary" hidden>停止服务并管理</button><button id="fresh-start" hidden>建立全新工作空间</button></div></section>
@@ -141,14 +142,23 @@
       <div class="settings-tabs" aria-label="设置分类"><button class="tab" data-page="settings">连接配置</button><button class="tab active" data-page="desktop" aria-current="page">应用偏好</button></div>
       <section class="card preferences-card">
         <div class="preference-row"><div><h2>开机启动</h2><p>登录系统时启动网关。</p><p id="autostart-status" role="status" hidden>暂时无法读取系统设置，请稍候。</p></div><label class="switch"><input id="desktop-autostart" type="checkbox" role="switch" aria-label="开机启动" aria-describedby="autostart-status" disabled><span aria-hidden="true"></span></label></div>
-        <div class="preference-row"><div><h2>外观</h2><p>与工作台的外观设置保持一致。</p></div><span id="desktop-theme-label" class="preference-value">浅色</span></div>
-        <div class="preference-row"><div><h2>关闭窗口</h2><p>保留服务，在托盘继续运行。</p></div><span class="preference-value">后台运行</span></div>
+        <div class="preference-row"><div><h2>外观</h2><p>工作台与标题栏同步切换，设置自动保存。</p></div><label class="preference-value"><span class="sr-only">外观</span><select id="desktop-appearance" aria-label="外观" disabled><option value="light">浅色</option><option value="dark">深色</option><option value="system">跟随系统</option></select></label><span id="desktop-theme-label" hidden>浅色</span></div>
+        <div class="preference-row"><div><h2>关闭窗口</h2><p id="close-behavior-description">保留服务，在托盘继续运行。</p></div><select id="desktop-close-behavior" aria-label="关闭窗口" disabled><option value="background">在后台继续运行</option><option value="quit">停止服务并退出</option></select></div>
+      </section>
+      <section class="card updater-card" id="updater-panel" aria-labelledby="updater-title">
+        <div class="card-top"><div><h2 id="updater-title">软件更新</h2><p class="inline-help" id="updater-current">正在读取版本…</p></div><span class="badge" id="updater-badge">在线更新</span></div>
+        <p id="updater-status" role="status" aria-live="polite">可检查 GitHub 发布的新版本。</p>
+        <progress id="updater-progress" max="100" hidden aria-label="更新下载进度"></progress>
+        <pre id="updater-notes" hidden></pre>
+        <div class="actions"><button id="updater-check" class="secondary">检查更新</button><button id="updater-download" hidden>下载更新</button><button id="updater-install" hidden>安装并重启</button><button id="updater-release" class="secondary">GitHub 版本页 ↗</button></div>
+        <p class="inline-help">下载时可继续使用。安装前会等待任务结束、保存数据并关闭网关，账号、配置和图片保留。首次开启在线更新需要手动安装一次新版。</p>
       </section>
       <p class="inline-help">开机启动仅影响当前用户；修改失败时会保留系统中的原设置，并显示提示。</p>
+      <p id="preferences-status" role="status"></p>
     </section>
     <div class="workspace-notices"><p id="desktop-notice" role="status"></p><p id="action-error" role="alert"></p></div>
     </div>
   </main>
 </div>
 <dialog id="confirm-action" aria-labelledby="confirm-title"><h2 id="confirm-title">确认操作</h2><p id="confirm-message"></p><div class="actions dialog-actions"><button id="confirm-cancel" class="secondary">取消</button><button id="confirm-submit" class="danger">确认</button></div></dialog>
-<script src="migration-ui.js"></script><script src="backup-ui.js"></script><script src="app.js"></script></body></html>
+<script src="migration-ui.js"></script><script src="backup-ui.js"></script><script src="updater-ui.js"></script><script src="app.js"></script></body></html>

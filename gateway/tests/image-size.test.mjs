@@ -93,7 +93,7 @@ test('real gateway HTTP and both stdio MCP clients report returned size; bridge 
         const body = JSON.parse(Buffer.concat(parts)); bridgeRequests.push(body)
         const result = await generateImage(cfg, upstream, ImageRequest.parse(body))
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ data: [{ b64_json: result.b64 }] }))
+        res.end(JSON.stringify({ data: [{ b64_json: result.b64, revised_prompt: 'offline revised prompt' }] }))
       } catch (e) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: e.message } })) }
     })
     harness.env.BRIDGE_PORT = String(await listen(bridge))
@@ -111,6 +111,12 @@ test('real gateway HTTP and both stdio MCP clients report returned size; bridge 
     assert.equal(item.cgw_image_size.actual, '1254x1254'); assert.equal(item.cgw_image_size.matchesRequested, false)
     assert.deepEqual(Buffer.from(item.b64_json, 'base64'), original)
     assert.deepEqual(fs.readFileSync(item.local_path), original)
+    const saved = JSON.parse(fs.readFileSync(path.join(path.dirname(item.local_path), 'index.json')))[path.basename(item.local_path)]
+    assert.equal(saved.generation.prompt, args.prompt)
+    assert.equal(saved.generation.revisedPrompt, 'offline revised prompt')
+    assert.equal(saved.generation.requested.quality, 'low')
+    assert.equal(saved.generation.actual.actual, '1254x1254')
+
     assert.match(item.download_url, /\/v1\/gen-images\//)
     const keyedDownload = await fetch(item.download_url, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(5000) })
     assert.equal(keyedDownload.status, 200); assert.deepEqual(Buffer.from(await keyedDownload.arrayBuffer()), original)
@@ -135,6 +141,18 @@ test('real gateway HTTP and both stdio MCP clients report returned size; bridge 
     }
     assert.equal(bridgeRequests.length, 5); assert.equal(wire.length, 5)
     assert.ok(wire.every(t => t.size === 'auto' || t.size === '1024x1024'))
+    const advanced={prompt:'transparent fixture',background:'transparent',output_format:'png',quality:'low'}
+    await request('/mcp',{jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'generate_image',arguments:advanced}})
+    assert.equal(wire.at(-1).background,'transparent')
+    for (const file of [path.join(harness.sandbox,'mcp-server.mjs'),path.join(harness.sandbox,'lan-kit/mcp-server.mjs')]) {
+      const result=await stdioCall(file,{...harness.env,CGW_BASE:harness.base,CGW_API_KEY:key},advanced)
+      assert.notEqual(result.result.isError,true);assert.equal(wire.at(-1).background,'transparent')
+    }
+    const edit={prompt:'edit fixture',image:'data:image/png;base64,eA==',quality:'low'}
+    for (const file of [path.join(harness.sandbox,'mcp-server.mjs'),path.join(harness.sandbox,'lan-kit/mcp-server.mjs')]) {
+      const result=await stdioCall(file,{...harness.env,CGW_BASE:harness.base,CGW_API_KEY:key},edit)
+      assert.notEqual(result.result.isError,true);assert.equal(wire.at(-1).action,'edit')
+    }
   } finally {
     await harness.close()
     if (bridge) await close(bridge)

@@ -11,10 +11,11 @@ import { TARGETS, sha256, runtimeError, readRuntimeLock, selectRuntime } from '.
 const ROOT = path.dirname(fileURLToPath(import.meta.url))
 export const DESKTOP_TOOLS = Object.freeze(['migration.mjs', 'migration-service.mjs', 'legacy-sources.mjs'])
 export const GATEWAY_FILES = Object.freeze([
-  'account-quota.mjs', 'admin-auth.mjs', 'api-providers.mjs', 'apikeys.mjs', 'assets.mjs', 'atomic-write.mjs',
+  'client-setup.js', 'client-assets.mjs', 'request-context.mjs',
+  'account-quota.mjs', 'admin-auth.mjs', 'api-providers.mjs', 'apikeys.mjs', 'assets.mjs', 'asset-metadata.mjs', 'asset-trash.mjs', 'asset-library-routes.mjs', 'asset-library.html', 'asset-library.js', 'asset-library.css', 'asset-edits.mjs', 'asset-edit-routes.mjs', 'asset-editor.html', 'asset-editor.js', 'asset-editor.css', 'atomic-write.mjs',
   'auth-core.mjs', 'bridge-patches.mjs', 'bridge-pool.mjs', 'call-logs.mjs', 'chat-tools.mjs', 'codex-official-login.mjs',
-  'data-root.mjs', 'desktop-entry.mjs', 'desktop-lan.mjs', 'desktop-protocol.mjs', 'desktop-ticket.mjs', 'failover.mjs', 'gallery.html',
-  'image-size.mjs', 'lan-addr.mjs', 'launcher.mjs', 'mcp-server.mjs', 'model-catalog.mjs', 'package.json', 'port-util.mjs',
+  'capabilities.mjs', 'data-root.mjs', 'desktop-entry.mjs', 'desktop-lan.mjs', 'desktop-protocol.mjs', 'desktop-ticket.mjs', 'failover.mjs', 'gallery.html',
+  'image-size.mjs', 'image-edit.mjs', 'image-file.mjs', 'image-verification.mjs', 'image-mcp.mjs', 'lan-addr.mjs', 'launcher.mjs', 'mcp-server.mjs', 'model-catalog.mjs', 'package.json', 'port-util.mjs',
   'proxy-preload.mjs', 'proxy.mjs', 'ref-roots.mjs', 'secret-perms.mjs', 'setup.html', 'shutdown-manager.mjs',
   'storage-bootstrap.mjs', 'storage-init.mjs', 'storage-paths.mjs', 'work-tracker.mjs'
 ])

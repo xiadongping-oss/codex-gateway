@@ -4,10 +4,23 @@ import * as api from '../api/gateway'
 import { gwRequest, copyText } from '../api/client'
 import { isDesktopWorkspace } from '../desktopWorkspace'
 import WorkspacePanel from '../components/WorkspacePanel.vue'
+import { formatAccessConfig } from '../api/access-config'
 defineEmits(['navigate'])
 const lan = ref(null), keys = ref([]), models = ref([]), selectedAddress = ref(''), keyId = ref(''), model = ref('')
 const loading = ref(false), error = ref(''), feedback = ref(''), copyBusy = ref(false)
 const saving = ref(false), portDraft = ref('4174'), portDirty = ref(false)
+const strict = ref(null), strictBusy = ref(false), strictError = ref('')
+async function loadStrict() {
+  try { const result = await gwRequest('/__gw/strict-auth','GET',null,undefined,{strictJson:true}); if (!disposed) { strict.value = result; strictError.value = '' } }
+  catch { if (!disposed) strictError.value = '鉴权设置读取失败，请刷新重试。' }
+}
+async function toggleStrict() {
+  if (!strict.value || strictBusy.value) return
+  strictBusy.value = true; strictError.value = ''
+  try { const result = await gwRequest('/__gw/strict-auth','POST',{enabled:!strict.value.enabled},undefined,{strictJson:true}); if (!result?.ok) throw new Error('设置未能保存，请重试。'); if (!disposed) strict.value = result }
+  catch (error) { if (!disposed) strictError.value = error.message || '设置未能保存，请重试。' }
+  finally { if (!disposed) strictBusy.value = false }
+}
 let generation = 0, timer, feedbackTimer, disposed = false
 const addresses = computed(() => lan.value?.addresses || [])
 const endpoint = computed(() => selectedAddress.value && lan.value ? `http://${selectedAddress.value}:${lan.value.port}/v1` : '')
@@ -58,20 +71,20 @@ async function copyConfig() {
     const key = await api.revealApiKey(keyId.value)
     if (disposed || !available.value || selection !== [keyId.value, model.value, endpoint.value].join('|')) return
     if (!key?.token) throw new Error('无法读取所选密钥，请重新选择。')
-    await copyText(`接口地址：${endpoint.value}\nAPI Key：${key.token}\n模型名称：${model.value}`)
+    await copyText(formatAccessConfig(endpoint.value,key.token,model.value))
     feedback.value = '接入配置已复制，包含所选 API Key。'
   } catch (e) { if (!disposed) feedback.value = e.message || '复制失败，请重试。' }
   finally { if (!disposed) { copyBusy.value = false; clearTimeout(feedbackTimer); feedbackTimer = setTimeout(() => { feedback.value = '' }, 5000) } }
 }
 async function copyAddress() { try { await copyText(endpoint.value); feedback.value = '接口地址已复制。' } catch { feedback.value = '复制失败，请重试。' } }
-onMounted(() => { refresh(); timer = setInterval(() => { if (!document.hidden) refresh() }, 10000) })
+onMounted(() => { refresh(); loadStrict(); timer = setInterval(() => { if (!document.hidden) refresh() }, 10000) })
 onUnmounted(() => { disposed = true; generation++; clearInterval(timer); clearTimeout(feedbackTimer) })
 </script>
 <template>
   <div class="content sharing-page">
     <p v-if="error" class="sharing-notice" role="alert">{{ error }}</p>
     <WorkspacePanel title="共享状态" subtitle="让同一网络中的其他设备连接模型接口" :badge="!lan ? '等待连接' : lan.enabled ? '已开启' : lan.error ? '开启失败' : '仅本机访问'">
-      <template #actions><button class="btn-ghost" :disabled="loading || saving" @click="refresh">{{ loading ? '刷新中…' : '刷新状态' }}</button></template>
+      <template #actions><button class="btn-ghost" :disabled="loading || saving" @click="refresh();loadStrict()">{{ loading ? '刷新中…' : '刷新状态' }}</button></template>
       <div class="sharing-summary"><div><span>共享监听地址</span><strong>{{ lan?.enabled ? lan.listenHost + ':' + lan.port : '未监听' }}</strong></div><div><span>可用网络地址</span><strong>{{ lan?.enabled ? addresses.length : '—' }}</strong></div><div><span>接入方式</span><strong>接口地址 + API Key</strong></div></div>
       <div v-if="lan?.manageable" class="sharing-control">
         <div class="sharing-control-top"><div class="sharing-control-copy"><h3><span class="sharing-dot" :class="{ enabled: lan.enabled }"></span>{{ lan.enabled ? '局域网共享已开启' : '局域网共享已关闭' }}</h3><p>{{ lan.enabled ? '其他设备可通过共享端口连接模型接口。关闭共享会断开这些连接。' : '开启后，同一网络中的设备可使用 API Key 接入模型服务。' }}</p></div><button :class="lan.enabled ? 'btn-ghost' : 'btn-primary'" :disabled="saving || loading || (!lan.enabled && !validPort)" @click="saveSharing(!lan.enabled)">{{ saving ? '应用中…' : lan.enabled ? '关闭共享' : '开启共享' }}</button></div>
@@ -82,7 +95,13 @@ onUnmounted(() => { disposed = true; generation++; clearInterval(timer); clearTi
       </div>
       <div v-else-if="lan && !lan.enabled" class="sharing-empty"><h3>当前仅允许本机访问</h3><p>{{ isDesktopWorkspace() ? '共享管理尚未就绪，请更新桌面端后重试。' : '如需向局域网开放，请在项目目录使用下方命令重新启动网关。' }}</p><code v-if="!isDesktopWorkspace()">npm run start:lan</code></div>
     </WorkspacePanel>
-    <WorkspacePanel v-if="lan?.enabled" title="客户端接入" subtitle="选择地址、密钥和模型后复制配置">
+    <WorkspacePanel title="接入鉴权" subtitle="使用网关 API Key 识别客户端、限制访问并记录用量" :badge="lan?.enabled ? '共享端口强制鉴权' : strict ? strict.enabled ? '本机鉴权已开启' : '本机鉴权已关闭' : '等待读取'">
+      <div class="sharing-control-top"><div><h3>本机接口也要求 API Key</h3><p>建议开启，只有携带有效密钥的客户端才能调用本机模型接口。健康检查不受影响。</p></div><button :class="strict?.enabled ? 'btn-ghost' : 'btn-primary'" :disabled="!strict || strictBusy" @click="toggleStrict">{{ strictBusy ? '保存中…' : strict?.enabled ? '关闭本机鉴权' : '开启本机鉴权' }}</button></div>
+      <p class="sharing-hint">局域网共享端口始终要求有效 API Key，不受此开关影响。账号与管理页面始终只对本机开放。</p>
+      <p v-if="strictError" class="sharing-notice" role="alert">{{ strictError }}</p>
+      <button class="btn-ghost" style="margin-top:12px" @click="$emit('navigate','apikeys')">管理 API Key</button>
+    </WorkspacePanel>
+    <WorkspacePanel v-if="lan?.enabled" title="客户端接入" subtitle="选择共享地址、密钥和模型，复制到 OpenAI 兼容客户端">
       <div v-if="!addresses.length" class="sharing-empty"><h3>暂无可用网络地址</h3><p>请检查网卡连接状态，再刷新列表。</p></div>
       <template v-else>
         <div class="sharing-fields"><label>接口地址<select v-model="selectedAddress"><option v-for="a in addresses" :key="a.address" :value="a.address">{{ a.address }} · {{ api.lanKindLabel(a) }}{{ a.preferred ? ' · 推荐' : '' }}</option></select></label><label>API Key<select v-model="keyId"><option value="" disabled>请选择密钥</option><option v-for="k in keys" :key="k.id" :value="k.id">{{ k.name || k.id }}</option></select></label><label>模型<select v-model="model"><option value="" disabled>请选择模型</option><option v-for="m in models" :key="m.id" :value="m.id">{{ m.label || m.id }}</option></select></label></div>

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "chatgpt-bridge": "^0.3.0",
+    "pngjs": "7.0.0",
     "undici": "^6.28.0"
   }
 }
