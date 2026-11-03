@@ -6,16 +6,18 @@ import vm from 'node:vm'
 const html=fs.readFileSync(new URL('../../gateway/setup.html',import.meta.url),'utf8')
 const script=html.match(/<script>([\s\S]*?)<\/script>/)[1]
 const KEY_A='cgw-fixture-A-000000',KEY_B='cgw-fixture-B-000000'
-function page(origin,{secure=true,fetcher}={}){
+function page(origin,{secure=true,fetcher,choose=true}={}){
   const nodes=new Map(),copied=[],requests=[],appended=[]
   const node=id=>{
-    if(!nodes.has(id))nodes.set(id,{id,textContent:'',value:'',hidden:false,disabled:false,style:{},listeners:{},classList:{add(){},remove(){}},focus(){},select(){},addEventListener(name,fn){this.listeners[name]=fn},click(){return this.listeners.click?.()}})
+    if(!nodes.has(id))nodes.set(id,{id,textContent:'',value:'',hidden:false,disabled:false,style:{},listeners:{},children:[],setAttribute(name,value){this[name]=value},replaceChildren(){this.children=[]},appendChild(child){this.children.push(child)},change(value){this.value=value;return this.listeners.change?.call(this)},classList:{add(){},remove(){}},focus(){},select(){},addEventListener(name,fn){this.listeners[name]=fn},click(){return this.listeners.click?.()}})
     return nodes.get(id)
   }
-  const document={getElementById:node,createElement:()=>node('clipboard-fallback'),body:{appendChild(n){appended.push(n)},removeChild(){}},execCommand(){copied.push(appended.at(-1).value);return true}}
+  let created=0
+  const document={getElementById:node,createElement:tag=>node(tag+'-'+(++created)),body:{appendChild(n){appended.push(n)},removeChild(){}},execCommand(){copied.push(appended.at(-1).value);return true}}
   const context=vm.createContext({URL,document,location:new URL(origin),window:{isSecureContext:secure},navigator:secure?{clipboard:{writeText(text){copied.push(text);return Promise.resolve()}}}:{},AbortController,setTimeout:()=>1,clearTimeout(){},fetch(url,options){requests.push({url,options});return fetcher?fetcher(url,options):Promise.resolve({ok:true,status:200,json:async()=>({ok:true,keyName:'Fixture',images:0,bytes:0})})}})
   vm.runInContext(fs.readFileSync(new URL('../../gateway/client-setup.js',import.meta.url),'utf8'),context)
   vm.runInContext(script,context)
+  if(choose)node(new URL(origin).hostname==='127.0.0.1'?'targetLocal':'targetRemote').click()
   return {node,copied,requests,async verify(key){node('keyInput').value=key;node('btnVerify').click();await settle()}}
 }
 const settle=async()=>{for(let i=0;i<8;i++)await Promise.resolve()}
@@ -40,9 +42,19 @@ test('LAN prompt and HTTP clipboard fallback retain actual shared port and LAN c
   const config=JSON.parse(prompt.match(/```json\n([\s\S]*?)\n```/)[1])
   assert.equal(config.mcpServers['codex-gateway-lan'].url,'http://192.0.2.5:5199/mcp')
   assert.match(prompt,/http:\/\/192\.0\.2\.5:5199\/gallery/)
+  assert.match(prompt,/不需要安装 Codex Gateway、Node.js/)
+  assert.match(p.node('connectionHint').textContent,/局域网用户/)
   assert.equal(p.node('mcpName').textContent,'codex-gateway-lan')
   p.node('btnCopyCmd').click();assert.match(p.copied.at(-1),/--name codex-gateway-lan --port 5199/)
   assert.match(p.node('lnkScript').href,/port=5199/)
+})
+
+test('loopback setup warns that copying localhost to other machines requires the shared host address',async()=>{
+  const p=page('http://127.0.0.1:4173')
+  assert.match(p.node('connectionHint').textContent,/仅限网关这台电脑/)
+  await p.verify(KEY_A);p.node('btnCopyAgentPrompt').click()
+  assert.match(p.copied[0],/连接被拒绝（10061）只证明所连接地址无监听/)
+  assert.match(p.copied[0],/不能证明远程网关停机/)
 })
 test('failed verification cannot expose a prompt; switching identity discards a stale success',async()=>{
   const deferred=[]
@@ -67,4 +79,51 @@ test('update Prompt preserves credentials and user settings, verifies hashes, re
   for(const text of ['请更新','/client-assets.json','SHA-256','保留现有凭据','tools/list','不重复新增','当前会话已重新加载','Skill 发现目录之外','skills/gpt-image/SKILL.md','GPT 图片生成'])assert.ok(prompt.includes(text),text)
   assert.match(prompt,/Bearer cgw-fixture-A/)
   assert.ok(!p.node('agentPromptPreview').value.includes(KEY_A))
+})
+
+
+test('setup requires an explicit user type and cannot verify or copy credentials before selecting one',async()=>{
+  const p=page('http://127.0.0.1:4173',{choose:false})
+  await p.verify(KEY_A);p.node('btnCopyAgentPrompt').click()
+  assert.equal(p.requests.length,0);assert.equal(p.copied.length,0)
+  assert.match(p.node('gateErr').textContent,/先选择接入用户类型/)
+})
+
+test('gateway-local setup generates a LAN prompt with discovered shared address, while Key verification remains same-origin',async()=>{
+  const p=page('http://127.0.0.1:4173',{fetcher:(url,options)=>Promise.resolve({ok:true,status:200,json:async()=>url==='/client-connection.json'?{sharingEnabled:true,sharedOrigins:[{origin:'http://192.0.2.5:5199',preferred:true},{origin:'http://100.64.0.2:5199'}]}:{ok:true,keyName:'Fixture',images:0,bytes:0}})})
+  p.node('targetRemote').click();await settle()
+  assert.equal(p.node('sharedBase').value,'http://192.0.2.5:5199')
+  await p.verify(KEY_A);p.node('btnCopyAgentPrompt').click()
+  const text=p.copied[0],config=JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)[1])
+  assert.equal(config.mcpServers['codex-gateway-lan'].url,'http://192.0.2.5:5199/mcp')
+  for(const route of ['/lan-kit/skills/codex-gateway-image/SKILL.md','/gallery','/client-assets.json'])assert.ok(text.includes('http://192.0.2.5:5199'+route))
+  assert.equal(p.node('lnkSkill').href,'http://192.0.2.5:5199/lan-kit/skills/codex-gateway-image/SKILL.md')
+  assert.match(p.node('lnkScript').href,/http:\/\/192\.0\.2\.5:5199/)
+  assert.deepEqual(p.requests.map(r=>r.url),['/client-connection.json','/v1/gen-images/me'])
+  assert.equal(p.requests[0].options.headers,undefined,'discovery never carries the API Key')
+  p.node('sharedBase').change('http://100.64.0.2:5199');p.node('btnCopyAgentPrompt').click()
+  assert.equal(p.copied.length,1,'changing the shared target invalidates previous credentials and copied configuration')
+  await p.verify(KEY_A);p.node('btnCopyMcp').click()
+  assert.equal(JSON.parse(p.copied[1]).mcpServers['codex-gateway-lan'].url,'http://100.64.0.2:5199/mcp')
+})
+
+test('sharing disabled, discovery failure, or a loopback-only response cannot silently produce a local prompt for a LAN user',async()=>{
+  for(const info of [{sharingEnabled:false,sharedOrigins:[]},{sharingEnabled:true,sharedOrigins:[{origin:'http://127.0.0.1:4173'}]}]){
+    const p=page('http://127.0.0.1:4173',{fetcher:()=>Promise.resolve({ok:true,status:200,json:async()=>info})})
+    p.node('targetRemote').click();await settle();await p.verify(KEY_A);p.node('btnCopyAgentPrompt').click()
+    assert.equal(p.node('btnVerify').disabled,true);assert.equal(p.copied.length,0)
+    assert.equal(p.requests.length,1,'only address discovery runs when no usable shared address exists')
+  }
+  const p=page('http://127.0.0.1:4173',{fetcher:()=>Promise.reject(new Error('offline'))})
+  p.node('targetRemote').click();await settle();await p.verify(KEY_A)
+  assert.equal(p.copied.length,0);assert.equal(p.node('btnVerify').disabled,true)
+})
+
+test('switching user type while address discovery is pending ignores the late result',async()=>{
+  let finish
+  const p=page('http://127.0.0.1:4173',{fetcher:url=>url==='/client-connection.json'?new Promise(resolve=>finish=resolve):Promise.resolve({ok:true,status:200,json:async()=>({ok:true,images:0,bytes:0})})})
+  p.node('targetRemote').click();p.node('targetLocal').click()
+  finish({ok:true,status:200,json:async()=>({sharingEnabled:true,sharedOrigins:[{origin:'http://192.0.2.5:5199'}]})});await settle()
+  await p.verify(KEY_A);p.node('btnCopyMcp').click()
+  assert.equal(JSON.parse(p.copied[0]).mcpServers['codex-gateway'].url,'http://127.0.0.1:4173/mcp')
 })

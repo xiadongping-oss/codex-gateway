@@ -1,17 +1,27 @@
 // Shared by the public setup page and desktop client. Never persist credentials here.
 (function(root) {
 'use strict'
+  function isLoopbackBase(base) {
+    return /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$/i.test(new URL(base).hostname)
+  }
+  function buildMcpConfig(options) {
+    var url = new URL(options.base)
+    if (!['http:','https:'].includes(url.protocol) || url.username || url.password || ['0.0.0.0','[::]'].includes(url.hostname)) throw new Error('请使用可访问的网关地址，不能使用监听通配地址或带凭据的 URL。')
+    if (options.target === 'remote' && isLoopbackBase(url.origin)) throw new Error('其他设备不能连接 127.0.0.1 / localhost，请选择网关主机的共享地址。')
+    var name = isLoopbackBase(url.origin) ? 'codex-gateway' : 'codex-gateway-lan'
+    return {mcpServers:{[name]:{url:url.origin+'/mcp',headers:{Authorization:'Bearer '+options.key,...(options.device?.trim() ? {'X-CGW-Device-Name':encodeURIComponent(options.device.trim().slice(0,80))} : {})}}}}
+  }
   function buildClientPrompt(options) {
     var base = new URL(options.base).origin
-    var secret = options.key
-    var connectorName = /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$/i.test(new URL(base).hostname) ? 'codex-gateway' : 'codex-gateway-lan'
-    var config = { mcpServers: {} }
-    config.mcpServers[connectorName] = { url: base + '/mcp', headers: { Authorization: 'Bearer ' + secret, ...(options.device ? { 'X-CGW-Device-Name': encodeURIComponent(options.device.trim().slice(0,80)) } : {}) } }
+    var config = buildMcpConfig(options)
+    var connectorName = Object.keys(config.mcpServers)[0]
+    var remote = !isLoopbackBase(base)
     var lines = [
       '请为我当前使用的 Agent 客户端配置 Codex Gateway 的 MCP 和生图 Skill，并实际完成配置与连接检查。',
       '',
       '接入信息（保留完整地址和端口）：',
       '网关地址：' + base,
+      remote ? '接入目标：另一台网关主机。我的电脑只运行 Agent，通过远程 HTTP MCP 使用工具，不需要安装 Codex Gateway、Node.js、网关服务端或宿主机登录账号。' : '接入目标：与网关在同一台电脑上的 Agent。127.0.0.1 / localhost 永远指执行请求的那台电脑，此配置不能转发给其他设备使用。',
       '连接器名称：' + connectorName,
       'MCP 配置：',
       '```json', JSON.stringify(config, null, 2), '```',
@@ -19,6 +29,7 @@
       '我的素材页：' + base + '/gallery',
       '',
       '请按以下步骤操作：',
+      '0. 写配置前先核实连接目标。若用户在其他电脑使用，而地址是 127.0.0.1 / localhost，先索取网关主机的共享地址和端口，再统一替换 MCP、Skill、素材页及更新清单地址；不要建议在用户电脑安装或启动网关，也不要猜测 IP。连接被拒绝（10061）只证明所连接地址无监听，不能证明远程网关停机。远程地址不可达时检查主机共享、网络互通与共享端口；401/403 应检查 API Key 或访问权限，不能当成端口未启动。/health 返回带 JSON 的 503 表示网关可达但上游未就绪。',
       '1. 识别我实际使用的 Agent 客户端、现有用户配置位置和支持的 MCP 格式。WorkBuddy 使用 ~/.workbuddy/mcp.json；其他客户端按其实际格式配置，不要误写到 WorkBuddy 目录。如果无法确定目标客户端，只询问客户端名称。',
       '2. 修改前备份已有配置；合并上面的连接器，保留其他连接器、偏好和已有模型配置。本机 codex-gateway 与远程 codex-gateway-lan 可以共存。同名条目若指向不同网关，保留原条目，为新连接器选唯一名称，不要直接覆盖。配置损坏时保留原文件并报告具体原因。',
       '3. 从上面的 Skill 地址下载内容，检查为带 YAML frontmatter 的有效 SKILL.md；根据目标客户端的用户 Skill 目录安装。WorkBuddy 路径是 ~/.workbuddy/skills/gpt-image/SKILL.md。Skill 名称为 gpt-image，中文名为 GPT 图片生成。旧 codex-gateway-image 先备份到 Skill 发现目录之外，再迁移名称，保留用户修改并避免重复启用。已有文件不同则先备份，不丢弃用户修改；客户端不支持 Skill 时明确说明，但继续验证 MCP。',
@@ -45,5 +56,5 @@
     return lines.join('\n')
   }
 
-root.CGWClientSetup = { buildClientPrompt };
+root.CGWClientSetup = { buildClientPrompt, buildMcpConfig, isLoopbackBase };
 })(globalThis);

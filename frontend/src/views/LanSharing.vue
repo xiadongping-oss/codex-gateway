@@ -5,6 +5,7 @@ import { gwRequest, copyText } from '../api/client'
 import { isDesktopWorkspace } from '../desktopWorkspace'
 import WorkspacePanel from '../components/WorkspacePanel.vue'
 import { formatAccessConfig } from '../api/access-config'
+import '../../../gateway/client-setup.js'
 defineEmits(['navigate'])
 const lan = ref(null), keys = ref([]), models = ref([]), selectedAddress = ref(''), keyId = ref(''), model = ref('')
 const loading = ref(false), error = ref(''), feedback = ref(''), copyBusy = ref(false)
@@ -76,6 +77,26 @@ async function copyConfig() {
   } catch (e) { if (!disposed) feedback.value = e.message || '复制失败，请重试。' }
   finally { if (!disposed) { copyBusy.value = false; clearTimeout(feedbackTimer); feedbackTimer = setTimeout(() => { feedback.value = '' }, 5000) } }
 }
+async function copyRemotePrompt() {
+  if (!available.value || !keyId.value || copyBusy.value) return
+  const selection = [keyId.value,endpoint.value].join('|')
+  copyBusy.value = true
+  try {
+    const key = await api.revealApiKey(keyId.value)
+    if (disposed || !available.value || selection !== [keyId.value,endpoint.value].join('|')) return
+    if (!key?.token) throw new Error('无法读取所选密钥，请重新选择。')
+    const text = globalThis.CGWClientSetup.buildClientPrompt({base:new URL(endpoint.value).origin,target:'remote',key:key.token})
+    await copyText(text)
+    if (!disposed && selection === [keyId.value,endpoint.value].join('|')) feedback.value = '远程 MCP Prompt 已复制，包含主机共享地址及所选密钥。用户电脑无需安装网关。'
+  } catch (e) { if (!disposed) feedback.value = e.message || '复制失败，请重试。' }
+  finally { if (!disposed) copyBusy.value = false }
+}
+async function copySetupAddress() {
+  if (!available.value) return
+  const address = new URL('/setup',endpoint.value).href
+  try { await copyText(address); if (!disposed) feedback.value = '共享接入页已复制，发给其他用户后由其输入自己的 API Key。' }
+  catch { if (!disposed) feedback.value = '复制失败，请重试。' }
+}
 async function copyAddress() { try { await copyText(endpoint.value); feedback.value = '接口地址已复制。' } catch { feedback.value = '复制失败，请重试。' } }
 onMounted(() => { refresh(); loadStrict(); timer = setInterval(() => { if (!document.hidden) refresh() }, 10000) })
 onUnmounted(() => { disposed = true; generation++; clearInterval(timer); clearTimeout(feedbackTimer) })
@@ -106,7 +127,8 @@ onUnmounted(() => { disposed = true; generation++; clearInterval(timer); clearTi
       <template v-else>
         <div class="sharing-fields"><label>接口地址<select v-model="selectedAddress"><option v-for="a in addresses" :key="a.address" :value="a.address">{{ a.address }} · {{ api.lanKindLabel(a) }}{{ a.preferred ? ' · 推荐' : '' }}</option></select></label><label>API Key<select v-model="keyId"><option value="" disabled>请选择密钥</option><option v-for="k in keys" :key="k.id" :value="k.id">{{ k.name || k.id }}</option></select></label><label>模型<select v-model="model"><option value="" disabled>请选择模型</option><option v-for="m in models" :key="m.id" :value="m.id">{{ m.label || m.id }}</option></select></label></div>
         <div class="sharing-address"><code>{{ endpoint }}</code><button class="btn-ghost" @click="copyAddress">复制地址</button></div>
-        <div class="sharing-actions"><button class="btn-primary" :disabled="!available || !keyId || !model || copyBusy" @click="copyConfig">{{ copyBusy ? '复制中…' : '复制接入配置' }}</button><button class="btn-ghost" @click="$emit('navigate','apikeys')">管理 API Key</button></div>
+        <p class="sharing-hint">远程 MCP 用户无需安装网关或 Node.js。复制下方 Prompt 交给对方 Agent，或发送共享接入页地址；不要发送 127.0.0.1 的本机地址。</p>
+        <div class="sharing-actions"><button class="btn-primary" :disabled="!available || !keyId || copyBusy" @click="copyRemotePrompt">复制远程 MCP Prompt</button><button class="btn-ghost" :disabled="!available" @click="copySetupAddress">复制共享接入页</button><button class="btn-ghost" :disabled="!available || !keyId || !model || copyBusy" @click="copyConfig">{{ copyBusy ? '复制中…' : '复制接入配置' }}</button><button class="btn-ghost" @click="$emit('navigate','apikeys')">管理 API Key</button></div>
         <p v-if="!keys.length" class="sharing-hint">暂无可用密钥，请先创建 API Key。</p>
       </template>
     </WorkspacePanel>

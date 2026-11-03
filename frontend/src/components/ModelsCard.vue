@@ -22,7 +22,7 @@ function isSupported(key) {
 
 <template>
   <section class="card c-models">
-    <div class="card-title">模型能力</div>
+    <div class="card-title">模型能力 <span class="capability-help" tabindex="0" title="开关只影响本机界面的显示与隐藏，不会改变网关实际开放的接口。" aria-label="开关只影响本机界面的显示与隐藏，不会改变网关实际开放的接口。">ⓘ</span></div>
     <div class="card-sub">OpenAI 兼容接口</div>
     <div style="margin-top: 14px">
       <div v-for="item in list" :key="item.key" class="toggle-row">
@@ -42,7 +42,6 @@ function isSupported(key) {
         ></div>
       </div>
     </div>
-    <div class="card-sub hint">开关只影响本机界面的显示与隐藏，不会改变网关实际开放的接口。</div>
   </section>
 </template>
 
@@ -55,5 +54,7 @@ function isSupported(key) {
 .t-tag.off { background: rgba(255,255,255,0.06); color: var(--text-3); border: 1px solid var(--border); }
 .t-tag.hidden { background: rgba(245,158,11,0.12); color: #fbbf24; border: 1px solid rgba(245,158,11,0.28); }
 .switch.disabled { opacity: 0.35; cursor: not-allowed; }
-.hint { margin-top: 12px; line-height: 1.6; }
+.capability-help { display: inline-flex; align-items: center; justify-content: center; margin-left: 4px; color: var(--text-3); font-size: 13px; font-weight: 400; cursor: help; border-radius: 4px; }
+.capability-help:hover, .capability-help:focus-visible { color: var(--primary); }
+.capability-help:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 </style>

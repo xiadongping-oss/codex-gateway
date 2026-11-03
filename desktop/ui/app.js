@@ -163,7 +163,24 @@ $('quit').onclick = () => action('quit')
 $('continue').onclick = () => action('continue')
 $('force').onclick = () => confirmAction('force','结束任务并退出？','进行中的任务会被中断。确认后将停止网关并退出应用。','结束并退出')
 $('restart').onclick = () => confirmAction('restart','结束任务并重启？','进行中的任务会被中断。确认后将重新启动网关。','结束并重启')
-$('logs').onclick = () => action('logs')
+async function showDiagnostics() {
+  $('diagnostic-panel').hidden=false
+  $('diagnostic-refresh').disabled=true
+  try { $('diagnostic-content').textContent=(await invoke('workspace_diagnostics')) || '暂无诊断日志。' }
+  catch(error) { $('diagnostic-content').textContent=errorMessage(error) }
+  finally { $('diagnostic-refresh').disabled=false }
+}
+$('logs').onclick = showDiagnostics
+$('diagnostic-refresh').onclick = showDiagnostics
+$('diagnostic-folder').onclick = () => action('logs')
+$('config-backup').onclick = async () => {
+  $('config-backup').disabled=true
+  $('config-backup-status').textContent='正在后台创建备份，可继续使用其他页面…'
+  try { $('config-backup-status').textContent='备份已保存：'+await invoke('workspace_backup') }
+  catch(error) { $('config-backup-status').textContent=errorMessage(error) }
+  finally { $('config-backup').disabled=false }
+}
+$('open-backups').onclick = () => invoke('workspace_backup_folder').catch(error => { $('config-backup-status').textContent=errorMessage(error) })
 $('fresh-start').onclick = () => action('fresh-start')
 $('maintenance').onclick = () => action('maintenance')
 $('service-stop').onclick = () => action('stop')

@@ -56,6 +56,7 @@
   .toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); background: var(--txt); color: var(--bg); border-radius: 9px; padding: 8px 16px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 9; }
   .toast.show { opacity: .95; }
   footer { text-align: center; color: var(--sub); font-size: 12px; padding: 14px 0 26px; }
+.connection-settings{max-width:920px;margin:20px auto 0;padding:20px;background:var(--panel);border:1px solid var(--line);border-radius:14px}.connection-settings h2{font-size:16px}.role-choices{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}.role-choices [aria-pressed="true"]{color:var(--acc);border-color:var(--acc);background:var(--acc-weak)}#connectionHint{color:var(--sub);font-size:13px;line-height:1.7;margin-top:12px}#sharedChoice label{display:block;margin-bottom:6px;font-size:12px;color:var(--sub)}#sharedBase{max-width:100%;padding:8px 10px;margin:0 8px 8px 0;background:var(--bg);color:var(--txt);border:1px solid var(--line);border-radius:8px}
 </style>
 </head>
 <body>
@@ -67,12 +68,18 @@
   <a class="btn" id="lnkGallery" href="/gallery">素材站</a>
 </header>
 
+<section class="connection-settings" aria-labelledby="connectionTitle">
+  <h2 id="connectionTitle">Agent 在哪台电脑上使用？</h2>
+  <div class="role-choices" role="group" aria-label="接入用户类型"><button id="targetLocal" aria-pressed="false">网关本机用户</button><button id="targetRemote" aria-pressed="false">局域网用户 · 无需安装网关</button></div>
+  <div id="sharedChoice" hidden><label for="sharedBase">主机共享地址</label><select id="sharedBase" aria-label="主机共享地址"></select><button id="refreshShared">刷新共享地址</button></div>
+  <p id="connectionHint" role="note">请先选择接入用户类型，再验证密钥并生成对应的配置。</p>
+</section>
 <div id="gate">
   <h2>输入你的 API Key</h2>
   <p>向网关宿主机索取 <code>cgw-</code> 开头的 Key。验证通过后，本页自动填好全部接入配置。</p>
   <input id="keyInput" type="password" placeholder="cgw-xxxxxxxx" autocomplete="off">
   <div class="err" id="gateErr"></div>
-  <button class="primary" id="btnVerify" style="width:100%">验证并生成接入配置</button>
+  <button class="primary" id="btnVerify" disabled style="width:100%">验证并生成接入配置</button>
 </div>
 
 <main id="app" hidden>
@@ -121,7 +128,7 @@
   <div class="step">
     <h3><span class="no">5</span>验证</h3>
     <div class="desc">重启 WorkBuddy 后对 Agent 说「画一张测试图」；生成成功后 Agent 会给出素材站链接，或直接：</div>
-    <div class="acts"><a class="btn" href="/gallery">打开我的素材站</a><span class="ok-note">✓ 你的 Key 已验证有效</span></div>
+    <div class="acts"><a class="btn" id="lnkGalleryBottom" href="/gallery">打开我的素材站</a><span class="ok-note">✓ 你的 Key 已验证有效</span></div>
   </div>
 </main>
 
@@ -134,15 +141,75 @@
   'use strict';
   var $ = function (id) { return document.getElementById(id) }
   var host = location.host
-  $('hostInfo').textContent = host
-  $('lnkGallery').href = '/gallery'
-  var key = ''
+  var key = '', target = '', connectionBase = '', connectorName = ''
   var verification = 0, pendingVerification = null
-  var connectorName = /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$/i.test(location.hostname) ? 'codex-gateway' : 'codex-gateway-lan'
+  var selectionVersion = 0, connectionRequest = null
+  var localPage = CGWClientSetup.isLoopbackBase(location.origin)
+  $('hostInfo').textContent = host
+  $('lnkGallery').hidden = true
 
   function buildAgentPrompt(secret, update) {
-    return CGWClientSetup.buildClientPrompt({base:location.origin,key:secret,update:!!update})
+    return CGWClientSetup.buildClientPrompt({base:connectionBase,target:target,key:secret,update:!!update})
   }
+  function invalidateSelection() {
+    selectionVersion++; verification++
+    if (connectionRequest) connectionRequest.abort()
+    if (pendingVerification) pendingVerification.abort()
+    connectionRequest = null; pendingVerification = null
+    clearConfigs(); connectionBase = ''; connectorName = ''
+    $('gate').hidden = false; $('keyInput').value = ''; $('gateErr').textContent = ''
+    $('btnVerify').disabled = true; $('lnkGallery').hidden = true
+  }
+  function setBase(base) {
+    var config = CGWClientSetup.buildMcpConfig({base:base,target:target,key:'<未读取密钥>'})
+    connectorName = Object.keys(config.mcpServers)[0]
+    connectionBase = new URL(base).origin
+    host = new URL(base).host
+    $('hostInfo').textContent = host
+    $('btnVerify').disabled = false
+    $('lnkGallery').hidden = false; $('lnkGallery').href = connectionBase + '/gallery'
+  }
+  function loadSharedAddresses() {
+    invalidateSelection()
+    var current = selectionVersion
+    connectionRequest = new AbortController()
+    $('sharedBase').replaceChildren()
+    $('connectionHint').textContent = '正在读取本机网关实际开放的共享地址…'
+    fetch('/client-connection.json',{cache:'no-store',signal:connectionRequest.signal})
+      .then(function(r) {if(!r.ok) throw new Error('共享地址读取失败，请在网关主机开启共享后重试。');return r.json()})
+      .then(function(info) {
+        if(current !== selectionVersion || target !== 'remote') return
+        if(!info.sharingEnabled) throw new Error('网关尚未开启局域网共享。请先在主机“局域网共享”页面开启，再刷新地址；不能使用 127.0.0.1 代替。')
+        var origins = (info.sharedOrigins || []).filter(function(item) {try {CGWClientSetup.buildMcpConfig({base:item.origin,target:'remote',key:'<未读取密钥>'});return true}catch{return false}})
+        if(!origins.length) throw new Error('暂无可用共享地址。请检查主机网络，或从局域网共享页面打开实际共享接入页。')
+        origins.forEach(function(item) {var option=document.createElement('option');option.value=item.origin;option.textContent=item.origin+(item.preferred?' · 推荐':'');$('sharedBase').appendChild(option)})
+        var preferred = origins.find(function(item){return item.preferred}) || origins[0]
+        $('sharedBase').value = preferred.origin
+        setBase(preferred.origin)
+        $('connectionHint').textContent = '局域网用户无需安装网关或 Node.js。Prompt、MCP、Skill、素材页和更新清单统一使用所选共享地址；Key 在当前网关验证，用户侧连通性由 Agent 再检查。'
+      })
+      .catch(function(error) {if(current === selectionVersion && error.name !== 'AbortError') $('connectionHint').textContent=error.name==='TypeError'?'共享地址读取失败，请检查网关连接后刷新。':error.message})
+      .finally(function(){if(current === selectionVersion) connectionRequest=null})
+  }
+  function chooseTarget(value) {
+    invalidateSelection(); target=value
+    $('targetLocal').setAttribute('aria-pressed',String(value==='local'))
+    $('targetRemote').setAttribute('aria-pressed',String(value==='remote'))
+    $('sharedChoice').hidden = !(value==='remote' && localPage)
+    if(value==='remote' && localPage) return loadSharedAddresses()
+    if(value==='local' && !localPage) {
+      $('connectionHint').textContent='本机用户指在网关主机上运行的 Agent。请在网关电脑打开本机接入页；当前共享地址应选择“局域网用户”。'
+      return
+    }
+    setBase(location.origin)
+    $('connectionHint').textContent = value==='local'
+      ? '本机用户：127.0.0.1 仅限网关这台电脑，不能把此 Prompt 发给其他用户；给其他设备配置请选择“局域网用户”。'
+      : '局域网用户：直接连接当前主机共享地址，无需安装网关或 Node.js，也无需在用户电脑启动 4173 端口服务。'
+  }
+  $('targetLocal').addEventListener('click',function(){chooseTarget('local')})
+  $('targetRemote').addEventListener('click',function(){chooseTarget('remote')})
+  $('refreshShared').addEventListener('click',function(){if(target==='remote' && localPage)loadSharedAddresses()})
+  $('sharedBase').addEventListener('change',function(){var base=this.value;invalidateSelection();try{setBase(base)}catch(error){$('connectionHint').textContent=error.message}})
 
   function clearConfigs() {
     key = ''
@@ -166,9 +233,8 @@
   }
 
   function buildConfigs() {
-    var base = location.origin
-    var mcp = { mcpServers: {} }
-    mcp.mcpServers[connectorName] = { url: base + '/mcp', headers: { Authorization: 'Bearer ' + key } }
+    var base = connectionBase
+    var mcp = CGWClientSetup.buildMcpConfig({base:base,target:target,key:key})
     $('mcpJson').textContent = JSON.stringify(mcp, null, 2)
     $('mcpName').textContent = connectorName
     $('agentPromptPreview').value = buildAgentPrompt('<当前已验证的 API Key，复制时填入>')
@@ -185,7 +251,10 @@
       }]
     }
     $('modelJson').textContent = JSON.stringify(model, null, 2)
-    $('lnkScript').href = '/lan-kit/setup-client.mjs?host=' + encodeURIComponent(location.hostname) + '&port=' + encodeURIComponent(location.port || '80')
+    var address = new URL(base), port = address.port || (address.protocol==='https:'?'443':'80')
+    $('lnkScript').href = base + '/lan-kit/setup-client.mjs?host=' + encodeURIComponent(address.hostname) + '&port=' + encodeURIComponent(port)
+    $('lnkSkill').href = base + '/lan-kit/skills/codex-gateway-image/SKILL.md'
+    $('lnkGalleryBottom').href = base + '/gallery'
     $('lnkModels').href = base + '/v1/models'
   }
 
@@ -198,6 +267,7 @@
   }
 
   function verify(v, silent) {
+    if (!connectionBase || !target) { $('gateErr').textContent = '请先选择接入用户类型和可用的连接地址。'; return }
     var current = ++verification
     if (pendingVerification) pendingVerification.abort()
     pendingVerification = new AbortController()
@@ -226,7 +296,7 @@
 
   function bindCopy(btnId, okId, getText) {
     $(btnId).addEventListener('click', function () {
-      if (!key) return
+      if (!key || !connectionBase) return
       var current = verification, copiedKey = key
       copyText(getText()).then(function () { if (current !== verification || copiedKey !== key) return; $(okId).textContent = '✓ 已复制'; toast('已复制到剪贴板') }, function () { if (current === verification) toast('复制失败，请手动选择文本') })
     })
@@ -236,8 +306,8 @@
   bindCopy('btnCopyAgentPrompt', 'agentPromptOk', function () { return buildAgentPrompt(key) })
   bindCopy('btnCopyUpdatePrompt', 'agentPromptOk', function () { return buildAgentPrompt(key,true) })
   $('btnCopyCmd').addEventListener('click', function () {
-    if (!key) return
-    copyText('node setup-client.mjs --name ' + connectorName + ' --port ' + (location.port || '80') + ' --key ' + key).then(function () { toast('已复制，包含当前端口和密钥') })
+    if (!key || !connectionBase) return
+    copyText('node setup-client.mjs --host ' + new URL(connectionBase).hostname + ' --name ' + connectorName + ' --port ' + (new URL(connectionBase).port || (new URL(connectionBase).protocol==='https:'?'443':'80')) + ' --key ' + key).then(function () { toast('已复制，包含当前端口和密钥') })
   })
 })()
 </script>
