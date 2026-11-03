@@ -76,4 +76,3 @@ node --test --test-timeout=60000 gateway/tests/asset-management.test.mjs gateway
 ```
 
 新增验证覆盖跨源集合、批量字段验证与原子写入、整批权限预检、回收文件隔离、重启恢复、恢复重名保护及旧删除入口兼容。浏览器使用独立测试图库验收批量归类、搜索、回收/恢复、版本对比和窄侧栏；不操作用户正式素材。
-

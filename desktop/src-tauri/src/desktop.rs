@@ -386,6 +386,20 @@ mod tests {
             test_identity(&["--data-dir=C:/arbitrary".into()]).unwrap(),
             None
         );
+        // Distribution builds reject test identities even when the caller
+        // supplies the flags and an absolute directory used by debug tests.
+        if !cfg!(debug_assertions) {
+            let path = std::env::temp_dir().join("cgw-desktop-identity");
+            for args in [
+                vec!["--isolated".into()],
+                vec!["--isolated".into(), "--data-dir=relative".into()],
+                vec!["--isolated".into(), format!("--data-dir={}", path.display())],
+                vec!["--smoke".into(), format!("--data-dir={}", path.display())],
+            ] {
+                assert_eq!(test_identity(&args).unwrap(), None);
+            }
+            return;
+        }
         assert!(test_identity(&["--isolated".into()]).is_err());
         assert!(test_identity(&["--isolated".into(), "--data-dir=relative".into()]).is_err());
         let path = std::env::temp_dir().join("cgw-desktop-identity");

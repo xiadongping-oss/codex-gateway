@@ -4,7 +4,7 @@
   function buildClientPrompt(options) {
     var base = new URL(options.base).origin
     var secret = options.key
-    var connectorName = /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$/i.test(new URL(base).hostname) ? 'codex-gateway' : 'codex-gateway-lan' 
+    var connectorName = /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$/i.test(new URL(base).hostname) ? 'codex-gateway' : 'codex-gateway-lan'
     var config = { mcpServers: {} }
     config.mcpServers[connectorName] = { url: base + '/mcp', headers: { Authorization: 'Bearer ' + secret, ...(options.device ? { 'X-CGW-Device-Name': encodeURIComponent(options.device.trim().slice(0,80)) } : {}) } }
     var lines = [
