@@ -1,40 +1,14 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref } from 'vue'
+import CallLogsPanel from '../components/CallLogsPanel.vue'
 import { useLiveData } from '../composables/useLiveData'
-import { usePagination } from '../composables/usePagination'
-import Pagination from '../components/Pagination.vue'
 
 // 调用日志与 bridge 日志都取自共享单例：
 // 此前本页面自己每 2.5s 轮询一次 /__gw/call-logs，而 useLiveData 也在轮询
 // 同一个接口（每 2s），等于同一份数据被拉两遍。改为共用后只保留一路请求。
-const { gwLogs, logs, refreshLogs, logsLoaded: loaded, logsError, gwLogsLoaded, gwLogsError } = useLiveData()
+const { gwLogs, gwLogsLoaded, gwLogsError } = useLiveData()
 
-const filter = ref('all')
-const callerSearch=ref('')
-// 页内 Tab：业务调用日志 / Bridge 进程运行日志（自原「网关控制」页并入）
 const tab = ref('calls')
-
-onMounted(() => {
-  refreshLogs()
-})
-
-// 状态筛选：全部 / 成功 / 限流 / 未授权 / 其他错误
-const filterDefs = [
-  { key: 'all', label: '全部', match: () => true },
-  { key: 'ok', label: '成功 2xx', match: (s) => s >= 200 && s < 300 },
-  { key: 'rate', label: '限流 429', match: (s) => s === 429 },
-  { key: 'auth', label: '未授权 401', match: (s) => s === 401 },
-  { key: 'err', label: '其他错误', match: (s) => s >= 400 && s !== 429 && s !== 401 }
-]
-const shown = computed(() => {
-  const def = filterDefs.find((f) => f.key === filter.value) || filterDefs[0]
-  return logs.value.filter((l) => def.match(l.status) && (!callerSearch.value.trim() || [l.caller?.ip,l.caller?.device,l.caller?.keyName,l.caller?.keyId].some(v=>String(v || '').toLowerCase().includes(callerSearch.value.trim().toLowerCase()))))
-})
-const countOf = (def) => logs.value.filter((l) => def.match(l.status)).length
-const {page,pages,visible}=usePagination(shown,30)
-
-const fmtTime = (ts) => new Date(ts).toLocaleTimeString('zh-CN', { hour12: false })
-const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 401 ? 's-401' : s >= 400 ? 's-500' : '')
 // 错误行判定：[err]/✗ 标记，但「listening」启动横幅虽走 stderr 不是错误，不标红
 const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && !/listening/i.test(line)
 </script>
@@ -46,58 +20,7 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
       <button class="tab" :class="{ active: tab === 'bridge' }" @click="tab = 'bridge'">Bridge 运行日志</button>
     </div>
 
-    <template v-if="tab === 'calls'">
-    <div v-if="logsError" class="log-warning" role="alert">{{ logsError }}<span v-if="loaded"> 当前保留上次获取的记录。</span></div>
-    <div class="page-head">
-      <div class="live-tag"><span class="dot"></span>实时更新</div>
-      <div class="chips">
-        <button
-          v-for="def in filterDefs"
-          :key="def.key"
-          class="chip"
-          :class="{ active: filter === def.key }"
-          @click="filter = def.key; page = 1"
-        >
-          {{ def.label }} <span class="n">{{ countOf(def) }}</span>
-        </button>
-      </div>
-    </div>
-
-    <input class="caller-search" v-model="callerSearch" @input="page=1" placeholder="搜索来源 IP、设备名或密钥名称" aria-label="搜索调用来源" />
-    <p class="caller-note">设备名为客户端自报标签，来源 IP 取自实际连接；未携带设备名的客户端仍可按 IP 和密钥区分。历史日志不补写来源。</p>
-    <div class="card calls-card">
-      <div class="table" v-if="shown.length">
-        <div class="tr th">
-          <span>方法</span><span>端点</span><span>模型</span><span>调用来源 / 密钥</span><span>状态</span>
-          <span>延迟</span><span>Token</span><span>时间</span>
-        </div>
-        <div class="tr" v-for="l in visible" :key="l.id">
-          <span class="mono m-post">{{ l.method }}</span>
-          <span class="mono ep">{{ l.endpoint }}</span>
-          <span class="mono">{{ l.model }}</span>
-          <span class="caller" :title="l.caller?.keyId || ''"><strong>{{l.caller?.device || l.caller?.ip || '历史记录'}}</strong><small v-if="l.caller?.device">{{l.caller.ip}} · 自报设备</small><small>{{l.caller?.keyName || (l.caller ? '未使用 API Key' : '未记录来源')}}<template v-if="l.caller?.keyId"> · {{l.caller.keyId.slice(-8)}}</template></small></span>
-          <span class="mono" :class="statusClass(l.status)">{{ l.status }}</span>
-          <span class="mono">{{ l.latency }}ms</span>
-          <span class="mono">{{ l.tokens ?? '—' }}</span>
-          <span class="mono time">{{ fmtTime(l.at) }}</span>
-        </div>
-      </div>
-      <div class="empty" v-else-if="logsError"><div class="empty-sub">暂时无法确认是否有调用记录，连接恢复后会自动刷新。</div></div>
-      <div class="empty" v-else-if="loaded && filter !== 'all'">
-        <div class="empty-title">该状态下暂无记录</div>
-        <div class="empty-sub">当前筛选「{{ filterDefs.find((f) => f.key === filter)?.label }}」没有匹配的调用，切换到「全部」查看所有记录。</div>
-      </div>
-      <div class="empty" v-else-if="loaded">
-        <div class="empty-title">暂无调用记录</div>
-        <div class="empty-sub">客户端发起调用后，记录会显示在这里。</div>
-      </div>
-      <div class="empty" v-else role="status">
-        <div class="empty-sub">载入中…</div>
-      </div>
-    </div>
-    <Pagination v-model="page" :pages="pages" :total="shown.length" />
-    </template>
-
+    <CallLogsPanel v-if="tab === 'calls'" />
     <template v-else>
       <div v-if="gwLogsError" class="log-warning" role="alert">{{ gwLogsError }}<span v-if="gwLogsLoaded"> 当前保留上次获取的记录。</span></div>
       <div class="page-head">
@@ -118,7 +41,6 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
 
 <style scoped>
 .log-warning { color: var(--amber); background: var(--card); border: 1px solid var(--border-strong); border-radius: 14px; padding: 12px 16px; }
-.table { min-width: 970px; }.calls-card{overflow-x:auto}.caller{display:flex;flex-direction:column;gap:4px;min-width:0}.caller strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis}.caller small{color:var(--text-3);font-size:10px;overflow-wrap:anywhere}.caller-search{border:1px solid var(--border);background:var(--card);color:var(--text);padding:10px 14px;border-radius:9px;width:min(100%,440px)}.caller-note{font-size:11px;color:var(--text-3);line-height:1.6}
 .log-line { overflow-wrap: anywhere; }
 .tabs { display: flex; gap: 4px; margin-bottom: 16px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 4px; width: fit-content; }
 .tab {
@@ -137,31 +59,4 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .live-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--emerald-light); font-family: var(--mono); width: fit-content; }
 .live-tag .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald-light); animation: pulse 1.5s infinite; }
-.chips { display: flex; gap: 6px; flex-wrap: wrap; }
-.chip {
-  background: var(--card); color: var(--text-3); border: 1px solid var(--border);
-  border-radius: 999px; padding: 4px 12px; font-size: 11.5px; cursor: pointer;
-  transition: all 0.15s ease; display: inline-flex; align-items: center; gap: 5px;
-}
-.chip:hover { color: var(--text); border-color: var(--emerald); }
-.chip.active { background: var(--emerald-dim); color: var(--emerald-light); border-color: rgba(139,107,214, 0.35); }
-.chip .n { font-family: var(--mono); font-size: 10.5px; opacity: 0.75; }
-.table { display: flex; flex-direction: column; }
-.tr {
-  display: grid; grid-template-columns: 54px minmax(120px,1fr) minmax(110px,.8fr) minmax(170px,1.1fr) 48px 64px 60px 78px;
-  gap: 12px; align-items: center; padding: 11px 4px;
-  border-top: 1px solid var(--border); font-size: 12.5px;
-}
-.tr.th { color: var(--text-3); font-size: 11.5px; border-top: none; padding-top: 0; }
-.mono { font-family: var(--mono); }
-.m-post { color: var(--emerald-light); }
-.ep { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
-.time { color: var(--text-3); }
-.s-200 { color: var(--emerald-light); }
-.s-429 { color: var(--rose); }
-.s-401 { color: var(--amber); }
-.s-500 { color: var(--rose); }
-.empty { padding: 42px 8px; text-align: center; }
-.empty-title { font-size: 13.5px; color: var(--text-2); margin-bottom: 8px; }
-.empty-sub { font-size: 12px; color: var(--text-3); line-height: 1.7; max-width: 460px; margin: 0 auto; }
 </style>

@@ -161,6 +161,7 @@ impl Policy {
         (self.active.load(Ordering::SeqCst) && self.alive.load(Ordering::SeqCst))
             && same_origin(url, self.port)
             && !secret_url(url)
+            && url.path() == "/"
     }
     fn navigate(&self, url: &Url) -> bool {
         if !(self.active.load(Ordering::SeqCst) && self.alive.load(Ordering::SeqCst)) {
@@ -176,7 +177,7 @@ impl Policy {
                 return false;
             }
             first.take();
-            return true;
+            return url.path() == "/";
         }
         false
     }
@@ -186,7 +187,7 @@ impl Policy {
             && url.host_str().is_some()
             && url.username().is_empty()
             && url.password().is_none()
-            && !same_origin(url, self.port)
+            && (!same_origin(url, self.port) || url.path() != "/")
             && !secret_url(url)
     }
     fn open_external(self: &Arc<Self>, app: &tauri::AppHandle, url: Url, isolated: bool) {
@@ -585,6 +586,10 @@ mod tests {
         assert!(p.navigate(&url));
         assert!(!p.navigate(&url));
         assert!(p.navigate(&"http://127.0.0.1:4173/#settings".parse().unwrap()));
+        let setup: Url = "http://127.0.0.1:4173/setup".parse().unwrap();
+        assert!(!p.navigate(&setup));
+        assert!(!p.internal(&setup));
+        assert!(p.external(&setup));
         for u in [
             "file:///C:/test",
             "javascript:alert(1)",

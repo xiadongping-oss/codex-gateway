@@ -4,7 +4,7 @@ export const DEFAULT_LAN_PORT = 4174
 // Public client shells/downloads only. Their data APIs retain per-Key auth;
 // desktop account/configuration/control routes remain loopback-only.
 const CLIENT_GET_PATHS = new Set([
-  '/setup', '/setup/', '/gallery', '/gallery/', '/client-setup.js', '/client-assets.json',
+  '/setup', '/setup/', '/gallery', '/gallery/', '/client-setup.js', '/client-assets.json', '/client-connection.json',
   '/lan-kit/setup-client.mjs', '/lan-kit/INSTALL.md', '/lan-kit/AGENT-PROMPT.md',
   '/lan-kit/skills/codex-gateway-image/SKILL.md',
 ])

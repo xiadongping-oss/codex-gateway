@@ -15,7 +15,7 @@ const reset = computed(() => !props.quota.resetIn || props.quota.resetIn === 'â€
 </template>
 <style scoped>
 .quota-window { padding:20px; border:1px solid var(--border); border-radius:12px; background:var(--bg); min-width:0; --quota-tone:var(--primary); }
-.window-label { font-size:12px; color:var(--text-2); font-weight:550; }
+.window-label { font-size:12px; color:var(--primary); font-weight:650; letter-spacing:.02em; }
 .window-reading { display:flex; align-items:baseline; gap:10px; margin:10px 0 16px; }
 .window-reading strong { color:var(--quota-tone); font:600 32px/1.15 var(--mono); letter-spacing:-1px; }
 .window-reading small { font-size:16px; margin-left:3px; letter-spacing:0; }

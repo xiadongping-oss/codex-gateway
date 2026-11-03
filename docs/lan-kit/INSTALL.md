@@ -245,3 +245,30 @@ Skill 的作用：教任意模型在生图任务时正确调用 MCP 工具（或
 生图 Skill 的名称为 `gpt-image`（`/gpt-image`），中文「GPT 图片生成」。旧 `codex-gateway-image` 安装应备份到 Skill 发现目录之外再迁移，保留自定义内容，避免启用两份。每次生成成功后由 Agent 的浏览器工具打开/刷新素材页；无浏览器工具时返回链接。素材站使用同一 Key，不能在 URL 中传密钥。
 
 调用日志记录真实连接 IP、密钥名称与 ID；可选 `X-CGW-Device-Name` 请求头为 URI 编码的自报设备标签，不能作为鉴权依据。建议每人/每设备使用独立 Key，不共享密钥，便于区分与停用。
+
+
+## 用户电脑无需安装网关：先区分本机与远程
+
+HTTP MCP 在网关主机上执行。用户电脑只需支持 Streamable HTTP MCP 的 Agent 和自己的 API Key，不需要安装 Codex Gateway、Node.js 或复制宿主机账号。生图 Skill 下载和素材页也使用同一台主机地址。
+
+- 网关本机：`http://127.0.0.1:4173/mcp`，仅供网关这台电脑使用。
+- 其他电脑：`http://<网关主机IP>:<共享端口>/mcp`。桌面版默认共享端口为 4174，以「局域网共享」显示的实际地址为准；命令行版的端口以实际启动参数为准。
+- 接入页：同一共享地址下的 `/setup`；素材页：`/gallery`。两台电脑必须网络互通；Tailscale 地址只适用于可互通的 Tailscale 网络。网关主机需要保持运行。
+
+在桌面「客户端接入」先选择 Agent 在“网关这台电脑”还是“其他设备”；远程接入前先开启共享。也可直接从「局域网共享」复制远程 MCP Prompt 或共享接入页地址。不要把本机的 `/setup` 配置复制给另一台电脑。
+
+### 已误配置成 localhost 时的修复 Prompt
+
+```text
+这是连接另一台电脑的远程 HTTP MCP，用户电脑不需要安装或启动 Codex Gateway。
+正确的网关共享地址是：<粘贴网关主机共享地址，包含协议和端口>
+请备份当前 MCP 配置，修复本次误写为 127.0.0.1:4173 的条目，沿用该条目中已有的 API Key 和设备名，不显示完整 Key，不修改对话模型或其他正常连接器。
+将本连接器及 Skill 下载、素材页、更新清单的地址统一改为上述主机地址，使用 codex-gateway-lan 名称；若同名条目属于另一台主机，保留它并为新连接器选唯一名称。
+然后获取 /client-assets.json、用 Bearer Key 检查 /v1/gen-images/me，并向 /mcp 发送 JSON-RPC tools/list（Accept: application/json, text/event-stream），实际确认 generate_image、list_generated_images、delete_generated_image，正确解析 JSON/SSE。
+连通后下载并安装 gpt-image Skill，说明是否需要信任或重新加载连接器。只检查连接，不自动生成或删除图片。
+```
+
+`10061` / connection refused 只说明目标地址没有监听，不代表远程主机的网关停机。若目标是 `127.0.0.1`，先检查是否误用了本机地址。远程地址连接失败再检查主机共享、网络和端口；401/403 检查 Key/权限；`/health` 返回 JSON 503 表示网关已可达但上游未就绪。
+
+
+网页 `/setup` 同样先选择“网关本机用户”或“局域网用户”。在主机的回环页面为局域网用户生成 Prompt 时，页面会读取当前实际开启的共享地址；共享未开启、读取失败或只有回环地址时停止生成，不自动回退本机地址。切换用户类型或共享地址会使之前的密钥验证与配置失效，需要重新验证。Prompt、MCP、Skill 下载、素材页及更新清单均跟随所选地址。

@@ -4,7 +4,7 @@ import { useLiveData } from '../composables/useLiveData'
 import WorkspacePanel from '../components/WorkspacePanel.vue'
 import AccountCard from '../components/AccountCard.vue'
 import ModelsCard from '../components/ModelsCard.vue'
-import LogsCard from '../components/LogsCard.vue'
+import CallLogsPanel from '../components/CallLogsPanel.vue'
 import BridgePoolCard from '../components/BridgePoolCard.vue'
 import FailoverCard from '../components/FailoverCard.vue'
 defineEmits(['navigate'])
@@ -21,7 +21,7 @@ const state = computed(() => gwConnected.value !== true ? '等待连接' : gw.va
     <div class="runtime-grid"><AccountCard :account="account" @manage="$emit('navigate','account')" /><ModelsCard :capabilities="capabilities" :supported="capabilitiesBase" @toggle="toggleCapability" /></div>
     <BridgePoolCard v-if="gwConnected" :instances="gw.bridgeInstances || []" :pool="gw.bridgePool || {}" :active-account-id="gw.activeAccountId || ''" />
     <FailoverCard v-if="gwConnected" :failover="gw.failover || {}" />
-    <div><LogsCard :logs="logs" /><button class="runtime-log-link btn-ghost" @click="$emit('navigate','logs')">查看全部调用日志 →</button></div>
+    <div><CallLogsPanel title="最近调用" /><button class="runtime-log-link btn-ghost" @click="$emit('navigate','logs')">查看全部调用日志 →</button></div>
   </div>
 </template>
 <style scoped>

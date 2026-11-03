@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { extractUsage } from './response-usage.mjs'
 import { handleEditRoute } from './asset-edit-routes.mjs'
 import { resolveEditRequest } from './asset-edits.mjs'
 import { handleLibraryRoute, generatedRestorePath } from './asset-library-routes.mjs'
@@ -929,31 +930,6 @@ async function applyMode(mode, apiKey, { baseUrl } = {}) {
 // 从上游响应体解析 token usage：兼容非流式 JSON 与流式 SSE（data: 行）
 // 归一化两种字段命名：标准 OpenAI 用 prompt_tokens/completion_tokens；
 // chatgpt-bridge 返回 input_tokens/output_tokens（Codex 风格）。统一成 {promptTokens, completionTokens}
-function extractUsage(text) {
-  if (!text) return null
-  let raw = null
-  try {
-    const obj = JSON.parse(text)
-    if (obj && obj.usage) raw = obj.usage
-  } catch {}
-  if (!raw) {
-    // SSE：逐 event（以 \n\n 分隔）找含 usage 的 data 行
-    for (const evt of text.split('\n\n')) {
-      const m = evt.match(/data:\s*([\s\S]+)/)
-      if (!m) continue
-      const payload = m[1].trim()
-      if (payload === '[DONE]') continue
-      try {
-        const obj = JSON.parse(payload)
-        if (obj && obj.usage) { raw = obj.usage; break }
-      } catch {}
-    }
-  }
-  if (!raw) return null
-  const prompt = raw.prompt_tokens ?? raw.input_tokens ?? 0
-  const completion = raw.completion_tokens ?? raw.output_tokens ?? 0
-  return { promptTokens: Number(prompt) || 0, completionTokens: Number(completion) || 0 }
-}
 
 // 反向代理：根据模式转发
 //   bridge 模式 → 127.0.0.1:BRIDGE_PORT（chatgpt-bridge）
@@ -1136,7 +1112,8 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
         model: callModel || '—',
         status: res.statusCode || 0,
         latency: Date.now() - callT0,
-        tokens: callUsage ? callUsage.promptTokens + callUsage.completionTokens : null
+        usage: callUsage,
+        tokens: callUsage ? callUsage.totalTokens : null
       })
     })
   }
@@ -1551,9 +1528,11 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
         model: `${model || '—'} → ${realModel}`,
         status: up.statusCode || 200,
         latency: Date.now() - t0,
-        tokens: null
+        usage: extractUsage(buf),
+        tokens: extractUsage(buf)?.totalTokens ?? null
       })
-      if (keyId) addKeyUsage(keyId, 0, 0)
+      const imageUsage = extractUsage(buf)
+      if (keyId) addKeyUsage(keyId, imageUsage?.promptTokens || 0, imageUsage?.completionTokens || 0)
     })
   })
   p.on('error', () => {
@@ -2298,6 +2277,18 @@ async function handleHttpRequest(req, res) {
     res.setHeader('Cache-Control','no-store')
     try { return sendJson(res,200,clientAssets(__dirname,APP_VERSION,MCP_HTTP_TOOLS)) }
     catch { return sendJson(res,503,{error:'client_assets_unavailable'}) }
+  }
+  if (req.method === 'GET' && p === '/client-connection.json') {
+    const sharing = lanStatus()
+    res.setHeader('Cache-Control','no-store')
+    return sendJson(res,200,{
+      localOrigin:`http://127.0.0.1:${LAUNCHER_PORT}`,
+      sharingEnabled:sharing.enabled,
+      sharedOrigins:isLoopbackReq(req) && sharing.enabled ? sharing.addresses.map(a=>({
+        origin:`http://${a.address.includes(':') ? '['+a.address+']' : a.address}:${sharing.port}`,
+        preferred:!!a.preferred
+      })) : []
+    })
   }
 
   const editorFiles = { '/asset-library': ['asset-library.html', 'text/html'], '/asset-library.js': ['asset-library.js', 'text/javascript'], '/asset-library.css': ['asset-library.css', 'text/css'], '/asset-editor': ['asset-editor.html', 'text/html'], '/asset-editor.js': ['asset-editor.js', 'text/javascript'], '/asset-editor.css': ['asset-editor.css', 'text/css'] }

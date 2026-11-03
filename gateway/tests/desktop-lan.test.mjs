@@ -45,9 +45,9 @@ test('shared listener allows only exact public client GET routes and keeps manag
   t.after(()=>manager.stop())
   const port=await freePort();await manager.configure({enabled:true,port})
   const base=`http://127.0.0.1:${port}`
-  for(const route of ['/client-setup.js','/client-assets.json','/setup','/setup/','/gallery','/gallery/','/gallery?preview=1','/lan-kit/setup-client.mjs?host=192.0.2.1&port=4174','/lan-kit/INSTALL.md','/lan-kit/AGENT-PROMPT.md','/lan-kit/skills/codex-gateway-image/SKILL.md','/__gw/gen-images/fixture.jpeg','/__gw/gen-images/fixture.webp'])assert.equal((await fetch(base+route)).status,200,route)
+  for(const route of ['/client-connection.json','/client-setup.js','/client-assets.json','/setup','/setup/','/gallery','/gallery/','/gallery?preview=1','/lan-kit/setup-client.mjs?host=192.0.2.1&port=4174','/lan-kit/INSTALL.md','/lan-kit/AGENT-PROMPT.md','/lan-kit/skills/codex-gateway-image/SKILL.md','/__gw/gen-images/fixture.jpeg','/__gw/gen-images/fixture.webp'])assert.equal((await fetch(base+route)).status,200,route)
   const count=reached.length
   for(const route of ['/','/settings','/gallery/admin','/setup-config','/lan-kit/admin-token.json','/__gw/status','/__gw/gen-images','/__gw/apikeys/reveal','/__gw/gen-images/fixture.svg'])assert.equal((await fetch(base+route)).status,403,route)
-  for(const route of ['/setup','/gallery','/client-setup.js','/client-assets.json','/lan-kit/setup-client.mjs'])assert.equal((await fetch(base+route,{method:'POST'})).status,403)
+  for(const route of ['/setup','/gallery','/client-connection.json','/client-setup.js','/client-assets.json','/lan-kit/setup-client.mjs'])assert.equal((await fetch(base+route,{method:'POST'})).status,403)
   assert.equal(reached.length,count,'rejected requests never reach business/control handlers')
 })

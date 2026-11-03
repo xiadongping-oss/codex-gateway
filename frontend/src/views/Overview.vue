@@ -62,7 +62,7 @@ const authOk = computed(() => account.value?.loggedIn !== false)
     <div class="hero-grid">
       <section class="gateway-hero" aria-label="模型代理运行控制">
         <div class="hero-copy">
-          <span class="eyebrow">MODEL PROXY <span class="hero-status" :class="{ stopped: !gw.running }"><i></i>{{ !gwConnected ? '等待连接' : gw.running ? '运行中' : '已停止' }}</span></span>
+          <span class="eyebrow">MODEL PROXY <span class="hero-status" :class="{ stopped: !gw.running }"><i></i>{{ !gwConnected ? '等待连接' : gw.running ? '运行中' : '已停止' }}</span><button class="restart-link" :disabled="gwBusy || !gw.running || !gwConnected" @click="gwRestart">↻ 重启模型代理</button></span>
           <h2>{{ !gwConnected ? '连接你的 AI 工作站' : gw.running ? '让 AI 随时就绪' : '从这里，连接 AI' }}</h2>
           <p>{{ !gwConnected ? '正在等待本地网关返回运行状态。' : gw.running ? '模型代理已启动，可以处理 AI 客户端请求。' : '启动模型代理，开始使用你的模型与工具。' }}</p>
           <div class="hero-facts">
@@ -70,7 +70,7 @@ const authOk = computed(() => account.value?.loggedIn !== false)
             <div><span>服务端口</span><strong>{{ status.port }}</strong></div>
             <div><span>访问地址</span><strong class="host-value">{{ status.host }}</strong></div>
           </div>
-          <button class="restart-link" :disabled="gwBusy || !gw.running || !gwConnected" @click="gwRestart">↻ 重启模型代理</button>
+
         </div>
         <div class="power-area">
           <button class="power-button" :class="{ running: gw.running }" :disabled="gwBusy || !gwConnected" @click="gw.running ? gwStop() : gwStart()" :aria-label="gw.running ? '停止模型代理' : '启动模型代理'">
@@ -106,6 +106,7 @@ const authOk = computed(() => account.value?.loggedIn !== false)
 </template>
 
 <style scoped>
+.eyebrow { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }.eyebrow .restart-link { margin:0 0 0 auto; font-family:inherit; letter-spacing:0; padding:4px 0; }
 .overview { padding: 6px 32px 24px; gap: 18px; }
 .hero-grid { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(240px, 1fr); gap: 20px; }
 .gateway-hero { border-radius: 26px; background: var(--hero); padding: 28px 32px 22px; display: flex; justify-content: space-between; align-items: center; gap: 24px; }
@@ -176,6 +177,7 @@ h2 { font-size: 27px; font-weight: 650; letter-spacing: -.8px; margin-top: 15px;
 </style>
 
 <style scoped>
+.eyebrow { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }.eyebrow .restart-link { margin:0 0 0 auto; font-family:inherit; letter-spacing:0; padding:4px 0; }
 .quick-grid { gap:12px; }
 .quick-card { padding:18px; gap:12px; min-height:90px; text-align:left; transition:background .15s,border-color .15s; }
 .quick-card:hover { background:var(--card-2); border-color:var(--border-strong); }

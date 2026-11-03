@@ -72,10 +72,17 @@ test('LAN MCP records real caller, device and key; public update manifest works,
   const node=process.env.CGW_CLIENT_TEST_RESOURCES ? path.join(resources,'runtime',process.platform==='win32'?'node.exe':'node') : process.execPath
   const open=async()=>{fixture=await desktopFixture({root,resources,node});await fixture.start();await fixture.login()}
   await open()
+  const discoveryBefore=await(await fetch(fixture.ready.origin+'/client-connection.json')).json()
+  assert.equal(discoveryBefore.sharingEnabled,false);assert.deepEqual(discoveryBefore.sharedOrigins,[])
   const key=(await(await fixture.request('/__gw/apikeys',{name:'测试设备专用'})).json()).key
   const port=await freePort()
   assert.equal((await fixture.request('/__gw/lan',{enabled:true,port})).status,200)
   const origin=`http://127.0.0.1:${port}`
+  const discovery=await(await fetch(fixture.ready.origin+'/client-connection.json')).json()
+  assert.equal(discovery.sharingEnabled,true);assert.ok(discovery.sharedOrigins.every(item=>new URL(item.origin).port===String(port)))
+  assert.deepEqual(Object.keys(discovery).sort(),['localOrigin','sharedOrigins','sharingEnabled'])
+  assert.ok(!JSON.stringify(discovery).includes(key.token))
+  assert.equal((await fetch(origin+'/client-connection.json')).status,200)
   const manifest=await(await fetch(origin+'/client-assets.json')).json()
   assert.match(manifest.mcp.sha256,/^[a-f0-9]{64}$/)
   const response=await fetch(origin+'/mcp',{method:'POST',headers:{Authorization:'Bearer '+key.token,'Content-Type':'application/json','X-CGW-Device-Name':encodeURIComponent('设计工作站'),'X-Forwarded-For':'198.51.100.99'},body:JSON.stringify({id:1,jsonrpc:'2.0',method:'tools/call',params:{name:'list_generated_images',arguments:{}}})})

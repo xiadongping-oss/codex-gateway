@@ -468,7 +468,7 @@ const emptyText = computed(() => {
 </script>
 
 <template>
-  <div class="content">
+  <div class="content images-page">
     <div class="page-head">
       <div class="live-tag"><span class="dot"></span>图片素材 · 多来源统一管理 · 共 {{ assets.length }} 项</div>
       <div class="head-actions">
@@ -489,6 +489,14 @@ const emptyText = computed(() => {
       </div>
     </div>
 
+    <div class="asset-tools">
+      <input v-model="search" type="search" placeholder="搜索标题、文件名或提示词" aria-label="搜索素材" />
+      <button class="refresh" :aria-pressed="favoritesOnly" :class="{ primary: favoritesOnly }" @click="favoritesOnly = !favoritesOnly">{{ favoritesOnly ? '★ 已收藏' : '☆ 只看收藏' }}</button>
+      <select v-model="sort" aria-label="素材排序"><option value="newest">最新优先</option><option value="name">名称排序</option></select>
+      <label>卡片大小 <input v-model.number="cardSize" type="range" min="180" max="420" step="20" aria-label="卡片大小" /></label>
+      <span class="sub">{{ filteredAssets.length }} / {{ assets.length }} 项</span>
+    </div>
+
     <!-- 来源 Tabs -->
     <div class="tabs">
       <button class="tab" :class="{ on: active === 'generated' }" @click="switchTab('generated')">
@@ -504,14 +512,6 @@ const emptyText = computed(() => {
         {{ s.name }}<span class="ttag">{{ TYPE_META[s.type]?.tag }}</span>
         <span v-if="manageMode && isCloud(s)" class="tdelete" title="删除素材源" @click.stop="removeSource(s)">✕</span>
       </button>
-    </div>
-
-    <div class="asset-tools">
-      <input v-model="search" type="search" placeholder="搜索标题、文件名或提示词" aria-label="搜索素材" />
-      <button class="refresh" :aria-pressed="favoritesOnly" :class="{ primary: favoritesOnly }" @click="favoritesOnly = !favoritesOnly">{{ favoritesOnly ? '★ 已收藏' : '☆ 只看收藏' }}</button>
-      <select v-model="sort" aria-label="素材排序"><option value="newest">最新优先</option><option value="name">名称排序</option></select>
-      <label>卡片大小 <input v-model.number="cardSize" type="range" min="180" max="420" step="20" aria-label="卡片大小" /></label>
-      <span class="sub">{{ filteredAssets.length }} / {{ assets.length }} 项</span>
     </div>
 
     <!-- 批量操作栏（管理模式 + 本地两类源：批量删除 / 清空） -->
@@ -738,6 +738,15 @@ const emptyText = computed(() => {
 </template>
 
 <style scoped>
+.images-page .page-head { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin:0; }
+.images-page .head-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.images-page .refresh, .images-page .target-select, .images-page .asset-tools select { min-height:36px; border-radius:8px; font-family:inherit; font-weight:500; font-size:12px; padding:7px 12px; }
+.images-page .asset-tools { display:flex; align-items:center; gap:10px; margin:0; flex-wrap:wrap; }
+.images-page .asset-tools>input { flex:1; min-width:180px; height:36px; box-sizing:border-box; }
+.images-page .asset-tools label { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--text-2); }
+.images-page .asset-tools label input { width:100px; }
+.images-page .tabs { margin:0; padding-top:14px; border-top:1px solid var(--border); }
+
 .editor-overlay { position: fixed; inset: 0; z-index: 100; background: var(--bg); }
 .editor-overlay iframe { width: 100%; height: 100%; border: 0; }
 .version-badge { color: var(--emerald); background: var(--emerald-bg); margin-left: 6px; font-size: 10px; padding: 1px 4px; border-radius: 4px; }

@@ -7,6 +7,7 @@ mod console;
 mod desktop;
 mod desktop_check;
 mod diagnostics;
+mod workspace_data;
 #[cfg(target_os = "macos")]
 mod mac_recovery;
 mod migration;
@@ -208,6 +209,9 @@ fn main() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
+            workspace_data::workspace_backup,
+            workspace_data::workspace_backup_folder,
+            workspace_data::workspace_diagnostics,
             gateway_status,
             gateway_action,
             ui_rendered,
@@ -222,6 +226,7 @@ fn main() {
         .setup(|app| {
             let settings = Settings::resolve(app.handle())?;
             std::fs::create_dir_all(&settings.webview_data)?;
+            app.manage(workspace_data::Store { root:settings.data.clone(), webview:settings.webview_data.clone(), busy:AtomicBool::new(false) });
             app.manage(preferences::Store::load(settings.webview_data.parent().ok_or("Missing preferences parent")?.join("preferences.json")));
             let quitting = Arc::new(AtomicBool::new(false));
             desktop::install(app.handle())?;

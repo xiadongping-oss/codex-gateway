@@ -49,7 +49,6 @@ onUnmounted(() => {
     <header class="qo-head"><div><div class="qo-title">账号用量 <span v-if="plan?.badge && plan.badge !== '—'" class="qo-plan">{{ plan.badge }}</span></div><p class="qo-account">{{ account?.name || '当前账号' }}</p></div><div class="qo-actions"><span class="qo-sync">{{ q.source === 'realtime' ? '上游同步 · ' + (ageText || '刚刚') : q.source === 'manual' ? '手动记录' : '等待同步' }}</span><button class="btn-ghost" @click="emit('open')">查看额度 →</button></div></header>
     <div v-if="windows.length" class="qo-windows"><QuotaWindow v-for="(w,i) in windows" :key="w.id || i" :quota="w" compact /></div>
     <p v-else class="qo-empty">暂无额度数据，完成一次调用后自动同步。</p>
-    <p v-if="q.stale" class="qo-empty">数据较早，请到账号页刷新额度。</p>
   </section>
 </template>
 <style scoped>
