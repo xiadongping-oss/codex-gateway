@@ -6,7 +6,8 @@
   "changes": [
     "Remove product-name-only autostart deletion; use hooks.nsh exact installation command ownership check",
     "Remove app-data deletion checkbox and recursive deletion; preserve account data on uninstall",
-    "Project branding: generated purple workspace sidebar/header and original code/companion-node icon, readable UI font, localized welcome/background/data retention copy"
+    "Project branding: generated purple workspace sidebar/header and original code/companion-node icon, readable UI font, localized welcome/background/data retention copy",
+    "Automatic NSIS upgrades invoke the registered previous uninstaller after the running-app check, preserve update settings and unknown files, and stop before copying on cleanup failure"
   ],
   "upgradePolicy": "Review upstream changes together with pinned CLI version; do not replace template automatically"
 }

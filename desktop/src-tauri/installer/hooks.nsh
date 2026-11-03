@@ -1,3 +1,5 @@
+!include "${__FILEDIR__}\upgrade.nsh"
+
 ; Only remove the startup command belonging to this installation.
 ; Account data, logs and WebView data are deliberately retained.
 !macro CGW_REMOVE_OWNED_AUTOSTART RUNKEY APPROVEDKEY VALUENAME

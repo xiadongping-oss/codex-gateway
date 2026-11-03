@@ -72,6 +72,8 @@ jobs:
         run: npm run test:desktop:ui
       - name: Desktop updater tests
         run: npm run test:desktop:updater
+      - name: Installer upgrade wiring checks
+        run: node --test --test-timeout=120000 desktop/installer-upgrade.test.mjs
       - name: Frontend build and dist drift check
         run: npm run check:dist-drift
       - name: Desktop Rust build
