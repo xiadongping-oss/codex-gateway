@@ -28,7 +28,8 @@ async function until(p){for(let n=0;n<100;n++){if(p())return;await sleep(100)}th
 const record=(name,extra={})=>{report.steps.push({name,status:'passed',...extra});console.log('PASS '+name)}
 function registration(){const r=run('reg.exe',['query',registry,'/v','DisplayVersion']);return r.stdout.match(/REG_SZ\s+([^\r\n]*)/)?.[1]}
 
-const helper=path.join(root,'fixture-app.exe'),ready=path.join(root,'owned.ready')
+// NSIS File preserves its input basename, so retain the production filename.
+const helper=path.join(root,'codex-gateway-desktop.exe'),ready=path.join(root,'owned.ready')
 const ps=path.join(root,'build-app.ps1')
 fs.writeFileSync(ps,`Add-Type -TypeDefinition 'using System.IO; using System.Threading; public class Fixture { public static void Main(string[] args) { File.WriteAllText(args[0],"ready"); while(true) Thread.Sleep(500); } }' -OutputAssembly '${helper.replaceAll("'","''")}' -OutputType WindowsApplication\n`)
 run('powershell.exe',['-NoProfile','-NonInteractive','-File',ps])
@@ -53,7 +54,7 @@ function compile(generated,name,legacy){
   const output=path.join(dir,name+'-setup.exe')
   for(const [key,value]of Object.entries({PRODUCTNAME:id,MANUFACTURER:id,BUNDLEID:'com.cgw.upgradefixture.'+id.toLowerCase(),OUTFILE:output,MAINBINARYSRCPATH:helper,DISPLAYLANGUAGESELECTOR:'false'})){
     const expression=new RegExp('^!define '+key+' .*$', 'm');assert.ok(expression.test(script),key)
-    script=script.replace(expression,'!define '+key+' "'+escape(value)+'"')
+    script=script.replace(expression,()=>'!define '+key+' "'+escape(value)+'"')
   }
   if(legacy){
     const copy='  ; Copy main executable\n  File "${MAINBINARYSRCPATH}"'
