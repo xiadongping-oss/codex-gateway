@@ -86,9 +86,11 @@ impl Check {
                   }).catch(() => { window.__workspaceNativeCheck = { error: true }; });
                   const pages = [...document.querySelectorAll('[data-local-page]')].filter(e => !e.hidden);
                   const toggle = document.getElementById('desktop-autostart');
+                  const update = document.getElementById('updater-panel');
                   return JSON.stringify({ state: window.__workspaceNativeCheck || null,
                     domPage: pages.length === 1 ? pages[0].dataset.localPage : null,
-                    checked: toggle?.checked, disabled: toggle?.disabled });
+                    checked: toggle?.checked, disabled: toggle?.disabled,
+                    updateVisible: !!update?.getClientRects().length });
                 })()"#
             } else {
                 r#"JSON.stringify({ domPage: document.querySelector('main[data-workspace-current]')?.dataset.workspaceCurrent || null,
@@ -220,7 +222,7 @@ impl Check {
         let remote = app
             .get_webview(self.console_label.as_deref().unwrap())
             .ok_or("WORKSPACE_CONSOLE_REPLACED")?;
-        let local = matches!(self.stage, 1..=5 | 7 | 12 | 13 | 17);
+        let local = matches!(self.stage, 1..=5 | 7 | 12 | 13 | 17..=19);
         let Some(value) = self.probe(if local { &main } else { &remote }, local)? else {
             return Ok(false);
         };
@@ -231,17 +233,18 @@ impl Check {
         let expected = match self.stage {
             1 | 7 => "service",
             2 => "data",
-            3..=5 => "desktop",
+            3..=5 | 18 => "desktop",
             6 => "account",
             8 => "overview",
             9 | 15 => "runtime",
             10 => "lan",
             11 => "logs",
-            12 | 17 => "data",
+            12 | 19 => "data",
             13 => "service",
             14 => "models",
             16 => "settings",
-            18 | 19 => "overview",
+            17 => "about",
+            20 | 21 => "overview",
             _ => return Err("WORKSPACE_STAGE_INVALID".into()),
         };
         if visible != 1
@@ -254,17 +257,20 @@ impl Check {
         {
             return Ok(false);
         }
+        if local && value["updateVisible"] != (expected == "about") {
+            return Err("WORKSPACE_UPDATE_PANEL_ON_WRONG_PAGE".into());
+        }
         // Both views fill the same client area after maximize, resize and return.
         if (if local { &main } else { &remote }).size().ok() != frame.inner_size().ok() {
             return Ok(false);
         }
-        if matches!(self.stage, 2..=5 | 9..=11 | 13 | 15 | 16)
+        if matches!(self.stage, 2..=5 | 9..=11 | 13 | 15 | 16 | 18 | 19)
             && self.previous_switches != Some(snapshot.view_switches)
         {
             return Err("WORKSPACE_REDUNDANT_WINDOW_TRANSFER".into());
         }
         #[cfg(windows)]
-        if self.stage < 19 && !frame.is_maximized().unwrap_or(false) {
+        if self.stage < 21 && !frame.is_maximized().unwrap_or(false) {
             return Ok(false);
         }
         match self.stage {
@@ -288,13 +294,13 @@ impl Check {
                     },
                 )?;
             }
-            6 | 8..=19 => {
+            6 | 8..=21 => {
                 if (!local && (value["cleanOrigin"] != true || value["sessionReady"] != true))
                     || !console.smoke_passed()
                 {
                     return Err("WORKSPACE_REMOTE_SESSION_CHANGED".into());
                 }
-                if self.stage == 19 {
+                if self.stage == 21 {
                     if !Self::autostart_matches(app, false)? {
                         return Err("WORKSPACE_AUTOSTART_NOT_CLEARED".into());
                     }
@@ -324,12 +330,15 @@ impl Check {
                     8 | 14 => "button[data-workspace-page='runtime']",
                     9 => "button[data-workspace-page='lan']",
                     10 => "button[data-workspace-page='logs']",
-                    11 | 16 => "button[data-workspace-page='data']",
+                    11 => "button[data-workspace-page='data']",
                     12 => "button.nav-item[data-page='service']",
                     13 => "button.nav-item[data-page='models']",
                     15 => "button[data-workspace-page='settings']",
-                    17 => "button.nav-item[data-page='overview']",
-                    18 => {
+                    16 => "button[data-workspace-page='about']",
+                    17 => "button.nav-item[data-page='desktop']",
+                    18 => "button.nav-item[data-page='data']",
+                    19 => "button.nav-item[data-page='overview']",
+                    20 => {
                         #[cfg(windows)]
                         frame
                             .unmaximize()

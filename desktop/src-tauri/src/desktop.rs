@@ -49,7 +49,7 @@ pub fn business_page(page: &str) -> bool {
 }
 
 pub fn local_page(page: &str) -> bool {
-    matches!(page, "service" | "data" | "desktop")
+    matches!(page, "service" | "data" | "desktop" | "about")
 }
 
 pub fn set_page(app: &tauri::AppHandle, page: &str) {

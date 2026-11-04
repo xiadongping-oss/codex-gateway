@@ -1,6 +1,5 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { isDesktopWorkspace, openDesktopWorkspace } from '../desktopWorkspace'
 import { gwRequest } from '../api/client'
 import AccessConfig from '../components/AccessConfig.vue'
 import WorkspacePanel from '../components/WorkspacePanel.vue'
@@ -103,7 +102,6 @@ onMounted(loadProxy)
 </script>
 <template>
   <div class="content settings-page">
-    <div v-if="isDesktopWorkspace()" class="workspace-tabs" aria-label="设置分区"><button class="selected" aria-current="page">连接配置</button><button @click="openDesktopWorkspace('desktop')">应用偏好</button></div>
     <AccessConfig @navigate="$emit('navigate',$event)" />
     <WorkspacePanel title="出网代理" subtitle="供登录授权和模型请求使用，与客户端接入地址无关" :badge="!proxyLoaded ? '读取中' : proxyEnabled ? '已启用' : '直连'">
       <label class="proxy-label" for="proxy-address">代理地址</label>

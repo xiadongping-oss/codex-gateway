@@ -115,6 +115,7 @@ impl Policy {
             "/service" => Some("service"),
             "/data" => Some("data"),
             "/desktop" => Some("desktop"),
+            "/about" => Some("about"),
             _ => None,
         }
     }
@@ -512,7 +513,7 @@ mod tests {
         let (frame, id) = bootstrap();
         let url = validate_bootstrap(&frame, &id, 4173).unwrap();
         let p = Policy::new(4173, &url, Arc::new(AtomicBool::new(true)));
-        for page in ["service", "data", "desktop"] {
+        for page in ["service", "data", "desktop", "about"] {
             let url: Url = format!("cgw-workspace://open/{page}").parse().unwrap();
             assert_eq!(p.workspace_page(&url), Some(page));
             assert!(!p.navigate(&url));
