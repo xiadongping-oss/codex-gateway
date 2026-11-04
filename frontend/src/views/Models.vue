@@ -2,9 +2,11 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import * as api from '../api/gateway'
 import WorkspacePanel from '../components/WorkspacePanel.vue'
-import AccessConfig from '../components/AccessConfig.vue'
+import ModelsCard from '../components/ModelsCard.vue'
+import { useLiveData } from '../composables/useLiveData'
 import AppIcon from '../components/AppIcon.vue'
-defineEmits(['navigate'])
+const emit = defineEmits(['navigate'])
+const { capabilities: visibleCapabilities, capabilitiesBase, toggleCapability } = useLiveData()
 const section = ref('text'), models = ref([]), capabilities = ref(null), imageModel = ref(''), selectedModel = ref('')
 const loading = ref(false), error = ref(''), synced = ref(false)
 let disposed = false
@@ -29,14 +31,14 @@ async function refresh(force=false) {
   } catch {if(!disposed)error.value='目录读取失败，请重试。'}
   finally{if(!disposed)loading.value=false}
 }
-function choose(id){selectedModel.value=id;document.getElementById('model-access')?.scrollIntoView({behavior:'smooth',block:'start'})}
+function choose(id) { emit('navigate', { page:'access', model:id }) }
 onMounted(()=>refresh());onUnmounted(()=>{disposed=true})
 </script>
 <template>
   <div class="content models-page">
     <nav class="capability-nav" aria-label="模型能力分类"><button v-for="item in sections" :key="item.id" :class="{active:section===item.id}" :aria-pressed="section===item.id" @click="section=item.id"><span class="capability-icon"><AppIcon :name="item.icon" /></span><span><strong>{{ item.title }}</strong><small>{{ item.description }}</small></span><span class="capability-arrow">→</span></button></nav>
     <p v-if="error" class="model-error" role="alert">{{ error }}</p>
-    <WorkspacePanel v-if="section==='text'" title="文本与图片理解" subtitle="选择模型后，在下方复制客户端接入配置" :badge="synced ? '目录已同步' : '本地目录'">
+    <WorkspacePanel v-if="section==='text'" title="文本与图片理解" subtitle="查看可用模型，选择后进入统一接入页" :badge="synced ? '目录已同步' : '本地目录'">
       <template #actions><button class="btn-ghost" :disabled="loading" @click="refresh(true)">{{ loading?'刷新中…':'刷新目录' }}</button></template>
       <p v-if="!synced" class="model-note">当前目录可以用于配置，实际调用仍需账号连接正常。</p>
       <div class="text-models"><article v-for="model in textModels" :key="model.id" :class="['model-card',{selected:selectedModel===model.id}]"><div class="model-card-heading"><h3>{{ model.label }}</h3><span v-if="model.id===selectedModel" class="small-badge">已选择</span></div><code>{{ model.id }}</code><p>{{ modelDescriptions[model.id] || '可通过 OpenAI 兼容客户端调用。' }}</p><div class="model-tags"><span>文本与代码</span><span v-if="model.vision">图片输入</span><span>流式响应</span></div><button class="btn-ghost" @click="choose(model.id)">选择并配置</button></article></div>
@@ -58,7 +60,7 @@ onMounted(()=>refresh());onUnmounted(()=>{disposed=true})
       <div v-if="capabilities?.mode!=='openai'" class="image-examples"><article v-for="example in imageExamples" :key="example.title"><h3>{{ example.title }}</h3><code>POST {{ example.endpoint }}</code><pre>{{ JSON.stringify(example.body,null,2) }}</pre></article></div>
       <p class="model-note">编辑接口接受 JSON 或 multipart 文件上传（image / image[]、mask）。蒙版须与原图同尺寸，透明处编辑、不透明处保留；自动扩图使用 PNG 输入。“已接入”表示代码链路就绪，“实测通过／有限”才表示当前账号已验收。</p>
     </WorkspacePanel>
-    <div id="model-access"><AccessConfig :models="models" :model="selectedModel" @update:model="selectedModel=$event" @navigate="$emit('navigate',$event)" /></div>
+    <ModelsCard :capabilities="visibleCapabilities" :supported="capabilitiesBase" @toggle="toggleCapability" />
     <WorkspacePanel title="接口速查" subtitle="同一接口地址可供不同类型的客户端使用"><div class="endpoint-list"><div><code>/v1/responses</code><span>文本、图像输入与工具调用</span></div><div><code>/v1/chat/completions</code><span>OpenAI 兼容对话客户端</span></div><div><code>/v1/images/generations</code><span>标准出图与参考图重绘</span></div><div><code>/v1/images/edits</code><span>图片编辑、蒙版与扩图</span></div></div></WorkspacePanel>
   </div>
 </template>

@@ -87,13 +87,18 @@ impl Check {
                   const pages = [...document.querySelectorAll('[data-local-page]')].filter(e => !e.hidden);
                   const toggle = document.getElementById('desktop-autostart');
                   const update = document.getElementById('updater-panel');
+                  const nav = document.querySelector('.sidebar nav');
                   return JSON.stringify({ state: window.__workspaceNativeCheck || null,
                     domPage: pages.length === 1 ? pages[0].dataset.localPage : null,
                     checked: toggle?.checked, disabled: toggle?.disabled,
-                    updateVisible: !!update?.getClientRects().length });
+                    updateVisible: !!update?.getClientRects().length,
+                    sidebarFits: nav.scrollHeight <= nav.clientHeight,
+                    sidebarItems: nav.querySelectorAll('.nav-item').length });
                 })()"#
             } else {
                 r#"JSON.stringify({ domPage: document.querySelector('main[data-workspace-current]')?.dataset.workspaceCurrent || null,
+                    sidebarFits: document.querySelector('.sidebar .nav').scrollHeight <= document.querySelector('.sidebar .nav').clientHeight,
+                    sidebarItems: document.querySelectorAll('.sidebar .nav-item').length,
                     cleanOrigin: location.protocol === 'http:' && location.hostname === '127.0.0.1',
                     sessionReady: window.__cgwDesktopSession?.authenticated === true && window.__cgwDesktopSession?.mounted === true })"#
             };
@@ -214,7 +219,7 @@ impl Check {
             if !Self::autostart_matches(app, false)? {
                 return Err("WORKSPACE_TEST_AUTOSTART_ALREADY_ENABLED".into());
             }
-            self.click(&window, "button[data-workspace-page='service']")?;
+            self.click(&window, "button[data-workspace-page='desktop']")?;
             self.previous_switches = Some(snapshot.view_switches);
             self.advance();
             return Ok(false);
@@ -222,29 +227,31 @@ impl Check {
         let remote = app
             .get_webview(self.console_label.as_deref().unwrap())
             .ok_or("WORKSPACE_CONSOLE_REPLACED")?;
-        let local = matches!(self.stage, 1..=5 | 7 | 12 | 13 | 17..=19);
+        let local = matches!(self.stage, 1..=6 | 8 | 17..=19);
         let Some(value) = self.probe(if local { &main } else { &remote }, local)? else {
             return Ok(false);
         };
         if value["state"]["error"] == true {
             return Err("WORKSPACE_LOCAL_IPC_DENIED".into());
         }
+        if value["sidebarFits"] != true || value["sidebarItems"] != 6 {
+            return Err("WORKSPACE_SIDEBAR_OVERFLOW_OR_DUPLICATES".into());
+        }
         let page = app.state::<Desktop>().page.lock().unwrap().clone();
         let expected = match self.stage {
-            1 | 7 => "service",
-            2 => "data",
-            3..=5 | 18 => "desktop",
-            6 => "account",
-            8 => "overview",
-            9 | 15 => "runtime",
-            10 => "lan",
-            11 => "logs",
-            12 | 19 => "data",
-            13 => "service",
+            1 | 4..=6 | 8 | 17 => "desktop",
+            2 => "service",
+            3 | 19 => "data",
+            7 => "account",
+            9 | 20 | 21 => "overview",
+            10 => "runtime",
+            11 => "access",
+            12 => "lan",
+            13 => "apikeys",
             14 => "models",
-            16 => "settings",
-            17 => "about",
-            20 | 21 => "overview",
+            15 => "settings",
+            16 => "logs",
+            18 => "about",
             _ => return Err("WORKSPACE_STAGE_INVALID".into()),
         };
         if visible != 1
@@ -264,7 +271,7 @@ impl Check {
         if (if local { &main } else { &remote }).size().ok() != frame.inner_size().ok() {
             return Ok(false);
         }
-        if matches!(self.stage, 2..=5 | 9..=11 | 13 | 15 | 16 | 18 | 19)
+        if matches!(self.stage, 2..=6 | 10..=16 | 18 | 19)
             && self.previous_switches != Some(snapshot.view_switches)
         {
             return Err("WORKSPACE_REDUNDANT_WINDOW_TRANSFER".into());
@@ -274,10 +281,11 @@ impl Check {
             return Ok(false);
         }
         match self.stage {
-            1 => self.click(&main, "button.nav-item[data-page='data']")?,
-            2 => self.click(&main, "button.nav-item[data-page='desktop']")?,
-            3..=5 => {
-                let enabled = self.stage == 4;
+            1 => self.click(&main, ".workspace-sections button[data-page='service']")?,
+            2 => self.click(&main, ".workspace-sections button[data-page='data']")?,
+            3 => self.click(&main, ".workspace-sections button[data-page='desktop']")?,
+            4..=6 => {
+                let enabled = self.stage == 5;
                 if value["state"]["autostart"] != enabled
                     || value["checked"] != enabled
                     || value["disabled"] != false
@@ -287,14 +295,14 @@ impl Check {
                 }
                 self.click(
                     &main,
-                    if self.stage == 5 {
+                    if self.stage == 6 {
                         "button.nav-item[data-page='account']"
                     } else {
                         "#desktop-autostart"
                     },
                 )?;
             }
-            6 | 8..=21 => {
+            7 | 9..=21 => {
                 if (!local && (value["cleanOrigin"] != true || value["sessionReady"] != true))
                     || !console.smoke_passed()
                 {
@@ -326,17 +334,16 @@ impl Check {
                     return Ok(true);
                 }
                 let selector = match self.stage {
-                    6 => "button[data-workspace-page='service']",
-                    8 | 14 => "button[data-workspace-page='runtime']",
-                    9 => "button[data-workspace-page='lan']",
-                    10 => "button[data-workspace-page='logs']",
-                    11 => "button[data-workspace-page='data']",
-                    12 => "button.nav-item[data-page='service']",
-                    13 => "button.nav-item[data-page='models']",
-                    15 => "button[data-workspace-page='settings']",
-                    16 => "button[data-workspace-page='about']",
-                    17 => "button.nav-item[data-page='desktop']",
-                    18 => "button.nav-item[data-page='data']",
+                    7 | 16 => "button[data-workspace-page='desktop']",
+                    9 => "button[data-workspace-page='runtime']",
+                    10 => "button.nav-item[data-workspace-page='access']",
+                    11 => "button[data-workspace-page='lan']",
+                    12 => "button[data-workspace-page='apikeys']",
+                    13 => "button[data-workspace-page='models']",
+                    14 => "button[data-workspace-page='settings']",
+                    15 => "button[data-workspace-page='logs']",
+                    17 => ".workspace-sections button[data-page='about']",
+                    18 => ".workspace-sections button[data-page='data']",
                     19 => "button.nav-item[data-page='overview']",
                     20 => {
                         #[cfg(windows)]
@@ -351,7 +358,7 @@ impl Check {
                 };
                 self.click(if local { &main } else { &remote }, selector)?;
             }
-            7 => self.click(&main, "button.nav-item[data-page='overview']")?,
+            8 => self.click(&main, "button.nav-item[data-page='overview']")?,
             _ => unreachable!(),
         }
         self.previous_switches = Some(snapshot.view_switches);

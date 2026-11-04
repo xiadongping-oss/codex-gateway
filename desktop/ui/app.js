@@ -138,11 +138,15 @@ function showPage(page) {
   const current = Object.hasOwn(LOCAL_PAGES, page) ? page : 'service'
   for (const section of document.querySelectorAll('[data-local-page]')) section.hidden = section.dataset.localPage !== current
   for (const button of document.querySelectorAll('.nav-item')) {
-    const selected = button.dataset.page === current
+    const selected = button.dataset.page === 'desktop'
     button.classList.toggle('active',selected)
     if (selected) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current')
   }
-  $('page-title').textContent = LOCAL_PAGES[current].title
+  for (const button of document.querySelectorAll('.workspace-sections button')) {
+    if (button.dataset.page === current) button.setAttribute('aria-current','page')
+    else button.removeAttribute('aria-current')
+  }
+  $('page-title').textContent = '设置'
   $('page-subtitle').textContent = LOCAL_PAGES[current].subtitle
 }
 window.showWorkspacePage = showPage

@@ -1,24 +1,21 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { computed } from 'vue'
 import { useLiveData } from '../composables/useLiveData'
 
 const emit = defineEmits(['navigate'])
 import QuotaMiniCard from '../components/QuotaMiniCard.vue'
 import AppIcon from '../components/AppIcon.vue'
-import SetupModal from '../components/SetupModal.vue'
 
 const { status, account, gw, gwBusy, gwRestart, gwStart, gwStop, gwConnected, gwActionError, lastError } =
   useLiveData()
 
 const workspaceLinks = [
-  {key:'models',title:'模型与接入',description:'查看模型，连接客户端'},
+  {key:'access',title:'客户端接入',description:'配置客户端、模型与密钥'},
   {key:'account',title:'账号管理',description:'登录授权与账号额度'},
   {key:'images',title:'图片素材',description:'生成图库与本地素材'},
   {key:'logs',title:'调用日志',description:'请求记录与运行日志'},
-  {key:'runtime',title:'运行详情',description:'账号实例与自动切换'},
-  {key:'lan',title:'局域网共享',description:'网络地址与共享配置'}
+  {key:'runtime',title:'实例与自动切换',description:'账号实例与故障转移'}
 ]
-const showSetup = ref(false)
 const fmtUptime = (s) => {
   const h = String(Math.floor(s / 3600)).padStart(2, '0')
   const m = String(Math.floor((s % 3600) / 60)).padStart(2, '0')
@@ -84,7 +81,7 @@ const authOk = computed(() => account.value?.loggedIn !== false)
         <div class="account-symbol"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0116 0v2"/></svg></div>
         <h3>{{ authOk ? (account.name || '当前账号') : '连接你的账号' }}</h3>
         <p class="account-description">{{ authOk ? (account.email?.includes('@') ? account.email : '已保存本机登录态') : '登录后即可调用模型、生成图片。' }}</p>
-        <button class="btn-ghost" @click="showSetup = true">{{ authOk ? '管理登录' : '连接 / 登录' }} <span>↗</span></button>
+        <button class="btn-ghost" @click="$emit('navigate', 'account')">{{ authOk ? '管理登录' : '连接 / 登录' }} <span>↗</span></button>
       </section>
     </div>
 
@@ -101,7 +98,6 @@ const authOk = computed(() => account.value?.loggedIn !== false)
       <button v-for="item in workspaceLinks" :key="item.key" class="quick-card" @click="$emit('navigate',item.key)"><span class="quick-icon"><AppIcon :name="item.key" /></span><span class="quick-copy"><b>{{ item.title }}</b><small>{{ item.description }}</small></span><span class="arrow" aria-hidden="true">→</span></button>
     </div>
     <QuotaMiniCard @open="$emit('navigate', 'account')" />
-    <SetupModal v-if="showSetup" @close="showSetup = false" @changed="showSetup = false" />
   </div>
 </template>
 

@@ -1,14 +1,11 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import * as api from '../api/gateway'
-import { gwRequest, copyText } from '../api/client'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { gwRequest } from '../api/client'
 import { isDesktopWorkspace } from '../desktopWorkspace'
 import WorkspacePanel from '../components/WorkspacePanel.vue'
-import { formatAccessConfig } from '../api/access-config'
-import '../../../gateway/client-setup.js'
 defineEmits(['navigate'])
-const lan = ref(null), keys = ref([]), models = ref([]), selectedAddress = ref(''), keyId = ref(''), model = ref('')
-const loading = ref(false), error = ref(''), feedback = ref(''), copyBusy = ref(false)
+const lan = ref(null)
+const loading = ref(false), error = ref(''), feedback = ref('')
 const saving = ref(false), portDraft = ref('4174'), portDirty = ref(false)
 const strict = ref(null), strictBusy = ref(false), strictError = ref('')
 async function loadStrict() {
@@ -22,31 +19,22 @@ async function toggleStrict() {
   catch (error) { if (!disposed) strictError.value = error.message || '设置未能保存，请重试。' }
   finally { if (!disposed) strictBusy.value = false }
 }
-let generation = 0, timer, feedbackTimer, disposed = false
+let generation = 0, timer, disposed = false
 const addresses = computed(() => lan.value?.addresses || [])
-const endpoint = computed(() => selectedAddress.value && lan.value ? `http://${selectedAddress.value}:${lan.value.port}/v1` : '')
-const available = computed(() => !!lan.value?.enabled && !!endpoint.value)
 const validPort = computed(() => /^\d+$/.test(portDraft.value) && Number(portDraft.value) >= 1024 && Number(portDraft.value) <= 65535)
 function applyLan(value, resetPort = false) {
   lan.value = value
   if (!portDirty.value || resetPort) { portDraft.value = String(value.port); portDirty.value = false }
-  if (!addresses.value.some(a => a.address === selectedAddress.value)) selectedAddress.value = api.primaryLanAddress(addresses.value)?.address || ''
 }
-watch([keyId, model, selectedAddress], () => { feedback.value = '' }, { flush: 'sync' })
 async function refresh() {
   if (loading.value || saving.value) return
   const seq = ++generation
   loading.value = true
   try {
-    const [status, keyList, catalog] = await Promise.all([gwRequest('/__gw/status'), gwRequest('/__gw/apikeys'), gwRequest('/__gw/models')])
+    const status = await gwRequest('/__gw/status')
     if (seq !== generation) return
     if (!status?.lan || !Array.isArray(status.lan.addresses)) throw new Error('暂时无法读取共享状态。')
     applyLan(status.lan)
-    keys.value = (keyList.keys || []).filter(k => !k.disabled)
-    models.value = catalog.data || []
-    if (!addresses.value.some(a => a.address === selectedAddress.value)) selectedAddress.value = api.primaryLanAddress(addresses.value)?.address || ''
-    if (!keys.value.some(k => k.id === keyId.value)) keyId.value = keys.value[0]?.id || ''
-    if (!models.value.some(m => m.id === model.value)) model.value = catalog.defaultModel || models.value[0]?.id || ''
     error.value = ''
   } catch (e) { if (seq === generation) error.value = e.message || '共享状态读取失败，请重试。' }
   finally { if (seq === generation) loading.value = false }
@@ -60,46 +48,12 @@ async function saveSharing(enabled) {
     if (disposed) return
     if (!result.ok || !result.lan) throw new Error('未能确认共享状态，请刷新后重试。')
     applyLan(result.lan, true)
-    feedback.value = enabled ? '共享已开启，设置已保存。可复制下方配置供其他设备接入。' : '共享已关闭，设置已保存。'
+    feedback.value = enabled ? '共享已开启，设置已保存。请到「配置客户端」为其他设备配置接入。' : '共享已关闭，设置已保存。'
   } catch (e) { if (!disposed) error.value = e.detail || e.message || '共享设置保存失败，请重试。' }
   finally { if (!disposed) saving.value = false }
 }
-async function copyConfig() {
-  if (!available.value || !keyId.value || !model.value || copyBusy.value) return
-  const selection = [keyId.value, model.value, endpoint.value].join('|')
-  copyBusy.value = true
-  try {
-    const key = await api.revealApiKey(keyId.value)
-    if (disposed || !available.value || selection !== [keyId.value, model.value, endpoint.value].join('|')) return
-    if (!key?.token) throw new Error('无法读取所选密钥，请重新选择。')
-    await copyText(formatAccessConfig(endpoint.value,key.token,model.value))
-    feedback.value = '接入配置已复制，包含所选 API Key。'
-  } catch (e) { if (!disposed) feedback.value = e.message || '复制失败，请重试。' }
-  finally { if (!disposed) { copyBusy.value = false; clearTimeout(feedbackTimer); feedbackTimer = setTimeout(() => { feedback.value = '' }, 5000) } }
-}
-async function copyRemotePrompt() {
-  if (!available.value || !keyId.value || copyBusy.value) return
-  const selection = [keyId.value,endpoint.value].join('|')
-  copyBusy.value = true
-  try {
-    const key = await api.revealApiKey(keyId.value)
-    if (disposed || !available.value || selection !== [keyId.value,endpoint.value].join('|')) return
-    if (!key?.token) throw new Error('无法读取所选密钥，请重新选择。')
-    const text = globalThis.CGWClientSetup.buildClientPrompt({base:new URL(endpoint.value).origin,target:'remote',key:key.token})
-    await copyText(text)
-    if (!disposed && selection === [keyId.value,endpoint.value].join('|')) feedback.value = '远程 MCP Prompt 已复制，包含主机共享地址及所选密钥。用户电脑无需安装网关。'
-  } catch (e) { if (!disposed) feedback.value = e.message || '复制失败，请重试。' }
-  finally { if (!disposed) copyBusy.value = false }
-}
-async function copySetupAddress() {
-  if (!available.value) return
-  const address = new URL('/setup',endpoint.value).href
-  try { await copyText(address); if (!disposed) feedback.value = '共享接入页已复制，发给其他用户后由其输入自己的 API Key。' }
-  catch { if (!disposed) feedback.value = '复制失败，请重试。' }
-}
-async function copyAddress() { try { await copyText(endpoint.value); feedback.value = '接口地址已复制。' } catch { feedback.value = '复制失败，请重试。' } }
 onMounted(() => { refresh(); loadStrict(); timer = setInterval(() => { if (!document.hidden) refresh() }, 10000) })
-onUnmounted(() => { disposed = true; generation++; clearInterval(timer); clearTimeout(feedbackTimer) })
+onUnmounted(() => { disposed = true; generation++; clearInterval(timer) })
 </script>
 <template>
   <div class="content sharing-page">
@@ -122,15 +76,8 @@ onUnmounted(() => { disposed = true; generation++; clearInterval(timer); clearTi
       <p v-if="strictError" class="sharing-notice" role="alert">{{ strictError }}</p>
       <button class="btn-ghost" style="margin-top:12px" @click="$emit('navigate','apikeys')">管理 API Key</button>
     </WorkspacePanel>
-    <WorkspacePanel v-if="lan?.enabled" title="客户端接入" subtitle="选择共享地址、密钥和模型，复制到 OpenAI 兼容客户端">
-      <div v-if="!addresses.length" class="sharing-empty"><h3>暂无可用网络地址</h3><p>请检查网卡连接状态，再刷新列表。</p></div>
-      <template v-else>
-        <div class="sharing-fields"><label>接口地址<select v-model="selectedAddress"><option v-for="a in addresses" :key="a.address" :value="a.address">{{ a.address }} · {{ api.lanKindLabel(a) }}{{ a.preferred ? ' · 推荐' : '' }}</option></select></label><label>API Key<select v-model="keyId"><option value="" disabled>请选择密钥</option><option v-for="k in keys" :key="k.id" :value="k.id">{{ k.name || k.id }}</option></select></label><label>模型<select v-model="model"><option value="" disabled>请选择模型</option><option v-for="m in models" :key="m.id" :value="m.id">{{ m.label || m.id }}</option></select></label></div>
-        <div class="sharing-address"><code>{{ endpoint }}</code><button class="btn-ghost" @click="copyAddress">复制地址</button></div>
-        <p class="sharing-hint">远程 MCP 用户无需安装网关或 Node.js。复制下方 Prompt 交给对方 Agent，或发送共享接入页地址；不要发送 127.0.0.1 的本机地址。</p>
-        <div class="sharing-actions"><button class="btn-primary" :disabled="!available || !keyId || copyBusy" @click="copyRemotePrompt">复制远程 MCP Prompt</button><button class="btn-ghost" :disabled="!available" @click="copySetupAddress">复制共享接入页</button><button class="btn-ghost" :disabled="!available || !keyId || !model || copyBusy" @click="copyConfig">{{ copyBusy ? '复制中…' : '复制接入配置' }}</button><button class="btn-ghost" @click="$emit('navigate','apikeys')">管理 API Key</button></div>
-        <p v-if="!keys.length" class="sharing-hint">暂无可用密钥，请先创建 API Key。</p>
-      </template>
+    <WorkspacePanel title="连接其他设备" subtitle="在统一接入页选择其他设备，复制 Prompt、MCP 或模型配置">
+      <button class="btn-primary" @click="$emit('navigate','access')">配置客户端 →</button>
     </WorkspacePanel>
     <p v-if="feedback" class="sharing-feedback" role="status">{{ feedback }}</p>
     <WorkspacePanel title="访问范围" subtitle="共享仅提供模型接口，管理功能保留在本机">
@@ -157,16 +104,8 @@ h3 { font-size:13px; font-weight:600; } p { font-size:12px; color:var(--text-2);
 .sharing-port-row input:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .sharing-port-row p { margin:0; flex:1; min-width:220px; }
 .sharing-cancel { margin-top:12px; }
-.sharing-fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
-.sharing-fields label { display:flex; flex-direction:column; gap:8px; font-size:12px; color:var(--text-2); min-width:0; }
-select { width:100%; padding:10px 12px; background:var(--bg); border:1px solid var(--border-strong); border-radius:8px; color:var(--text); font:inherit; }
-select:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
-.sharing-address { display:flex; align-items:center; gap:12px; margin:20px 0; padding:16px; background:var(--bg); border:1px solid var(--border); border-radius:10px; }
-.sharing-address code { flex:1; min-width:0; overflow-wrap:anywhere; font-size:13px; }
-.sharing-address button { flex:none; }
-.sharing-actions { display:flex; gap:12px; flex-wrap:wrap; }.sharing-actions button { white-space:nowrap; }
 .sharing-rules { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:24px; }
 .sharing-notice { color:var(--rose); }.sharing-feedback { color:var(--primary); }.sharing-hint { color:var(--amber); }
-@media(max-width:1000px) { .sharing-summary,.sharing-fields { grid-template-columns:minmax(0,1fr); } }
-@media(max-width:760px) { .sharing-rules { grid-template-columns:minmax(0,1fr); gap:16px; }.sharing-address { flex-wrap:wrap; }.sharing-control-top { align-items:flex-start; flex-direction:column; gap:16px; } }
+@media(max-width:1000px) { .sharing-summary { grid-template-columns:minmax(0,1fr); } }
+@media(max-width:760px) { .sharing-rules { grid-template-columns:minmax(0,1fr); gap:16px; }.sharing-control-top { align-items:flex-start; flex-direction:column; gap:16px; } }
 </style>

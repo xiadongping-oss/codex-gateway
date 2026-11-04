@@ -7,16 +7,18 @@ import { formatAccessConfig } from '../api/access-config'
 import '../../../gateway/client-setup.js'
 
 const emit = defineEmits(['navigate'])
-const keys=ref([]), models=ref([]), lan=ref(null), keyId=ref(''), model=ref(''), base=ref(''), device=ref('')
+const props = defineProps({ initialModel: { type:String, default:'' } })
+const keys=ref([]), models=ref([]), lan=ref(null), keyId=ref(''), model=ref(props.initialModel), base=ref(''), device=ref('')
+const manual = ref(false), manualKey = ref('')
+const hasKey = computed(() => manual.value ? !!manualKey.value.trim() : !!keyId.value)
 const target=ref('')
 const manifest=ref(null), loading=ref(true), busy=ref(false), error=ref(''), feedback=ref(''), mode=ref('install')
 let disposed=false, revision=0
 const localBase=(BASE || window.location.origin).replace(/\/$/,'')
 const connections=computed(()=>target.value==='local' ? [{url:localBase,label:'网关本机 · '+localBase}] : target.value==='remote' && lan.value?.enabled ? (lan.value.addresses || []).map(a=>({url:`http://${a.address.includes(':') ? '['+a.address+']' : a.address}:${lan.value.port}`,label:`共享主机 · ${a.address}:${lan.value.port}`,preferred:a.preferred})) : [])
 watch(connections,items=>{if(!items.some(c=>c.url===base.value))base.value=items.find(c=>c.preferred)?.url || items[0]?.url || ''},{flush:'sync'})
-const textModels=computed(()=>models.value.filter(m=>m.kind!=='image'))
 const prompt=computed(()=>base.value ? globalThis.CGWClientSetup.buildClientPrompt({base:base.value,target:target.value,key:'<复制时填入所选 API Key>',device:device.value,update:mode.value==='update'}) : '')
-watch([base,keyId,device,model,mode,target],()=>{revision++;feedback.value=''}, {flush:'sync'})
+watch([base,keyId,device,model,mode,target,manual,manualKey],()=>{revision++;feedback.value=''}, {flush:'sync'})
 async function load() {
   loading.value=true;error.value=''
   try {
@@ -30,17 +32,18 @@ async function load() {
   finally {if(!disposed)loading.value=false}
 }
 async function copy(kind) {
-  if(busy.value || !keyId.value || !manifest.value)return
+  if(busy.value || !hasKey.value || !manifest.value)return
   if(!target.value || !base.value){error.value='请先选择 Agent 所在电脑及可用的连接地址。';return}
   const selected=revision
   busy.value=true;feedback.value='';error.value=''
   try {
-    const token=(await api.revealApiKey(keyId.value))?.token
+    const token=manual.value ? manualKey.value.trim() : (await api.revealApiKey(keyId.value))?.token
     if(disposed || selected!==revision)return
     if(!token)throw new Error('未能读取密钥，请重新选择。')
     let text
     if(kind==='prompt')text=globalThis.CGWClientSetup.buildClientPrompt({base:base.value,target:target.value,key:token,device:device.value,update:mode.value==='update'})
     else if(kind==='model')text=formatAccessConfig(base.value+'/v1',token,model.value)
+    else if(kind==='json')text=JSON.stringify({baseUrl:base.value+'/v1',apiKey:token,model:model.value},null,2)
     else text=JSON.stringify(globalThis.CGWClientSetup.buildMcpConfig({base:base.value,target:target.value,key:token,device:device.value}),null,2)
     await copyText(text)
     if(!disposed && selected===revision)feedback.value='已复制，包含所选 API Key。请粘贴到目标客户端的私有配置或对话。'
@@ -68,9 +71,11 @@ onUnmounted(()=>{disposed=true;revision++})
       <p v-else class="connection-note">用户电脑只需 Agent 和 API Key；MCP、Skill 下载与素材页均连接网关主机，无需安装网关或 Node.js。{{lan?.enabled?'请选择两台电脑可互通的主机地址。':'共享尚未开启，请先在“管理共享”中开启局域网共享。'}}</p>
       <div class="fields">
         <label>连接地址<select v-model="base" :disabled="loading || busy"><option v-if="!connections.length" value="">{{target==='remote'?'请先开启共享':'请先选择 Agent 所在电脑'}}</option><option v-for="c in connections" :key="c.url" :value="c.url">{{c.label}}</option></select></label>
-        <label>API Key<select v-model="keyId" :disabled="loading || busy"><option value="">请选择密钥</option><option v-for="k in keys" :key="k.id" :value="k.id">{{k.name}} · {{k.mask}}</option></select></label>
+        <label>API Key<select v-model="keyId" :disabled="loading || busy || manual"><option value="">请选择密钥</option><option v-for="k in keys" :key="k.id" :value="k.id">{{k.name}} · {{k.mask}}</option></select></label>
         <label>设备名称（可选）<input v-model="device" maxlength="80" :disabled="busy" placeholder="例如：设计工作站" /></label>
       </div>
+      <label class="manual-key-toggle"><input v-model="manual" type="checkbox" :disabled="busy" />手动填写 API Key</label>
+      <label v-if="manual">API Key<input v-model="manualKey" type="password" autocomplete="off" :disabled="busy" placeholder="填写客户端使用的 API Key" /></label>
       <p class="hint">局域网地址需要先开启共享。密钥只在复制时读取，预览始终隐藏密钥；设备名由客户端自报，IP 由连接记录。</p>
       <div class="actions"><button class="btn-ghost" :disabled="!base" @click="copySetup">复制网页接入地址</button></div>
     </WorkspacePanel>
@@ -80,7 +85,7 @@ onUnmounted(()=>{disposed=true;revision++})
       <div class="mode" role="group" aria-label="配置方式"><button :class="{active:mode==='install'}" @click="mode='install'">首次配置</button><button :class="{active:mode==='update'}" @click="mode='update'">更新 Skill / MCP</button></div>
       <p class="intro">{{mode==='update'?'比较内容哈希、备份并合并更新，保留现有密钥与其他配置；重新连接后验证工具定义。':'安装「GPT 图片生成」Skill（/gpt-image）与图片 MCP，保留现有模型和其他连接器。'}}</p>
       <textarea class="preview" :value="prompt" readonly rows="7" placeholder="选择 Agent 所在电脑后生成配置 Prompt" aria-label="配置 Prompt 预览，密钥已隐藏" />
-      <div class="actions"><button class="btn-primary" :disabled="loading || busy || !keyId || !manifest || !base || !target" @click="copy('prompt')">{{busy?'复制中…':mode==='update'?'复制更新 Prompt':'复制配置 Prompt'}}</button><span class="hint">验证连接不会自动生成或删除图片。</span></div>
+      <div class="actions"><button class="btn-primary" :disabled="loading || busy || !hasKey || !manifest || !base || !target" @click="copy('prompt')">{{busy?'复制中…':mode==='update'?'复制更新 Prompt':'复制配置 Prompt'}}</button><span class="hint">验证连接不会自动生成或删除图片。</span></div>
       <div v-if="manifest" class="versions"><span>Skill <code>{{manifest.skill.sha256.slice(0,12)}}</code></span><span>MCP <code>{{manifest.mcp.sha256.slice(0,12)}}</code></span><button class="btn-ghost" :disabled="loading || busy" @click="load">刷新版本</button></div>
       <p class="hint">这里显示网关提供的版本。目标客户端是否已安装、是否已重新加载，由更新 Prompt 实际检查。出图后 Skill 会要求 Agent 每次打开或刷新素材页；客户端需要支持浏览器工具。</p>
     </WorkspacePanel>
@@ -88,13 +93,14 @@ onUnmounted(()=>{disposed=true;revision++})
     <WorkspacePanel title="手动接入" subtitle="支持 Streamable HTTP MCP 和 OpenAI 兼容客户端">
       <div class="manual">
         <label>
-          对话模型
+          接入模型
           <select v-model="model" :disabled="loading || busy">
-            <option v-for="m in textModels" :key="m.id" :value="m.id">{{m.id}}</option>
+            <option v-for="m in models" :key="m.id" :value="m.id">{{m.id}}</option>
           </select>
         </label>
-        <button class="btn-ghost" :disabled="loading || busy || !keyId || !manifest || !base || !target" @click="copy('mcp')">复制 MCP JSON</button>
-        <button class="btn-ghost" :disabled="loading || busy || !keyId || !model || !manifest || !base || !target" @click="copy('model')">复制模型接入配置</button>
+        <button class="btn-ghost" :disabled="loading || busy || !hasKey || !manifest || !base || !target" @click="copy('mcp')">复制 MCP JSON</button>
+        <button class="btn-ghost" :disabled="loading || busy || !hasKey || !model || !manifest || !base || !target" @click="copy('model')">复制模型接入配置</button>
+        <button class="btn-ghost" :disabled="loading || busy || !hasKey || !model || !manifest || !base || !target" @click="copy('json')">复制模型 JSON</button>
       </div>
       <p class="hint">MCP：{{base}}/mcp · 模型接口：{{base}}/v1 · 素材页使用同一 API Key，按密钥隔离图片。</p>
     </WorkspacePanel>
@@ -105,6 +111,8 @@ onUnmounted(()=>{disposed=true;revision++})
 <style scoped>
 .target-picker{margin-bottom:14px}.connection-note{padding:10px 12px;margin:0 0 16px;background:var(--primary-soft);border-radius:8px;color:var(--primary);font-size:12px;line-height:1.7}.fields{display:grid;grid-template-columns:1.35fr 1fr 1fr;gap:14px}label{display:flex;flex-direction:column;gap:8px;min-width:0;font-size:12px;color:var(--text-2)}label span,.hint{font-size:12px;color:var(--text-3);line-height:1.7}input,select,.preview{min-width:0;width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--text);font:inherit}.hint{margin-top:12px}.actions,.manual,.versions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:16px}.actions .hint{margin:0}.actions a{text-decoration:none}.mode{display:inline-flex;gap:4px;background:var(--bg);border:1px solid var(--border);padding:4px;border-radius:10px}.mode button{border:0;border-radius:7px;background:transparent;color:var(--text-3);padding:8px 16px;cursor:pointer}.mode .active{background:var(--primary-soft);color:var(--primary)}.intro{font-size:13px;color:var(--text-2);line-height:1.7;margin:14px 0}.preview{font:11px/1.7 var(--mono);resize:vertical}.versions{border-top:1px solid var(--border);padding-top:14px;color:var(--text-3);font-size:11px}.versions code{margin-left:6px}.versions button{margin-left:auto}.manual{margin-top:0}.manual label{flex:1;max-width:390px}.badge{font-size:11px;color:var(--primary);background:var(--primary-soft);padding:5px 10px;border-radius:20px}.notice{padding:12px 16px;background:var(--primary-soft);color:var(--primary);border-radius:10px;font-size:12px}.copy-feedback{position:fixed;bottom:24px;left:50%;transform:translateX(-35%);max-width:min(600px,80vw);box-shadow:0 6px 28px #0002;z-index:20}.notice.error{background:var(--card);color:var(--rose)}@media(max-width:1000px){.fields{grid-template-columns:1fr}.manual label{flex-basis:100%;max-width:none}}
 .manual { align-items: flex-end; }
+.manual-key-toggle { flex-direction:row; align-items:center; margin-top:12px; }
+.manual-key-toggle input { width:auto; }
 .manual select, .manual button { min-height: 40px; }
 .manual + .hint { overflow-wrap: anywhere; }
 </style>

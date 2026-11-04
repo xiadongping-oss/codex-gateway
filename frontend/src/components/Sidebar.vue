@@ -4,20 +4,21 @@ import { parseBase } from '../api/client'
 import BrandMark from './BrandMark.vue'
 import AppIcon from './AppIcon.vue'
 import { isDesktopWorkspace, openDesktopWorkspace } from '../desktopWorkspace'
+import { workspaceSection } from '../workspaceNavigation'
 defineProps({active:{type:String,default:'overview'},gwRunning:Boolean,connected:Boolean,collapsed:Boolean})
 const emit=defineEmits(['navigate','toggle'])
 const endpoint=computed(()=>{const {host,port}=parseBase();return `${host}:${port}`})
 const groups=[
- {label:'工作区',items:[{key:'overview',label:'概览'},{key:'account',label:'账号管理'},{key:'images',label:'图片素材'},{key:'models',label:'模型能力'}]},
- {label:'开发接入',items:[{key:'access',label:'客户端接入'},{key:'apikeys',label:'API Key'},{key:'lan',label:'局域网共享'},{key:'logs',label:'调用日志'},{key:'settings',label:'连接配置'}]},
- {label:'管理',items:[{key:'runtime',label:'运行详情'},...(isDesktopWorkspace()?[{key:'service',label:'服务与诊断',native:true},{key:'data',label:'数据与备份',native:true},{key:'desktop',label:'应用偏好',native:true},{key:'about',label:'关于',native:true}]:[])]}
+ {label:'工作区',items:[{key:'overview',label:'概览'},{key:'account',label:'账号管理'},{key:'images',label:'图片素材'}]},
+ {label:'开发接入',items:[{key:'access',label:'客户端接入'},{key:'logs',label:'调用日志'}]},
+ ...(isDesktopWorkspace()?[{label:'管理',items:[{key:'desktop',label:'设置',native:true}]}]:[])
 ]
 function navigate(item){if(item.native)openDesktopWorkspace(item.key);else emit('navigate',item.key)}
 </script>
 <template>
  <aside class="sidebar" :class="{collapsed}">
   <div class="logo"><BrandMark class="logo-mark"/><div v-if="!collapsed" class="logo-copy"><strong>Codex 网关</strong><small>AI WORKSPACE</small></div><button class="collapse-btn" :title="collapsed?'展开侧栏':'收起侧栏'" :aria-label="collapsed?'展开侧栏':'收起侧栏'" @click="emit('toggle')"><AppIcon name="chevron" :class="{reverse:!collapsed}"/></button></div>
-  <nav class="nav" aria-label="工作台导航"><div v-for="group in groups" :key="group.label" class="nav-group"><div v-if="!collapsed" class="nav-label">{{group.label}}</div><button v-for="item in group.items" :key="item.key" :data-workspace-page="item.key" class="nav-item" :class="{active:active===item.key}" :title="item.label" :aria-label="item.label" :aria-current="active===item.key?'page':undefined" @click="navigate(item)"><AppIcon :name="item.key"/><span v-if="!collapsed">{{item.label}}</span></button></div></nav>
+  <nav class="nav" aria-label="工作台导航"><div v-for="group in groups" :key="group.label" class="nav-group"><div v-if="!collapsed" class="nav-label">{{group.label}}</div><button v-for="item in group.items" :key="item.key" :data-workspace-page="item.key" class="nav-item" :class="{active:workspaceSection(active)===item.key}" :title="item.label" :aria-label="item.label" :aria-current="workspaceSection(active)===item.key?'page':undefined" @click="navigate(item)"><AppIcon :name="item.key"/><span v-if="!collapsed">{{item.label}}</span></button></div></nav>
   <div class="status-box" :title="'模型代理 · '+(!connected?'等待连接':gwRunning?'运行中':'未启动')"><span class="status-dot" :class="{unknown:!connected,off:connected&&!gwRunning}"></span><div v-if="!collapsed" class="status-copy"><div class="status-label">模型代理 · {{!connected?'等待连接':gwRunning?'运行中':'未启动'}}</div><div class="status-meta">{{endpoint}}</div></div></div>
  </aside>
 </template>
