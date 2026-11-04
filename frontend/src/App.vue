@@ -70,7 +70,7 @@ const titles = {
   runtime: { title: '运行详情', subtitle: '运行状态 · 账号实例 · 自动切换' },
   access: { title:'客户端接入', subtitle:'Agent 配置 · Skill 与 MCP · 更新指引' },
   lan: { title: '局域网共享', subtitle: '共享状态 · 网络地址 · 客户端接入' },
-  settings: { title: '设置', subtitle: '代理与接入配置' }
+  settings: { title: '连接配置', subtitle: '代理与接入配置' }
 }
 </script>
 

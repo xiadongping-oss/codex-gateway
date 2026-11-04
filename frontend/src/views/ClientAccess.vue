@@ -86,7 +86,16 @@ onUnmounted(()=>{disposed=true;revision++})
     </WorkspacePanel>
 
     <WorkspacePanel title="手动接入" subtitle="支持 Streamable HTTP MCP 和 OpenAI 兼容客户端">
-      <div class="manual"><label>对话模型<select v-model="model" :disabled="loading || busy"><option v-for="m in textModels" :key="m.id" :value="m.id">{{m.id}}</option></select></label><button class="btn-ghost" :disabled="loading || busy || !keyId || !manifest || !base || !target" @click="copy('mcp')">复制 MCP JSON</button><button class="btn-ghost" :disabled="loading || busy || !keyId || !model || !manifest || !base || !target" @click="copy('model')">复制模型接入配置</button></div>
+      <div class="manual">
+        <label>
+          对话模型
+          <select v-model="model" :disabled="loading || busy">
+            <option v-for="m in textModels" :key="m.id" :value="m.id">{{m.id}}</option>
+          </select>
+        </label>
+        <button class="btn-ghost" :disabled="loading || busy || !keyId || !manifest || !base || !target" @click="copy('mcp')">复制 MCP JSON</button>
+        <button class="btn-ghost" :disabled="loading || busy || !keyId || !model || !manifest || !base || !target" @click="copy('model')">复制模型接入配置</button>
+      </div>
       <p class="hint">MCP：{{base}}/mcp · 模型接口：{{base}}/v1 · 素材页使用同一 API Key，按密钥隔离图片。</p>
     </WorkspacePanel>
     <p v-if="feedback" class="notice copy-feedback" role="status">{{feedback}}</p>
@@ -95,4 +104,7 @@ onUnmounted(()=>{disposed=true;revision++})
 
 <style scoped>
 .target-picker{margin-bottom:14px}.connection-note{padding:10px 12px;margin:0 0 16px;background:var(--primary-soft);border-radius:8px;color:var(--primary);font-size:12px;line-height:1.7}.fields{display:grid;grid-template-columns:1.35fr 1fr 1fr;gap:14px}label{display:flex;flex-direction:column;gap:8px;min-width:0;font-size:12px;color:var(--text-2)}label span,.hint{font-size:12px;color:var(--text-3);line-height:1.7}input,select,.preview{min-width:0;width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--text);font:inherit}.hint{margin-top:12px}.actions,.manual,.versions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:16px}.actions .hint{margin:0}.actions a{text-decoration:none}.mode{display:inline-flex;gap:4px;background:var(--bg);border:1px solid var(--border);padding:4px;border-radius:10px}.mode button{border:0;border-radius:7px;background:transparent;color:var(--text-3);padding:8px 16px;cursor:pointer}.mode .active{background:var(--primary-soft);color:var(--primary)}.intro{font-size:13px;color:var(--text-2);line-height:1.7;margin:14px 0}.preview{font:11px/1.7 var(--mono);resize:vertical}.versions{border-top:1px solid var(--border);padding-top:14px;color:var(--text-3);font-size:11px}.versions code{margin-left:6px}.versions button{margin-left:auto}.manual{margin-top:0}.manual label{flex:1;max-width:390px}.badge{font-size:11px;color:var(--primary);background:var(--primary-soft);padding:5px 10px;border-radius:20px}.notice{padding:12px 16px;background:var(--primary-soft);color:var(--primary);border-radius:10px;font-size:12px}.copy-feedback{position:fixed;bottom:24px;left:50%;transform:translateX(-35%);max-width:min(600px,80vw);box-shadow:0 6px 28px #0002;z-index:20}.notice.error{background:var(--card);color:var(--rose)}@media(max-width:1000px){.fields{grid-template-columns:1fr}.manual label{flex-basis:100%;max-width:none}}
+.manual { align-items: flex-end; }
+.manual select, .manual button { min-height: 40px; }
+.manual + .hint { overflow-wrap: anywhere; }
 </style>

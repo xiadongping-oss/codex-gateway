@@ -14,6 +14,8 @@ const paths={
  service:'M3 5h18v5H3zM3 14h18v5H3zM6 7.5h.01M6 16.5h.01M15 7.5h3M15 16.5h3',
  data:'M20 6c0 2-16 2-16 0s16-2 16 0ZM4 6v12c0 3 16 3 16 0V6M4 12c0 3 16 3 16 0',
  settings:'M4 7h16M4 17h16M9 4v6M15 14v6',
+ desktop:'M3 4h18v12H3zM8 21h8m-4-5v5',
+ about:'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0ZM12 11v6m0-10h.01',
  chevron:'m9 6 6 6-6 6'
 }
 </script>

@@ -30,7 +30,9 @@ const icons = {
   logs:'M5 3h14v18H5zM8 7h8M8 11h5M8 15h8M8 18h4',
   service:'M3 5h18v5H3zM3 14h18v5H3zM6 7.5h.01M6 16.5h.01M15 7.5h3M15 16.5h3',
   data:'M20 6c0 2-16 2-16 0s16-2 16 0ZM4 6v12c0 3 16 3 16 0V6M4 12c0 3 16 3 16 0',
-  settings:'M4 7h16M4 17h16M9 4v6M15 14v6'
+  settings:'M4 7h16M4 17h16M9 4v6M15 14v6',
+  desktop:'M3 4h18v12H3zM8 21h8m-4-5v5',
+  about:'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0ZM12 11v6m0-10h.01'
 }
 for (const holder of document.querySelectorAll('[data-icon]')) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
@@ -84,7 +86,13 @@ async function action(name) {
   catch (error) { $('action-error').textContent = errorMessage(error) }
   finally { busy = false; setActionsBusy(false) }
 }
-const PAGE_NAMES = { access:'客户端接入', runtime:'运行详情', lan:'局域网共享', overview:'概览', account:'账号管理', images:'图片素材', models:'模型能力', apikeys:'API Key', logs:'调用日志' }
+const PAGE_NAMES = { access:'客户端接入', runtime:'运行详情', lan:'局域网共享', overview:'概览', account:'账号管理', images:'图片素材', models:'模型能力', apikeys:'API Key', logs:'调用日志', settings:'连接配置' }
+const LOCAL_PAGES = {
+  service: { title:'服务与诊断', subtitle:'管理本机服务与运行状态' },
+  data: { title:'数据与备份', subtitle:'本机工作空间与数据说明' },
+  desktop: { title:'应用偏好', subtitle:'管理开机启动、外观和关闭窗口行为' },
+  about: { title:'关于', subtitle:'了解 Codex Gateway 与软件更新' }
+}
 // 业务页由原生控制台承载：网关没就绪时点击只会排队（就绪后自动打开），但界面必须
 // 立刻给一句话反馈并指出下一步，否则用户看到的就是「点了没反应」。
 function navHint(page) {
@@ -120,21 +128,22 @@ function showNavNotice(text, target, goLabel) {
 }
 async function navigate(page) {
   $('action-error').textContent = ''
-  if (['service', 'data', 'desktop'].includes(page)) showPage(page)
+  const local = Object.hasOwn(LOCAL_PAGES, page)
+  if (local) showPage(page)
   try { await invoke('workspace_navigate', { page }) }
   catch (error) { $('action-error').textContent = errorMessage(error) }
-  if (!['service', 'data', 'desktop'].includes(page)) navHint(page)
+  if (!local) navHint(page)
 }
 function showPage(page) {
-  const current = ['service','data','desktop'].includes(page) ? page : 'service'
+  const current = Object.hasOwn(LOCAL_PAGES, page) ? page : 'service'
   for (const section of document.querySelectorAll('[data-local-page]')) section.hidden = section.dataset.localPage !== current
   for (const button of document.querySelectorAll('.nav-item')) {
     const selected = button.dataset.page === current
     button.classList.toggle('active',selected)
     if (selected) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current')
   }
-  $('page-title').textContent = {service:'服务与诊断',data:'数据与备份',desktop:'设置'}[current]
-  $('page-subtitle').textContent = {service:'管理本机服务与运行状态',data:'本机工作空间与数据说明',desktop:'连接配置与应用偏好'}[current]
+  $('page-title').textContent = LOCAL_PAGES[current].title
+  $('page-subtitle').textContent = LOCAL_PAGES[current].subtitle
 }
 window.showWorkspacePage = showPage
 for (const button of document.querySelectorAll('[data-page]')) button.onclick = () => navigate(button.dataset.page)
