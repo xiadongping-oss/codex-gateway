@@ -88,11 +88,17 @@ impl Check {
                   const toggle = document.getElementById('desktop-autostart');
                   const update = document.getElementById('updater-panel');
                   const nav = document.querySelector('.sidebar nav');
+                  const tabs = document.querySelector('.workspace-sections');
+                  const buttons = [...tabs.querySelectorAll('button')];
+                  const tabsAligned = getComputedStyle(tabs).flexDirection === 'row'
+                    && tabs.scrollWidth <= tabs.clientWidth
+                    && (innerWidth < 1000 || buttons.every(e => Math.abs(e.getBoundingClientRect().top - buttons[0].getBoundingClientRect().top) < 1));
                   return JSON.stringify({ state: window.__workspaceNativeCheck || null,
                     domPage: pages.length === 1 ? pages[0].dataset.localPage : null,
                     checked: toggle?.checked, disabled: toggle?.disabled,
                     updateVisible: !!update?.getClientRects().length,
                     sidebarFits: nav.scrollHeight <= nav.clientHeight,
+                    settingsTabsAligned: tabsAligned,
                     sidebarItems: nav.querySelectorAll('.nav-item').length });
                 })()"#
             } else {
@@ -266,6 +272,9 @@ impl Check {
         }
         if local && value["updateVisible"] != (expected == "about") {
             return Err("WORKSPACE_UPDATE_PANEL_ON_WRONG_PAGE".into());
+        }
+        if local && value["settingsTabsAligned"] != true {
+            return Err("WORKSPACE_SETTINGS_TABS_MISALIGNED".into());
         }
         // Both views fill the same client area after maximize, resize and return.
         if (if local { &main } else { &remote }).size().ok() != frame.inner_size().ok() {

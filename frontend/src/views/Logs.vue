@@ -15,10 +15,10 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
 
 <template>
   <div class="content">
-    <div class="tabs">
-      <button class="tab" :class="{ active: tab === 'calls' }" @click="tab = 'calls'">业务调用</button>
-      <button class="tab" :class="{ active: tab === 'bridge' }" @click="tab = 'bridge'">Bridge 运行日志</button>
-    </div>
+    <nav class="workspace-sections" aria-label="日志分类">
+      <button :aria-current="tab === 'calls' ? 'page' : undefined" @click="tab = 'calls'">业务调用</button>
+      <button :aria-current="tab === 'bridge' ? 'page' : undefined" @click="tab = 'bridge'">Bridge 运行日志</button>
+    </nav>
 
     <CallLogsPanel v-if="tab === 'calls'" />
     <template v-else>
@@ -42,13 +42,6 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
 <style scoped>
 .log-warning { color: var(--amber); background: var(--card); border: 1px solid var(--border-strong); border-radius: 14px; padding: 12px 16px; }
 .log-line { overflow-wrap: anywhere; }
-.tabs { display: flex; gap: 4px; margin-bottom: 16px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 4px; width: fit-content; }
-.tab {
-  background: transparent; color: var(--text-3); border: none; border-radius: 8px;
-  padding: 7px 16px; font-size: 12.5px; cursor: pointer; transition: all 0.15s ease;
-}
-.tab:hover { color: var(--text); }
-.tab.active { background: var(--emerald-dim); color: var(--emerald-light); font-weight: 550; }
 .bridge-logs {
   background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
   padding: 12px 14px; height: 380px; overflow-y: auto;

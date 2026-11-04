@@ -43,7 +43,6 @@ const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 40
     <div class="panel-heading"><h3 v-if="title">{{title}}</h3><input class="caller-search" v-model="callerSearch" @input="page=1" placeholder="搜索模型、端点、IP、设备或密钥" aria-label="搜索调用记录" /><div class="mode-switch" role="group" aria-label="调用展示模式"><button :class="{active:!detail}" @click="setDetail(false)">精简</button><button :class="{active:detail}" @click="setDetail(true)">详细</button></div></div>
     <div v-if="logsError" class="log-warning" role="alert">{{ logsError }}<span v-if="loaded"> 当前保留上次获取的记录。</span></div>
     <div class="page-head">
-      <div class="live-tag"><span class="dot"></span>实时更新</div>
       <div class="chips">
         <button
           v-for="def in filterDefs"
@@ -55,6 +54,7 @@ const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 40
           {{ def.label }} <span class="n">{{ countOf(def) }}</span>
         </button>
       </div>
+      <div class="live-tag"><span class="dot"></span>实时更新</div>
     </div>
 
     <div class="card calls-card">
@@ -91,37 +91,27 @@ const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 40
 
 <style scoped>
 .call-panel { display:flex;flex-direction:column;gap:16px;min-width:0; }
-.panel-heading { display:flex;align-items:center;gap:12px;flex-wrap:wrap; }.panel-heading h3{font-size:14px;margin:0}.panel-heading .caller-search{margin-left:auto;box-sizing:border-box;min-width:140px;flex:0 1 360px}
-.mode-switch{display:flex;padding:3px;background:var(--card);border:1px solid var(--border);border-radius:8px}.mode-switch button{border:0;background:transparent;color:var(--text-2);padding:6px 10px;cursor:pointer;border-radius:5px}.mode-switch .active{background:var(--primary-soft);color:var(--primary)}
+.panel-heading { display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px; }
+.panel-heading h3 { grid-column:1 / -1;font-size:14px;margin:0; }
+.panel-heading .caller-search { box-sizing:border-box;min-width:0;width:100%;height:38px;font:inherit;font-size:12px; }
+.mode-switch{display:flex;height:38px;padding:3px;background:var(--card);border:1px solid var(--border);border-radius:8px}.mode-switch button{border:0;background:transparent;color:var(--text-2);padding:6px 10px;cursor:pointer;border-radius:5px;white-space:nowrap;font:inherit;font-size:12px}.mode-switch .active{background:var(--primary-soft);color:var(--primary)}
 .request,.usage,.time{display:flex;flex-direction:column;gap:5px;min-width:0;overflow-wrap:anywhere}.request strong,.usage strong{font-size:12px;font-weight:550}.request small,.usage small,.time small{font-size:10px;color:var(--text-3)}
 .compact .tr{padding-block:9px}.compact .caller small,.compact .request small{display:none}
-@media(max-width:700px){.tr:not(.th){grid-template-columns:minmax(0,1fr) minmax(0,1fr) 42px;gap:10px}.tr.th{display:none}.tr .usage{grid-column:1}.tr .time{grid-column:2 / 4}.panel-heading .caller-search{flex:1;width:100%}}
+@media(max-width:700px){.tr:not(.th){grid-template-columns:minmax(0,1fr) minmax(0,1fr) 42px;gap:10px}.tr.th{display:none}.tr .usage{grid-column:1}.tr .time{grid-column:2 / 4}}
+@media(max-width:420px){.panel-heading{grid-template-columns:minmax(0,1fr)}.mode-switch{justify-self:start}}
 
 .log-warning { color: var(--amber); background: var(--card); border: 1px solid var(--border-strong); border-radius: 14px; padding: 12px 16px; }
 .table { min-width:0; }.calls-card{min-width:0;overflow:visible}.caller{display:flex;flex-direction:column;gap:4px;min-width:0}.caller strong{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis}.caller small{color:var(--text-3);font-size:10px;overflow-wrap:anywhere}.caller-search{border:1px solid var(--border);background:var(--card);color:var(--text);padding:10px 14px;border-radius:9px;width:min(100%,440px)}.caller-note{font-size:11px;color:var(--text-3);line-height:1.6}
 .log-line { overflow-wrap: anywhere; }
-.tabs { display: flex; gap: 4px; margin-bottom: 16px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 4px; width: fit-content; }
-.tab {
-  background: transparent; color: var(--text-3); border: none; border-radius: 8px;
-  padding: 7px 16px; font-size: 12.5px; cursor: pointer; transition: all 0.15s ease;
-}
-.tab:hover { color: var(--text); }
-.tab.active { background: var(--emerald-dim); color: var(--emerald-light); font-weight: 550; }
-.bridge-logs {
-  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
-  padding: 12px 14px; height: 380px; overflow-y: auto;
-  font-family: var(--mono); font-size: 11.5px; line-height: 1.7; color: var(--text-2);
-}
-.log-line { white-space: pre-wrap; }
-.log-line.err { color: var(--rose); }
-.page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.live-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--emerald-light); font-family: var(--mono); width: fit-content; }
+.page-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.live-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--emerald-light); font-family: var(--mono); width: fit-content; margin-left:auto; white-space:nowrap; }
 .live-tag .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald-light); animation: pulse 1.5s infinite; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip {
   background: var(--card); color: var(--text-3); border: 1px solid var(--border);
   border-radius: 999px; padding: 4px 12px; font-size: 11.5px; cursor: pointer;
   transition: all 0.15s ease; display: inline-flex; align-items: center; gap: 5px;
+  white-space: nowrap;
 }
 .chip:hover { color: var(--text); border-color: var(--emerald); }
 .chip.active { background: var(--emerald-dim); color: var(--emerald-light); border-color: rgba(139,107,214, 0.35); }
