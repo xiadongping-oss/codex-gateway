@@ -137,6 +137,7 @@ function createLiveData() {
 
   // ---- 最近调用（概览页「最近调用」卡片） ----
   const logs = ref([])
+  const managementLogs = ref([])
   const logsLoaded = ref(false)
   const logsError = ref('')
   const gwLogsLoaded = ref(false)
@@ -146,9 +147,10 @@ function createLiveData() {
     if (logsLoading) return
     logsLoading = true
     try {
-      const r = await settle(api.getLogs())
-      if (r.ok && Array.isArray(r.value)) {
-        logs.value = r.value
+      const r = await settle(api.getLogFeed())
+      if (r.ok && Array.isArray(r.value?.logs)) {
+        logs.value = r.value.logs
+        managementLogs.value = r.value.management
         logsLoaded.value = true
         logsError.value = ''
       } else logsError.value = '调用日志暂时无法刷新，请稍后重试。'
@@ -234,7 +236,7 @@ function createLiveData() {
   setInterval(whenVisible(refreshLogs), 2000)
 
   return {
-    status, account, capabilities, capabilitiesBase, models, health, logs,
+    status, account, capabilities, capabilitiesBase, models, health, logs, managementLogs,
     lastFetchAt, lastError, errFlags,
     gw, gwLogs, gwBusy, gwConnected, gwActionError,
     logsLoaded, logsError, gwLogsLoaded, gwLogsError,

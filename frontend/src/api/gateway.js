@@ -282,9 +282,12 @@ export async function deleteUploadRecord(sourceId, name) {
 
 // 调用日志：网关反代层逐笔记录的真实 /v1 调用（环形缓冲 200 条）
 export async function getLogs(_opts = {}) {
+  return (await getLogFeed()).logs
+}
+export async function getLogFeed() {
   const r = await gwRequest('/__gw/call-logs', 'GET')
   if (!Array.isArray(r?.logs)) throw new Error('调用日志响应无效')
-  return r.logs
+  return {logs:r.logs,management:Array.isArray(r.management) ? r.management : []}
 }
 
 // ---------- 生成图片（bridge image_generation 落盘产物） ----------

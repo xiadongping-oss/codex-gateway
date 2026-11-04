@@ -15,7 +15,6 @@ const imageModels = computed(() => models.value.filter(m=>m.kind==='image'))
 const sections = [{id:'text',icon:'models',title:'文本模型',description:'对话、写作、代码与图片理解'},{id:'agent',icon:'runtime',title:'Agent 能力',description:'工具调用与多步骤任务协作'},{id:'image',icon:'images',title:'出图能力',description:'生成、参考图重绘与编辑边界'}]
 const statusNames = {wired:'已接入',limited:'有限支持',missing:'尚未接入',unverified:'待实测',provider:'由供应商决定'}
 const verificationNames = {passed:'实测通过',limited:'实测有限',failed:'实测未通过',unsupported:'当前不支持'}
-const imageExamples = [{title:'透明背景',endpoint:'/v1/images/generations',body:{prompt:'生成一个透明底的茶壶图标',background:'transparent',output_format:'png'}},{title:'蒙版局部编辑',endpoint:'/v1/images/edits',body:{prompt:'把蒙版区域中的方块改成绿色三角形',image:'data:image/png;base64,…',mask:'data:image/png;base64,…'}},{title:'向两侧扩图',endpoint:'/v1/images/edits',body:{prompt:'自然延伸背景，保留原有主体',image:'data:image/png;base64,…',outpaint:{left:256,right:256}}}]
 function checkedAt(value){return value?new Date(value).toLocaleString('zh-CN',{hour12:false}):''}
 const modelDescriptions = {'gpt-6.1-sol':'默认模型，适合对话、写作与代码任务。','gpt-6-astra':'适合复杂问题分析和多步骤推理。','gpt-6.1-terra':'适合常规问答、内容整理和批量处理。'}
 async function refresh(force=false) {
@@ -57,8 +56,6 @@ onMounted(()=>refresh());onUnmounted(()=>{disposed=true})
       <div class="feature-table"><div class="feature-head"><span>功能</span><span>支持状态</span><span>使用方式与限制</span></div><div v-for="feature in capabilities?.image||[]" :key="feature.id" class="feature-row"><h3>{{ feature.title }}</h3><span :class="['feature-status',feature.verification?.status||feature.status]">{{ feature.verification ? verificationNames[feature.verification.status] : statusNames[feature.status] }}</span><div><p>{{ feature.detail }}</p><p v-if="feature.verification" class="verification-detail">实测：{{ feature.verification.detail }}</p></div></div></div>
       <p v-if="!capabilities" class="model-note">能力清单尚未读取，请刷新目录或更新网关。</p>
       <div class="usage-note"><h3>图片模型名称怎么选？</h3><p v-if="capabilities?.mode!=='openai'">下面是供客户端填写的兼容名称。在订阅通道中，换名称不会切换实际出图模型，也不会自动启用透明底或局部编辑；画质和尺寸由请求参数控制。</p><div class="image-aliases"><button v-for="model in imageModels" :key="model.id" class="btn-ghost" @click="choose(model.id)"><code>{{ model.id }}</code></button></div></div>
-      <details v-if="capabilities?.mode!=='openai'" class="model-help"><summary>接口示例</summary><div class="image-examples"><article v-for="example in imageExamples" :key="example.title"><h3>{{ example.title }}</h3><code>POST {{ example.endpoint }}</code><pre>{{ JSON.stringify(example.body,null,2) }}</pre></article></div></details>
-      <p class="model-note">蒙版与原图尺寸需一致；透明区域编辑，不透明区域保留。</p>
     </WorkspacePanel>
     <div class="model-reference-grid">
     <ModelsCard :capabilities="visibleCapabilities" :supported="capabilitiesBase" @toggle="toggleCapability" />

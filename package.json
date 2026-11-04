@@ -1,6 +1,6 @@
 {
   "name": "codex-gateway",
-  "version": "1.14.7",
+  "version": "1.14.8",
   "private": true,
   "type": "module",
   "main": "gateway/launcher.mjs",
@@ -23,7 +23,7 @@
     "test:migration": "node --test --test-timeout=120000 desktop/migration.test.mjs",
     "login": "npx @openai/codex login",
     "test": "node gateway/tests/run-audit.mjs",
-    "test:unit": "node --test --test-timeout=15000 gateway/tests/bridge-pool.test.mjs gateway/tests/bridge-patches.test.mjs gateway/tests/quota.test.mjs gateway/tests/failover.test.mjs gateway/tests/lan-addr.test.mjs gateway/tests/port.test.mjs gateway/tests/tool-call.test.mjs gateway/tests/hardening.test.mjs gateway/tests/vbs-static.test.mjs gateway/tests/token-text.test.mjs gateway/tests/official-login.test.mjs gateway/tests/account-persistence.test.mjs gateway/tests/oauth-persistence.test.mjs gateway/tests/api-providers.test.mjs gateway/tests/image-capabilities.test.mjs gateway/tests/image-edit.test.mjs gateway/tests/image-verification.test.mjs gateway/tests/image-option-verdicts.test.mjs gateway/tests/client-access.test.mjs",
+    "test:unit": "node --test --test-timeout=15000 gateway/tests/bridge-pool.test.mjs gateway/tests/bridge-patches.test.mjs gateway/tests/quota.test.mjs gateway/tests/failover.test.mjs gateway/tests/lan-addr.test.mjs gateway/tests/port.test.mjs gateway/tests/tool-call.test.mjs gateway/tests/hardening.test.mjs gateway/tests/vbs-static.test.mjs gateway/tests/token-text.test.mjs gateway/tests/official-login.test.mjs gateway/tests/account-persistence.test.mjs gateway/tests/oauth-persistence.test.mjs gateway/tests/api-providers.test.mjs gateway/tests/image-capabilities.test.mjs gateway/tests/image-edit.test.mjs gateway/tests/image-verification.test.mjs gateway/tests/image-option-verdicts.test.mjs gateway/tests/client-access.test.mjs gateway/tests/call-log-policy.test.mjs gateway/tests/proxy-usage.test.mjs",
     "test:client": "node --test --test-timeout=60000 gateway/tests/setup-client.test.mjs",
     "test:build": "node --test --test-timeout=60000 gateway/tests/build-release.test.mjs",
     "test:mutate": "node gateway/tests/mutate.mjs",

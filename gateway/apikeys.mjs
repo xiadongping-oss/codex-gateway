@@ -26,6 +26,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveDataRoot } from './data-root.mjs'
+import { currentCaller } from './request-context.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -200,6 +201,8 @@ export function listApiKeys({ includeRaw = false } = {}) {
         createdAt: k.createdAt,
         lastUsedAt: k.lastUsedAt || null,
         lastUsedFrom: k.lastUsedFrom || null,
+        usageSources: Object.entries(k.usageSources || {}).filter(([source,usage]) => ['local','lan'].includes(source) && usage?.lastUsedAt)
+          .map(([source,usage]) => ({source,lastUsedAt:usage.lastUsedAt,callCount:usage.callCount || 0,tokens:usage.tokens || 0})),
         callCount: k.callCount || 0,
         promptTokens: k.promptTokens || 0,
         completionTokens: k.completionTokens || 0,
@@ -348,19 +351,33 @@ function updateLastUsed(id) {
     if (!k) return
     k.lastUsedAt = new Date().toISOString()
     k.callCount = (k.callCount || 0) + 1
+    const caller = currentCaller()
+    if (['local','lan'].includes(caller?.source)) {
+      k.usageSources ||= {}
+      const usage = k.usageSources[caller.source] ||= {callCount:0,tokens:0}
+      usage.lastUsedAt = k.lastUsedAt
+      usage.callCount++
+      k.lastUsedFrom = caller.ip || null
+    }
     scheduleWrite()
   } catch {}
 }
 
 // 按 Key 累计 token 用量（从代理转发的上游响应里解析 usage 后调用）。
 // 与 updateLastUsed 一样内存更新 + 防抖刷盘、失败不影响主请求。
-export function addKeyUsage(keyId, promptTokens = 0, completionTokens = 0, totalTokens = Number(promptTokens) + Number(completionTokens)) {
+export function addKeyUsage(keyId, promptTokens = 0, completionTokens = 0, totalTokens = Number(promptTokens) + Number(completionTokens), caller = currentCaller()) {
   try {
     const k = reg().keys.find((x) => x.id === keyId)
     if (!k) return
     k.promptTokens = (k.promptTokens || 0) + (Number(promptTokens) || 0)
     k.completionTokens = (k.completionTokens || 0) + (Number(completionTokens) || 0)
     k.unclassifiedTokens = (k.unclassifiedTokens || 0) + Math.max(0, (Number(totalTokens) || 0) - (Number(promptTokens) || 0) - (Number(completionTokens) || 0))
+    if (['local','lan'].includes(caller?.source)) {
+      k.usageSources ||= {}
+      const usage = k.usageSources[caller.source] ||= {callCount:0,tokens:0}
+      usage.lastUsedAt ||= new Date().toISOString()
+      usage.tokens += Math.max(0,Number(totalTokens) || 0)
+    }
     scheduleWrite()
   } catch {}
 }

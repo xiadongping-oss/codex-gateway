@@ -315,7 +315,7 @@ onUnmounted(() => {
           </tr></thead>
           <tbody>
             <tr v-for="k in visible" :key="k.id" :class="{disabled:k.disabled}">
-              <td data-label="名称"><div class="key-name"><strong>{{ k.name }}</strong><span class="key-state" :class="{off:k.disabled}">{{ k.disabled ? '停用' : '启用' }}</span></div><small class="key-id" :title="k.id">{{ k.id.slice(-8) }}</small></td>
+              <td data-label="名称"><div class="key-name"><strong>{{ k.name }}</strong><span class="key-state" :class="{off:k.disabled}">{{ k.disabled ? '停用' : '启用' }}</span></div><div class="source-tags"><span v-for="usage in k.usageSources || []" :key="usage.source" class="source-tag" :title="'最近使用 ' + fmtTime(usage.lastUsedAt) + ' · ' + usage.callCount + ' 次 · ' + fmtTok(usage.tokens) + ' Token'">{{ usage.source === 'lan' ? '局域网' : '本机' }}</span><small v-if="!k.usageSources?.length" class="source-unknown" title="收到真实请求后自动标记；历史数据不推测来源">{{ k.lastUsedAt ? '来源待采集' : '未使用' }}</small></div><small class="key-id" :title="k.id">{{ k.id.slice(-8) }}</small></td>
               <td data-label="密钥"><code class="key-mask">{{ k.mask }}</code></td>
               <td data-label="授权范围"><span class="key-scope" :title="scopeLabel(k)">{{ scopeLabel(k) }}</span></td>
               <td data-label="最近使用"><span class="key-date">{{ fmtTime(k.lastUsedAt) }}</span><small class="key-created" :title="'创建于 ' + fmtTime(k.createdAt)">创建 {{ fmtTime(k.createdAt) }}</small></td>
@@ -459,6 +459,9 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.source-tags { display:flex; gap:5px; flex-wrap:wrap; margin-top:7px; }
+.source-tag { font-size:10px; padding:2px 6px; border-radius:4px; color:var(--primary); background:var(--primary-soft); }
+.source-unknown { font-size:10px; color:var(--text-3); }
 .content { flex: 1; overflow-y: auto; padding: 4px 24px 24px; display: flex; flex-direction: column; gap: 18px; }
 
 .card-title-row { display: flex; align-items: center; gap: 12px; }

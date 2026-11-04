@@ -18,9 +18,11 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
     <Teleport to="#page-tabs"><nav class="workspace-sections" aria-label="日志分类">
       <button :aria-current="tab === 'calls' ? 'page' : undefined" @click="tab = 'calls'">业务调用</button>
       <button :aria-current="tab === 'bridge' ? 'page' : undefined" @click="tab = 'bridge'">Bridge 运行日志</button>
+      <button :aria-current="tab === 'management' ? 'page' : undefined" @click="tab = 'management'">控制台诊断</button>
     </nav></Teleport>
 
     <CallLogsPanel v-if="tab === 'calls'" />
+    <CallLogsPanel v-else-if="tab === 'management'" management />
     <template v-else>
       <div v-if="gwLogsError" class="log-warning" role="alert">{{ gwLogsError }}<span v-if="gwLogsLoaded"> 当前保留上次获取的记录。</span></div>
       <div class="page-head">

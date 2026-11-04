@@ -8,11 +8,12 @@ import { callTokenText } from '../callLogUsage'
 // 调用日志与 bridge 日志都取自共享单例：
 // 此前本页面自己每 2.5s 轮询一次 /__gw/call-logs，而 useLiveData 也在轮询
 // 同一个接口（每 2s），等于同一份数据被拉两遍。改为共用后只保留一路请求。
-const { logs, refreshLogs, logsLoaded: loaded, logsError } = useLiveData()
+const { logs, managementLogs, refreshLogs, logsLoaded: loaded, logsError } = useLiveData()
 
 const filter = ref('all')
 const callerSearch=ref('')
-defineProps({ title: {type:String,default:''} })
+const props = defineProps({ title: {type:String,default:''}, management:{type:Boolean,default:false} })
+const records = computed(() => props.management ? managementLogs.value : logs.value)
 const detail = ref(localStorage.getItem('gw.logs.detail') !== 'compact')
 function setDetail(value) { detail.value=value;localStorage.setItem('gw.logs.detail',value?'detail':'compact') }
 
@@ -30,9 +31,9 @@ const filterDefs = [
 ]
 const shown = computed(() => {
   const def = filterDefs.find((f) => f.key === filter.value) || filterDefs[0]
-  return logs.value.filter((l) => def.match(l.status) && (!callerSearch.value.trim() || [l.model,l.endpoint,l.caller?.ip,l.caller?.device,l.caller?.keyName,l.caller?.keyId].some(v=>String(v || '').toLowerCase().includes(callerSearch.value.trim().toLowerCase()))))
+  return records.value.filter((l) => def.match(l.status) && (!callerSearch.value.trim() || [l.model,l.endpoint,l.caller?.ip,l.caller?.device,l.caller?.keyName,l.caller?.keyId].some(v=>String(v || '').toLowerCase().includes(callerSearch.value.trim().toLowerCase()))))
 })
-const countOf = (def) => logs.value.filter((l) => def.match(l.status)).length
+const countOf = (def) => records.value.filter((l) => def.match(l.status)).length
 const {page,pages,visible}=usePagination(shown,30)
 
 const fmtTime = (ts) => new Date(ts).toLocaleTimeString('zh-CN', { hour12: false })
@@ -40,7 +41,7 @@ const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 40
 </script>
 
 <template>
-  <section class="call-panel" :class="{compact:!detail}">
+  <section class="call-panel" :class="{compact:!detail,diagnostic:management}">
     <div class="panel-heading"><h3 v-if="title">{{title}}</h3><input class="caller-search" v-model="callerSearch" @input="page=1" placeholder="搜索模型、端点、IP、设备或密钥" aria-label="搜索调用记录" /><div class="mode-switch" role="group" aria-label="调用展示模式"><button :class="{active:!detail}" @click="setDetail(false)">精简</button><button :class="{active:detail}" @click="setDetail(true)">详细</button></div></div>
     <div v-if="logsError" class="log-warning" role="alert">{{ logsError }}<span v-if="loaded"> 当前保留上次获取的记录。</span></div>
     <div class="page-head">
@@ -61,15 +62,15 @@ const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 40
     <div class="card calls-card">
       <div class="table" v-if="shown.length">
         <div class="tr th">
-          <span>请求 / 模型</span><span>调用来源 / 密钥</span><span>状态</span>
-          <span>耗时</span><span>Token</span><span>时间</span>
+          <span>{{ management ? '接口 / 重复次数' : '请求 / 模型' }}</span><span>{{ management ? '来源' : '调用来源 / 密钥' }}</span><span>状态</span>
+          <span v-if="!management">耗时</span><span v-if="!management">Token</span><span>时间</span>
         </div>
         <div class="tr" v-for="l in visible" :key="l.id">
-          <span class="request"><strong>{{ l.model && l.model !== '—' ? l.model : l.endpoint === '/v1/models' ? '模型列表查询' : '未记录模型' }}</strong><small class="mono">{{l.method}} {{l.endpoint}}</small></span>
+          <span class="request"><strong>{{ management ? '控制台访问' : l.model && l.model !== '—' ? l.model : l.endpoint === '/v1/models' ? '模型列表查询' : l.status === 401 || l.status === 403 ? '接入被拒绝' : l.endpoint?.startsWith('/mcp') ? 'MCP 工具调用' : '未记录模型' }}</strong><small class="mono">{{l.method}} {{l.endpoint}}</small><small v-if="l.count > 1" :title="'首次 ' + new Date(l.firstAt).toLocaleString()">重复 {{l.count}} 次</small></span>
           <span class="caller" :title="l.caller?.keyId || ''"><strong>{{l.caller?.device || l.caller?.ip || '历史记录'}}</strong><small v-if="l.caller?.device">{{l.caller.ip}} · 自报设备</small><small>{{l.caller?.keyName || (l.caller?.keyId ? '已验证密钥' : l.status === 401 ? '认证未通过' : l.caller ? '未携带 API Key' : '未记录来源')}}<template v-if="l.caller?.keyId"> · {{l.caller.keyId.slice(-8)}}</template></small></span>
           <span class="mono" :class="statusClass(l.status)">{{ l.status }}</span>
-          <span class="latency mono">{{ l.latency }}ms</span>
-          <span class="tokens"><strong class="mono">{{ callTokenText(l) }}</strong><small v-if="detail && l.usage">输入 {{l.usage.promptTokens}} · 输出 {{l.usage.completionTokens}}</small></span>
+          <span v-if="!management" class="latency mono">{{ l.latency }}ms</span>
+          <span v-if="!management" class="tokens"><strong class="mono">{{ callTokenText(l) }}</strong><small v-if="detail && l.usage">输入 {{l.usage.promptTokens}} · 输出 {{l.usage.completionTokens}}</small></span>
           <span class="mono time"><small v-if="detail">{{new Date(l.at).toLocaleDateString()}}</small><small>{{ fmtTime(l.at) }}</small></span>
         </div>
       </div>
@@ -137,4 +138,6 @@ const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 40
 .empty-title { font-size: 13.5px; color: var(--text-2); margin-bottom: 8px; }
 .empty-sub { font-size: 12px; color: var(--text-3); line-height: 1.7; max-width: 460px; margin: 0 auto; }
 @media(max-width:700px){.tr:not(.th){grid-template-columns:minmax(0,1fr) minmax(0,1fr) 42px}.tr.th{display:none}}
+.diagnostic .tr { grid-template-columns:minmax(0,1.8fr) minmax(0,1fr) 46px 88px; }
+.diagnostic .time { grid-column:auto; }
 </style>

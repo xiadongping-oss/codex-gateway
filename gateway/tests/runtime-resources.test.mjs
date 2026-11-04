@@ -10,6 +10,20 @@ import { readArchiveMembers } from '../../runtime-archive.mjs'
 import { prepareRuntime, verifyPreparedRuntime } from '../../prepare-runtime.mjs'
 import { GATEWAY_FILES, DESKTOP_TOOLS, prepareDesktop, verifyDesktop } from '../../prepare-desktop.mjs'
 
+test('desktop resource inventory includes every relative gateway module import', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const included = new Set(GATEWAY_FILES)
+  for (const file of GATEWAY_FILES.filter(file => /\.(?:mjs|cjs|js)$/.test(file))) {
+    const source = fs.readFileSync(path.join(root,file),'utf8')
+    const imports = /\b(?:from\s*|import\s*\(\s*|import\s*)(['"])(\.\/[^'"\s]+\.(?:mjs|cjs|js))\1/g
+    for (const match of source.matchAll(imports)) {
+      const dependency = path.posix.normalize(path.posix.join(path.posix.dirname(file),match[2]))
+      if (dependency.startsWith('node_modules/')) continue
+      assert.ok(included.has(dependency),`${file} imports ${dependency}, which is missing from desktop resources`)
+    }
+  }
+})
+
 test('committed three-target lock agrees with the archived official checksums', () => {
   const root = fileURLToPath(new URL('../..', import.meta.url))
   const lock = JSON.parse(fs.readFileSync(path.join(root, 'node-runtime.lock.json')))
