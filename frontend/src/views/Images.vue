@@ -460,7 +460,7 @@ const fmtDate = (ms) => {
 }
 const thumbUrl = (img) => (img.remote ? img.url : api.assetFileUrl(active.value, img.name))
 const emptyText = computed(() => {
-  if (active.value === 'generated') return '在 WorkBuddy / Codex 里让模型生图，图片经网关的 image_generation 工具生成后会自动落盘到这里。'
+  if (active.value === 'generated') return '生成的图片将显示在这里。'
   const s = sources.value.find((x) => x.id === active.value)
   if (s?.type === 'local') return `目录「${s.config.dir}」里暂无图片（支持 png / jpg / webp / gif / svg）。`
   return '还没有上传记录。到「生成图库」或「本地目录」选择图片，点「上传」推送到该云端源。'
@@ -470,7 +470,7 @@ const emptyText = computed(() => {
 <template>
   <div class="content images-page">
     <div class="page-head">
-      <div class="live-tag"><span class="dot"></span>图片素材 · 多来源统一管理 · 共 {{ assets.length }} 项</div>
+      <div class="live-tag"><span class="dot"></span>{{ assets.length }} 项</div>
       <div class="head-actions">
         <button class="refresh" @click="openLibrary">整理 / 回收站 / 对比</button>
         <select v-if="cloudSources.length > 1" class="target-select" v-model="uploadTargetId" title="上传目标">
@@ -498,7 +498,7 @@ const emptyText = computed(() => {
     </div>
 
     <!-- 来源 Tabs -->
-    <div class="tabs">
+    <Teleport to="#page-tabs"><div class="tabs">
       <button class="tab" :class="{ on: active === 'generated' }" @click="switchTab('generated')">
         生成图库<span v-if="newGenCount > 0 && active !== 'generated'" class="new-badge">+{{ newGenCount }}</span>
       </button>
@@ -512,7 +512,7 @@ const emptyText = computed(() => {
         {{ s.name }}<span class="ttag">{{ TYPE_META[s.type]?.tag }}</span>
         <span v-if="manageMode && isCloud(s)" class="tdelete" title="删除素材源" @click.stop="removeSource(s)">✕</span>
       </button>
-    </div>
+    </div></Teleport>
 
     <!-- 批量操作栏（管理模式 + 本地两类源：批量删除 / 清空） -->
     <div class="manage-bar" v-if="manageMode && isBatchable">

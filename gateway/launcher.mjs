@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { extractUsage } from './response-usage.mjs'
+import { extractUsage, createUsageTap, createChatUsageFilter } from './response-usage.mjs'
 import { handleEditRoute } from './asset-edit-routes.mjs'
 import { resolveEditRequest } from './asset-edits.mjs'
 import { handleLibraryRoute, generatedRestorePath } from './asset-library-routes.mjs'
@@ -49,7 +49,7 @@ import { bridgeStorageEnv } from './storage-paths.mjs'
 import { validateExternalPath } from './storage-init.mjs'
 import http from 'node:http'
 import https from 'node:https'
-import { Transform, Readable } from 'node:stream'
+import { Readable } from 'node:stream'
 import { spawn, execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -1096,9 +1096,21 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
   metrics.requests++
   tickRequest()
   const callT0 = Date.now()
-  let callModel = null
+  let callModel = null, hideChatUsage = false
   if (bodyBuf) {
-    try { callModel = JSON.parse(bodyBuf.toString('utf8'))?.model || null } catch {}
+    try {
+      const body = JSON.parse(bodyBuf.toString('utf8'))
+      callModel = body.model || null
+      const chatStream = gwConfig.mode !== 'openai' &&
+        targetPath.split('?')[0] === '/v1/chat/completions' && body.stream === true
+      const options = body.stream_options
+      const validOptions = options == null || (typeof options === 'object' && !Array.isArray(options))
+      if (chatStream && validOptions && options?.include_usage !== true) {
+        body.stream_options = { ...body.stream_options, include_usage: true }
+        bodyBuf = Buffer.from(JSON.stringify(body))
+        hideChatUsage = true
+      }
+    } catch {}
   }
   let callUsage = null
   if (targetPath.startsWith('/v1/')) {
@@ -1117,41 +1129,28 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
       })
     })
   }
-  // 只为「流结束后抠出 usage」这一个目的而存在，此前会把整个响应体累进一个字符串。
-  // 长 SSE 会话（整段代码补全）动辄几 MB，等于每转发一个请求就在内存里多复制一份，
-  // 而且 `buf +=` 反复触发字符串 rope 拼接。
-  //
-  // usage 一定出现在响应**末尾**（SSE 是 [DONE] 前的最后一个 event，JSON 也是尾字段），
-  // 所以只保留最后一段就够了。窗口取 64KB：足够容纳任何 usage 报文，
-  // 又把内存占用从「整个响应」压到常数级。响应本来就小于窗口时行为完全不变。
-  const USAGE_TAP_WINDOW = 64 * 1024
-  const attachUsageTap = (up) => {
-    let buf = ''
-    const tap = new Transform({
-      transform(chunk, _enc, cb) {
-        buf += chunk.toString('utf8')
-        if (buf.length > USAGE_TAP_WINDOW) buf = buf.slice(-USAGE_TAP_WINDOW)
-        cb(null, chunk)
-      },
-      flush(cb) {
-        const u = extractUsage(buf)
-        if (u) {
-          callUsage = u
-          if (keyId) addKeyUsage(keyId, u.promptTokens, u.completionTokens)
-        }
-        cb()
+  const attachUsageTap = (up, headers = up.headers) => {
+    const tap = createUsageTap({
+      encoding: headers?.['content-encoding'],
+      onUsage(usage) {
+        callUsage = usage
+        if (keyId) addKeyUsage(keyId, usage.promptTokens, usage.completionTokens, usage.totalTokens)
       }
     })
+    const output = hideChatUsage ? createChatUsageFilter() : tap
     up.once('error', () => res.destroy())
     tap.once('error', () => res.destroy())
-    res.once('close', () => { up.destroy(); tap.destroy() })
-    up.pipe(tap).pipe(res)
+    if (output !== tap) output.once('error', () => res.destroy())
+    res.once('close', () => { up.destroy(); tap.destroy(); if (output !== tap) output.destroy() })
+    if (output === tap) up.pipe(tap).pipe(res)
+    else up.pipe(tap).pipe(output).pipe(res)
   }
   const prep = (base) => {
     const h = { ...base }
     delete h['content-length']
     delete h['transfer-encoding']
     if (bodyBuf) h['content-length'] = String(bodyBuf.length)
+    if (hideChatUsage) h['accept-encoding'] = 'identity'
     return h
   }
   const pump = (p) => {
@@ -1195,7 +1194,9 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
         accountId: req.__accountId
       })
       if (!retryable) {
-        res.writeHead(status || 502, up.headers)
+        const responseHeaders = { ...up.headers }
+        if (hideChatUsage) delete responseHeaders['content-length']
+        res.writeHead(status || 502, responseHeaders)
         return attachUsageTap(up)
       }
 
@@ -1308,7 +1309,7 @@ async function pipeOpenAi(req, res, targetPath, headers, bodyBuf, attachUsageTap
     body.once('close', endBody)
     body.once('end', endBody)
     body.once('error', () => { endBody(); res.destroy() })
-    attachUsageTap(body)
+    attachUsageTap(body, outHeaders)
   } catch (e) {
     if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({
@@ -1532,7 +1533,7 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
         tokens: extractUsage(buf)?.totalTokens ?? null
       })
       const imageUsage = extractUsage(buf)
-      if (keyId) addKeyUsage(keyId, imageUsage?.promptTokens || 0, imageUsage?.completionTokens || 0)
+      if (keyId) addKeyUsage(keyId, imageUsage?.promptTokens || 0, imageUsage?.completionTokens || 0, imageUsage?.totalTokens || 0)
     })
   })
   p.on('error', () => {

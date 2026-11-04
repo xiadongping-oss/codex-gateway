@@ -62,8 +62,8 @@ onUnmounted(() => { disposed = true; generation++; clearInterval(timer) })
       <template #actions><button class="btn-ghost" :disabled="loading || saving" @click="refresh();loadStrict()">{{ loading ? '刷新中…' : '刷新状态' }}</button></template>
       <div class="sharing-summary"><div><span>共享监听地址</span><strong>{{ lan?.enabled ? lan.listenHost + ':' + lan.port : '未监听' }}</strong></div><div><span>可用网络地址</span><strong>{{ lan?.enabled ? addresses.length : '—' }}</strong></div><div><span>接入方式</span><strong>接口地址 + API Key</strong></div></div>
       <div v-if="lan?.manageable" class="sharing-control">
-        <div class="sharing-control-top"><div class="sharing-control-copy"><h3><span class="sharing-dot" :class="{ enabled: lan.enabled }"></span>{{ lan.enabled ? '局域网共享已开启' : '局域网共享已关闭' }}</h3><p>{{ lan.enabled ? '其他设备可通过共享端口连接模型接口。关闭共享会断开这些连接。' : '开启后，同一网络中的设备可使用 API Key 接入模型服务。' }}</p></div><button :class="lan.enabled ? 'btn-ghost' : 'btn-primary'" :disabled="saving || loading || (!lan.enabled && !validPort)" @click="saveSharing(!lan.enabled)">{{ saving ? '应用中…' : lan.enabled ? '关闭共享' : '开启共享' }}</button></div>
-        <div class="sharing-port-row"><label for="sharing-port">共享端口<input id="sharing-port" v-model="portDraft" inputmode="numeric" type="text" maxlength="5" :disabled="saving" :aria-invalid="!validPort" @input="portDirty = true" /></label><button v-if="portDirty" class="btn-ghost" :disabled="saving || loading || !validPort" @click="saveSharing(lan.enabled)">保存端口</button><p>设置会自动保留，下次启动继续生效。管理页面使用独立的本机端口。</p></div>
+        <div class="sharing-control-top"><div class="sharing-control-copy"><h3><span class="sharing-dot" :class="{ enabled: lan.enabled }"></span>{{ lan.enabled ? '局域网共享已开启' : '局域网共享已关闭' }}</h3><p>{{ lan.enabled ? '关闭共享会断开其他设备的连接。' : '同一网络内使用 API Key 接入。' }}</p></div><button :class="lan.enabled ? 'btn-ghost' : 'btn-primary'" :disabled="saving || loading || (!lan.enabled && !validPort)" @click="saveSharing(!lan.enabled)">{{ saving ? '应用中…' : lan.enabled ? '关闭共享' : '开启共享' }}</button></div>
+        <div class="sharing-port-row"><label for="sharing-port">共享端口<input id="sharing-port" v-model="portDraft" inputmode="numeric" type="text" maxlength="5" :disabled="saving" :aria-invalid="!validPort" @input="portDirty = true" /></label><button v-if="portDirty" class="btn-ghost" :disabled="saving || loading || !validPort" @click="saveSharing(lan.enabled)">保存端口</button><p>保存后立即生效。</p></div>
         <p v-if="!validPort" class="sharing-notice">请输入 1024–65535 之间的端口。</p>
         <p v-if="lan.error" class="sharing-notice" role="alert">{{ lan.error }} 网关的本机功能仍可正常使用。</p>
         <button v-if="lan.configuredEnabled && !lan.enabled" class="btn-ghost sharing-cancel" :disabled="saving || loading || !validPort" @click="saveSharing(false)">取消下次自动开启</button>
@@ -71,7 +71,7 @@ onUnmounted(() => { disposed = true; generation++; clearInterval(timer) })
       <div v-else-if="lan && !lan.enabled" class="sharing-empty"><h3>当前仅允许本机访问</h3><p>{{ isDesktopWorkspace() ? '共享管理尚未就绪，请更新桌面端后重试。' : '如需向局域网开放，请在项目目录使用下方命令重新启动网关。' }}</p><code v-if="!isDesktopWorkspace()">npm run start:lan</code></div>
     </WorkspacePanel>
     <WorkspacePanel title="接入鉴权" subtitle="使用网关 API Key 识别客户端、限制访问并记录用量" :badge="lan?.enabled ? '共享端口强制鉴权' : strict ? strict.enabled ? '本机鉴权已开启' : '本机鉴权已关闭' : '等待读取'">
-      <div class="sharing-control-top"><div><h3>本机接口也要求 API Key</h3><p>建议开启，只有携带有效密钥的客户端才能调用本机模型接口。健康检查不受影响。</p></div><button :class="strict?.enabled ? 'btn-ghost' : 'btn-primary'" :disabled="!strict || strictBusy" @click="toggleStrict">{{ strictBusy ? '保存中…' : strict?.enabled ? '关闭本机鉴权' : '开启本机鉴权' }}</button></div>
+      <div class="sharing-control-top"><div><h3>本机接口也要求 API Key</h3><p>本机模型请求需携带有效密钥。</p></div><button :class="strict?.enabled ? 'btn-ghost' : 'btn-primary'" :disabled="!strict || strictBusy" @click="toggleStrict">{{ strictBusy ? '保存中…' : strict?.enabled ? '关闭本机鉴权' : '开启本机鉴权' }}</button></div>
       <p class="sharing-hint">局域网共享端口始终要求有效 API Key，不受此开关影响。账号与管理页面始终只对本机开放。</p>
       <p v-if="strictError" class="sharing-notice" role="alert">{{ strictError }}</p>
       <button class="btn-ghost" style="margin-top:12px" @click="$emit('navigate','apikeys')">管理 API Key</button>
@@ -80,9 +80,9 @@ onUnmounted(() => { disposed = true; generation++; clearInterval(timer) })
       <button class="btn-primary" @click="$emit('navigate','access')">配置客户端 →</button>
     </WorkspacePanel>
     <p v-if="feedback" class="sharing-feedback" role="status">{{ feedback }}</p>
-    <WorkspacePanel title="访问范围" subtitle="共享仅提供模型接口，管理功能保留在本机">
+    <details class="sharing-help"><summary>网络与访问范围</summary>
       <div class="sharing-rules"><div><h3>模型接口</h3><p>其他设备使用网关 API Key 访问 /v1 接口。</p></div><div><h3>管理页面</h3><p>账号、密钥与设置仅在本机管理。</p></div><div><h3>网络连接</h3><p>设备需位于可互通的网络，系统防火墙需允许网关端口。Tailscale 地址仅供同一网络内的设备使用。</p></div></div>
-    </WorkspacePanel>
+    </details>
   </div>
 </template>
 <style scoped>
@@ -108,4 +108,5 @@ h3 { font-size:13px; font-weight:600; } p { font-size:12px; color:var(--text-2);
 .sharing-notice { color:var(--rose); }.sharing-feedback { color:var(--primary); }.sharing-hint { color:var(--amber); }
 @media(max-width:1000px) { .sharing-summary { grid-template-columns:minmax(0,1fr); } }
 @media(max-width:760px) { .sharing-rules { grid-template-columns:minmax(0,1fr); gap:16px; }.sharing-control-top { align-items:flex-start; flex-direction:column; gap:16px; } }
+.sharing-help { font-size:12px; color:var(--text-3); line-height:1.7; }.sharing-help summary { cursor:pointer; }
 </style>

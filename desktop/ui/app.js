@@ -147,7 +147,7 @@ function showPage(page) {
     else button.removeAttribute('aria-current')
   }
   $('page-title').textContent = '设置'
-  $('page-subtitle').textContent = LOCAL_PAGES[current].subtitle
+
 }
 window.showWorkspacePage = showPage
 for (const button of document.querySelectorAll('[data-page]')) button.onclick = () => navigate(button.dataset.page)
@@ -249,6 +249,8 @@ async function pollOnce() {
     $('quit').disabled = busy || s.phase === 'stopping'
   }
   if (workspace.status === 'fulfilled') {
+    const version = workspace.value.updater?.currentVersion
+    if (version) setText($('sidebar-version'), 'v' + version)
     window.cgwUpdaterUi.update(workspace.value.updater)
     if (workspace.value.preferences && !preferencesBusy) {
       if (!savedPreferences && workspace.value.preferencesError) $('preferences-status').textContent = workspace.value.preferencesError

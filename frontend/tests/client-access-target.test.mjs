@@ -19,10 +19,9 @@ test('remote configuration rejects loopback, wildcard and credential-bearing add
   for(const base of ['http://127.0.0.1:4173','http://localhost:4173','http://[::1]:4173','http://127.1:4173','http://0.0.0.0:4174','http://[::]:4174','https://user:secret@host.example'])assert.throws(()=>helpers.buildMcpConfig({base,target:'remote',key:'synthetic'}))
   assert.equal(helpers.buildMcpConfig({base:'http://[fd00::5]:5199',target:'remote',key:'fixture'}).mcpServers['codex-gateway-lan'].url,'http://[fd00::5]:5199/mcp')
 })
-test('no target is silently selected, and remote copy uses shared host and custom port for every service',async()=>{
+test('local is selected by default; remote copy uses shared host and custom port for every service',async()=>{
   const c=component();await c.load()
-  assert.equal(c.target.value,'');assert.equal(c.base.value,'')
-  await c.copy('prompt');assert.equal(c.copied.length,0);assert.equal(c.revealed.length,0)
+  assert.equal(c.target.value,'local');assert.equal(c.base.value,'http://127.0.0.1:4173')
   c.target.value='remote';assert.equal(c.base.value,'http://192.0.2.5:5199')
   assert.ok(!c.prompt.value.includes('cgw-synthetic-fixture'))
   await c.copy('prompt')

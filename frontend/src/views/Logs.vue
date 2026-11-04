@@ -15,10 +15,10 @@ const isErrLine = (line) => (line.includes('[err]') || line.includes('✗')) && 
 
 <template>
   <div class="content">
-    <nav class="workspace-sections" aria-label="日志分类">
+    <Teleport to="#page-tabs"><nav class="workspace-sections" aria-label="日志分类">
       <button :aria-current="tab === 'calls' ? 'page' : undefined" @click="tab = 'calls'">业务调用</button>
       <button :aria-current="tab === 'bridge' ? 'page' : undefined" @click="tab = 'bridge'">Bridge 运行日志</button>
-    </nav>
+    </nav></Teleport>
 
     <CallLogsPanel v-if="tab === 'calls'" />
     <template v-else>

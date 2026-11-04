@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useLiveData } from '../composables/useLiveData'
 import { usePagination } from '../composables/usePagination'
 import Pagination from '../components/Pagination.vue'
+import { callTokenText } from '../callLogUsage'
 
 // 调用日志与 bridge 日志都取自共享单例：
 // 此前本页面自己每 2.5s 轮询一次 /__gw/call-logs，而 useLiveData 也在轮询
@@ -61,14 +62,15 @@ const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 40
       <div class="table" v-if="shown.length">
         <div class="tr th">
           <span>请求 / 模型</span><span>调用来源 / 密钥</span><span>状态</span>
-          <span>耗时 / Token</span><span>时间</span>
+          <span>耗时</span><span>Token</span><span>时间</span>
         </div>
         <div class="tr" v-for="l in visible" :key="l.id">
           <span class="request"><strong>{{ l.model && l.model !== '—' ? l.model : l.endpoint === '/v1/models' ? '模型列表查询' : '未记录模型' }}</strong><small class="mono">{{l.method}} {{l.endpoint}}</small></span>
           <span class="caller" :title="l.caller?.keyId || ''"><strong>{{l.caller?.device || l.caller?.ip || '历史记录'}}</strong><small v-if="l.caller?.device">{{l.caller.ip}} · 自报设备</small><small>{{l.caller?.keyName || (l.caller?.keyId ? '已验证密钥' : l.status === 401 ? '认证未通过' : l.caller ? '未携带 API Key' : '未记录来源')}}<template v-if="l.caller?.keyId"> · {{l.caller.keyId.slice(-8)}}</template></small></span>
           <span class="mono" :class="statusClass(l.status)">{{ l.status }}</span>
-          <span class="usage"><strong class="mono">{{ l.latency }}ms</strong><small>{{ l.tokens != null ? l.tokens.toLocaleString() + ' Token' : l.method === 'GET' ? '无需 Token' : '上游未返回用量' }}</small><small v-if="detail && l.usage">输入 {{l.usage.promptTokens}} · 输出 {{l.usage.completionTokens}}</small></span>
-          <span class="mono time"><small v-if="detail">{{new Date(l.at).toLocaleDateString()}}</small>{{ fmtTime(l.at) }}</span>
+          <span class="latency mono">{{ l.latency }}ms</span>
+          <span class="tokens"><strong class="mono">{{ callTokenText(l) }}</strong><small v-if="detail && l.usage">输入 {{l.usage.promptTokens}} · 输出 {{l.usage.completionTokens}}</small></span>
+          <span class="mono time"><small v-if="detail">{{new Date(l.at).toLocaleDateString()}}</small><small>{{ fmtTime(l.at) }}</small></span>
         </div>
       </div>
       <div class="empty" v-else-if="logsError"><div class="empty-sub">暂时无法确认是否有调用记录，连接恢复后会自动刷新。</div></div>
@@ -95,9 +97,9 @@ const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 40
 .panel-heading h3 { grid-column:1 / -1;font-size:14px;margin:0; }
 .panel-heading .caller-search { box-sizing:border-box;min-width:0;width:100%;height:38px;font:inherit;font-size:12px; }
 .mode-switch{display:flex;height:38px;padding:3px;background:var(--card);border:1px solid var(--border);border-radius:8px}.mode-switch button{border:0;background:transparent;color:var(--text-2);padding:6px 10px;cursor:pointer;border-radius:5px;white-space:nowrap;font:inherit;font-size:12px}.mode-switch .active{background:var(--primary-soft);color:var(--primary)}
-.request,.usage,.time{display:flex;flex-direction:column;gap:5px;min-width:0;overflow-wrap:anywhere}.request strong,.usage strong{font-size:12px;font-weight:550}.request small,.usage small,.time small{font-size:10px;color:var(--text-3)}
+.request,.tokens,.time{display:flex;flex-direction:column;gap:5px;min-width:0;overflow-wrap:anywhere}.request strong,.tokens strong{font-size:12px;font-weight:550}.request small,.tokens small,.time small{font-size:10px;color:var(--text-3)}
 .compact .tr{padding-block:9px}.compact .caller small,.compact .request small{display:none}
-@media(max-width:700px){.tr:not(.th){grid-template-columns:minmax(0,1fr) minmax(0,1fr) 42px;gap:10px}.tr.th{display:none}.tr .usage{grid-column:1}.tr .time{grid-column:2 / 4}}
+@media(max-width:700px){.tr:not(.th){grid-template-columns:minmax(0,1fr) minmax(0,1fr) 42px;gap:10px}.tr.th{display:none}.tr .latency{grid-column:1}.tr .tokens{grid-column:2 / 4}.tr .time{grid-column:1 / -1;flex-direction:row;justify-content:flex-end}}
 @media(max-width:420px){.panel-heading{grid-template-columns:minmax(0,1fr)}.mode-switch{justify-self:start}}
 
 .log-warning { color: var(--amber); background: var(--card); border: 1px solid var(--border-strong); border-radius: 14px; padding: 12px 16px; }
@@ -118,7 +120,7 @@ const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 40
 .chip .n { font-family: var(--mono); font-size: 10.5px; opacity: 0.75; }
 .table { display: flex; flex-direction: column; }
 .tr {
-  display: grid; grid-template-columns:minmax(0,1.5fr) minmax(0,1.2fr) 46px minmax(100px,.8fr) 80px;
+  display: grid; grid-template-columns:minmax(0,1.5fr) minmax(0,1.2fr) 46px 70px minmax(90px,.8fr) 88px;
   gap: 12px; align-items: center; padding: 11px 4px;
   border-top: 1px solid var(--border); font-size: 12.5px;
 }

@@ -203,7 +203,7 @@ export function listApiKeys({ includeRaw = false } = {}) {
         callCount: k.callCount || 0,
         promptTokens: k.promptTokens || 0,
         completionTokens: k.completionTokens || 0,
-        tokens: (k.promptTokens || 0) + (k.completionTokens || 0),
+        tokens: (k.promptTokens || 0) + (k.completionTokens || 0) + (k.unclassifiedTokens || 0),
         disabled: !!k.disabled,
         // 明文按需解密：默认**不返回**。
         // 列表接口会被前端每 3 秒轮询一次，若每次都带明文，
@@ -354,12 +354,13 @@ function updateLastUsed(id) {
 
 // 按 Key 累计 token 用量（从代理转发的上游响应里解析 usage 后调用）。
 // 与 updateLastUsed 一样内存更新 + 防抖刷盘、失败不影响主请求。
-export function addKeyUsage(keyId, promptTokens = 0, completionTokens = 0) {
+export function addKeyUsage(keyId, promptTokens = 0, completionTokens = 0, totalTokens = Number(promptTokens) + Number(completionTokens)) {
   try {
     const k = reg().keys.find((x) => x.id === keyId)
     if (!k) return
     k.promptTokens = (k.promptTokens || 0) + (Number(promptTokens) || 0)
     k.completionTokens = (k.completionTokens || 0) + (Number(completionTokens) || 0)
+    k.unclassifiedTokens = (k.unclassifiedTokens || 0) + Math.max(0, (Number(totalTokens) || 0) - (Number(promptTokens) || 0) - (Number(completionTokens) || 0))
     scheduleWrite()
   } catch {}
 }
