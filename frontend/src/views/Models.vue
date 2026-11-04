@@ -48,7 +48,7 @@ onMounted(()=>refresh());onUnmounted(()=>{disposed=true})
       <div v-if="capabilities" class="agent-grid"><article v-for="feature in capabilities.agent" :key="feature.id"><span class="small-badge">已接入</span><h3>{{ feature.title }}</h3><p>{{ feature.detail }}</p></article></div>
       <p v-else class="model-note">能力信息尚未读取，请刷新目录或更新网关。</p>
       <ol class="agent-flow"><li><b>1</b>模型提出工具调用</li><li><b>2</b>客户端执行动作</li><li><b>3</b>回传结果，继续任务</li></ol>
-      <details class="model-help"><summary>执行方式</summary><p>网关转发工具请求与结果，工具由客户端执行并管理权限。</p></details>
+      <span class="hover-help" tabindex="0" title="网关转发工具请求与结果，工具由客户端执行并管理权限。">执行方式 ⓘ</span>
     </WorkspacePanel>
     <WorkspacePanel v-else title="图片生成与编辑" subtitle="按当前网关链路列出功能，避免把模型原生能力当作已接通的功能" :badge="capabilities?.mode==='openai'?'API 供应商直连':'订阅工具通道'">
       <template #actions><button class="btn-ghost" :disabled="loading" @click="refresh()">{{ loading?'刷新中…':'刷新状态' }}</button></template>
@@ -60,8 +60,10 @@ onMounted(()=>refresh());onUnmounted(()=>{disposed=true})
       <details v-if="capabilities?.mode!=='openai'" class="model-help"><summary>接口示例</summary><div class="image-examples"><article v-for="example in imageExamples" :key="example.title"><h3>{{ example.title }}</h3><code>POST {{ example.endpoint }}</code><pre>{{ JSON.stringify(example.body,null,2) }}</pre></article></div></details>
       <p class="model-note">蒙版与原图尺寸需一致；透明区域编辑，不透明区域保留。</p>
     </WorkspacePanel>
+    <div class="model-reference-grid">
     <ModelsCard :capabilities="visibleCapabilities" :supported="capabilitiesBase" @toggle="toggleCapability" />
     <WorkspacePanel title="接口速查" subtitle="同一接口地址可供不同类型的客户端使用"><div class="endpoint-list"><div><code>/v1/responses</code><span>文本、图像输入与工具调用</span></div><div><code>/v1/chat/completions</code><span>OpenAI 兼容对话客户端</span></div><div><code>/v1/images/generations</code><span>标准出图与参考图重绘</span></div><div><code>/v1/images/edits</code><span>图片编辑、蒙版与扩图</span></div></div></WorkspacePanel>
+    </div>
   </div>
 </template>
 <style scoped>
@@ -73,4 +75,8 @@ onMounted(()=>refresh());onUnmounted(()=>{disposed=true})
 .capability-nav button.active { background:var(--primary-soft); border-color:var(--primary); color:var(--primary); }
 .model-help { font-size:12px; color:var(--text-3); line-height:1.7; }
 .model-help summary { cursor:pointer; }
+
+.model-reference-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; align-items:stretch; }
+.model-reference-grid .endpoint-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
+@media(max-width:900px) { .model-reference-grid { grid-template-columns:1fr; } }
 </style>

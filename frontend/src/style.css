@@ -288,3 +288,10 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .sidebar .nav { gap:10px; }
   .sidebar .nav-label { padding-bottom:3px; }
 }
+
+.hover-help { display:inline-block; color:var(--text-3); font-size:12px; cursor:help; }
+@media(max-height:640px) {
+  .sidebar .nav-item { min-height:34px; padding-top:7px; padding-bottom:7px; }
+  .sidebar .logo { padding-bottom:8px; }
+  .sidebar .nav { gap:8px; }
+}

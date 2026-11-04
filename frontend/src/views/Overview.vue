@@ -14,6 +14,7 @@ const workspaceLinks = [
   {key:'account',title:'账号管理',description:'登录授权与账号额度'},
   {key:'images',title:'图片素材',description:'生成图库与本地素材'},
   {key:'logs',title:'调用日志',description:'请求记录与运行日志'},
+  {key:'lan',title:'局域网共享',description:'共享状态与访问管理'},
   {key:'runtime',title:'实例与自动切换',description:'账号实例与故障转移'}
 ]
 const fmtUptime = (s) => {
@@ -85,6 +86,12 @@ const authOk = computed(() => account.value?.loggedIn !== false)
       </section>
     </div>
 
+    <button class="lan-overview" @click="$emit('navigate','lan')">
+      <span class="lan-indicator" :class="{enabled:gwConnected && gw.lan?.enabled}"></span><strong>局域网共享</strong>
+      <span>{{ !gwConnected ? '等待连接' : gw.lan?.enabled ? '已开启' : gw.lan?.error ? '开启失败' : '已关闭' }}</span>
+      <code v-if="gwConnected && gw.lan?.enabled">{{ gw.lan.listenHost }}:{{ gw.lan.port }}</code>
+      <span class="lan-manage">管理 →</span>
+    </button>
     <div class="section-heading"><h2>使用概况</h2><span>累计用量 · 随调用更新</span></div>
     <div class="stat-grid">
       <section class="stat-card"><div class="stat-label"><span>网关调用</span><span class="stat-icon">↗</span></div><strong>{{ gwConnected ? requests.toLocaleString() : '—' }}</strong><span class="stat-foot">累计请求次数</span></section>
@@ -170,6 +177,12 @@ h2 { font-size: 27px; font-weight: 650; letter-spacing: -.8px; margin-top: 15px;
 }
 .overview{padding:4px 24px 24px;gap:16px}.gateway-hero{border-radius:14px;padding:24px;min-height:190px}.account-summary,.stat-card,.quick-card{border-radius:12px}.stat-card{padding:18px}.power-button{border-radius:24px}.quick-card{padding:16px}
 @media(max-width:760px){.overview{padding:4px 14px 18px}.gateway-hero{min-height:180px;padding:20px}}
+
+.lan-overview { display:flex; align-items:center; flex-wrap:wrap; gap:12px; width:100%; padding:14px 18px; border:1px solid var(--border); border-radius:10px; background:var(--card); color:var(--text-2); text-align:left; font:inherit; font-size:12px; cursor:pointer; }
+.lan-overview strong { color:var(--text); font-weight:550; }
+.lan-indicator { width:7px; height:7px; background:var(--text-3); border-radius:50%; }
+.lan-indicator.enabled { background:var(--primary); }
+.lan-manage { margin-left:auto; color:var(--primary); }
 </style>
 
 <style scoped>
@@ -184,4 +197,10 @@ h2 { font-size: 27px; font-weight: 650; letter-spacing: -.8px; margin-top: 15px;
 .arrow { font-size:16px; }
 @media(max-width:1100px) { .quick-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:680px) { .quick-grid { grid-template-columns:minmax(0,1fr); }.quick-card { min-height:76px; } }
+
+.lan-overview { display:flex; align-items:center; flex-wrap:wrap; gap:12px; width:100%; padding:14px 18px; border:1px solid var(--border); border-radius:10px; background:var(--card); color:var(--text-2); text-align:left; font:inherit; font-size:12px; cursor:pointer; }
+.lan-overview strong { color:var(--text); font-weight:550; }
+.lan-indicator { width:7px; height:7px; background:var(--text-3); border-radius:50%; }
+.lan-indicator.enabled { background:var(--primary); }
+.lan-manage { margin-left:auto; color:var(--primary); }
 </style>

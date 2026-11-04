@@ -48,7 +48,7 @@ async function saveSharing(enabled) {
     if (disposed) return
     if (!result.ok || !result.lan) throw new Error('未能确认共享状态，请刷新后重试。')
     applyLan(result.lan, true)
-    feedback.value = enabled ? '共享已开启，设置已保存。请到「配置客户端」为其他设备配置接入。' : '共享已关闭，设置已保存。'
+    feedback.value = enabled ? '共享已开启。' : '共享已关闭。'
   } catch (e) { if (!disposed) error.value = e.detail || e.message || '共享设置保存失败，请重试。' }
   finally { if (!disposed) saving.value = false }
 }
@@ -58,55 +58,63 @@ onUnmounted(() => { disposed = true; generation++; clearInterval(timer) })
 <template>
   <div class="content sharing-page">
     <p v-if="error" class="sharing-notice" role="alert">{{ error }}</p>
-    <WorkspacePanel title="共享状态" subtitle="让同一网络中的其他设备连接模型接口" :badge="!lan ? '等待连接' : lan.enabled ? '已开启' : lan.error ? '开启失败' : '仅本机访问'">
-      <template #actions><button class="btn-ghost" :disabled="loading || saving" @click="refresh();loadStrict()">{{ loading ? '刷新中…' : '刷新状态' }}</button></template>
-      <div class="sharing-summary"><div><span>共享监听地址</span><strong>{{ lan?.enabled ? lan.listenHost + ':' + lan.port : '未监听' }}</strong></div><div><span>可用网络地址</span><strong>{{ lan?.enabled ? addresses.length : '—' }}</strong></div><div><span>接入方式</span><strong>接口地址 + API Key</strong></div></div>
-      <div v-if="lan?.manageable" class="sharing-control">
-        <div class="sharing-control-top"><div class="sharing-control-copy"><h3><span class="sharing-dot" :class="{ enabled: lan.enabled }"></span>{{ lan.enabled ? '局域网共享已开启' : '局域网共享已关闭' }}</h3><p>{{ lan.enabled ? '关闭共享会断开其他设备的连接。' : '同一网络内使用 API Key 接入。' }}</p></div><button :class="lan.enabled ? 'btn-ghost' : 'btn-primary'" :disabled="saving || loading || (!lan.enabled && !validPort)" @click="saveSharing(!lan.enabled)">{{ saving ? '应用中…' : lan.enabled ? '关闭共享' : '开启共享' }}</button></div>
-        <div class="sharing-port-row"><label for="sharing-port">共享端口<input id="sharing-port" v-model="portDraft" inputmode="numeric" type="text" maxlength="5" :disabled="saving" :aria-invalid="!validPort" @input="portDirty = true" /></label><button v-if="portDirty" class="btn-ghost" :disabled="saving || loading || !validPort" @click="saveSharing(lan.enabled)">保存端口</button><p>保存后立即生效。</p></div>
-        <p v-if="!validPort" class="sharing-notice">请输入 1024–65535 之间的端口。</p>
-        <p v-if="lan.error" class="sharing-notice" role="alert">{{ lan.error }} 网关的本机功能仍可正常使用。</p>
-        <button v-if="lan.configuredEnabled && !lan.enabled" class="btn-ghost sharing-cancel" :disabled="saving || loading || !validPort" @click="saveSharing(false)">取消下次自动开启</button>
+    <WorkspacePanel title="共享状态" subtitle="局域网设备通过共享端口访问模型接口。关闭共享会断开已有连接。" :badge="!lan ? '读取中' : lan.enabled ? '已开启' : lan.error ? '开启失败' : '已关闭'">
+      <template #actions>
+        <button class="btn-ghost" :disabled="loading || saving" @click="refresh();loadStrict()">{{ loading ? '刷新中…' : '刷新状态' }}</button>
+        <button class="sharing-toggle" :class="{on:lan?.enabled}" role="switch" :aria-checked="!!lan?.enabled" :aria-label="lan?.enabled ? '关闭局域网共享' : '开启局域网共享'" :disabled="!lan?.manageable || saving || loading || (!lan?.enabled && !validPort)" @click="saveSharing(!lan.enabled)"><span /></button>
+      </template>
+      <div class="sharing-summary">
+        <div class="sharing-tile"><span>共享监听地址</span><strong class="mono">{{ lan?.enabled ? lan.listenHost + ':' + lan.port : '未监听' }}</strong></div>
+        <div class="sharing-tile" :title="addresses.map(a=>a.address).join(', ')"><span>可用网络地址</span><strong>{{ lan?.enabled ? addresses.length : '—' }}</strong></div>
+        <div class="sharing-tile"><span>接入方式</span><strong>接口地址 + API Key</strong></div>
+        <div class="sharing-tile port-tile">
+          <label for="sharing-port">共享端口</label>
+          <div class="port-controls"><input id="sharing-port" v-model="portDraft" inputmode="numeric" maxlength="5" :disabled="saving || !lan?.manageable" :aria-invalid="!validPort" @input="portDirty=true" @keyup.enter="portDirty && validPort && saveSharing(lan.enabled)" /><button v-if="portDirty" class="btn-ghost" :disabled="saving || loading || !validPort" @click="saveSharing(lan.enabled)">保存</button></div>
+        </div>
       </div>
-      <div v-else-if="lan && !lan.enabled" class="sharing-empty"><h3>当前仅允许本机访问</h3><p>{{ isDesktopWorkspace() ? '共享管理尚未就绪，请更新桌面端后重试。' : '如需向局域网开放，请在项目目录使用下方命令重新启动网关。' }}</p><code v-if="!isDesktopWorkspace()">npm run start:lan</code></div>
+      <p v-if="!validPort" class="sharing-notice" role="alert">端口范围为 1024–65535。</p>
+      <p v-if="lan?.error" class="sharing-notice" role="alert">{{ lan.error }}</p>
+      <button v-if="lan?.configuredEnabled && !lan.enabled" class="btn-ghost sharing-cancel" :disabled="saving || loading || !validPort" @click="saveSharing(false)">取消下次自动开启</button>
+      <p v-if="lan && !lan.manageable && !lan.enabled" class="sharing-hint">{{ isDesktopWorkspace() ? '共享管理暂不可用。' : '命令行启动共享：npm run start:lan' }}</p>
     </WorkspacePanel>
-    <WorkspacePanel title="接入鉴权" subtitle="使用网关 API Key 识别客户端、限制访问并记录用量" :badge="lan?.enabled ? '共享端口强制鉴权' : strict ? strict.enabled ? '本机鉴权已开启' : '本机鉴权已关闭' : '等待读取'">
-      <div class="sharing-control-top"><div><h3>本机接口也要求 API Key</h3><p>本机模型请求需携带有效密钥。</p></div><button :class="strict?.enabled ? 'btn-ghost' : 'btn-primary'" :disabled="!strict || strictBusy" @click="toggleStrict">{{ strictBusy ? '保存中…' : strict?.enabled ? '关闭本机鉴权' : '开启本机鉴权' }}</button></div>
-      <p class="sharing-hint">局域网共享端口始终要求有效 API Key，不受此开关影响。账号与管理页面始终只对本机开放。</p>
+    <WorkspacePanel title="接入与访问" subtitle="局域网端口强制使用 API Key。本机模型接口可单独设置鉴权要求。">
+      <template #actions><button class="btn-ghost" data-workspace-page="apikeys" @click="$emit('navigate','apikeys')">管理 API Key</button></template>
+      <div class="access-grid">
+        <section class="access-tile">
+          <div class="access-tile-head"><h3>本机鉴权</h3><button class="sharing-toggle" :class="{on:strict?.enabled}" role="switch" :aria-checked="!!strict?.enabled" :aria-label="strict?.enabled ? '关闭本机鉴权' : '开启本机鉴权'" :disabled="!strict || strictBusy" @click="toggleStrict"><span /></button></div>
+          <strong>{{ !strict ? '读取中' : strict.enabled ? '需 API Key' : '免 API Key' }}</strong>
+          <p>本机模型接口</p>
+        </section>
+        <section class="access-tile"><h3>局域网鉴权</h3><strong>需 API Key</strong><p>共享端口始终启用</p></section>
+        <section class="access-tile"><h3>管理页面</h3><strong>仅本机</strong><p>账号、密钥与设置</p></section>
+        <section class="access-tile" title="设备需位于可互通的网络，防火墙需放行共享端口。Tailscale 地址仅供同一网络内的设备使用。"><h3>网络范围 ⓘ</h3><strong>局域网 / Tailscale</strong><p>共享端口需允许入站</p></section>
+      </div>
       <p v-if="strictError" class="sharing-notice" role="alert">{{ strictError }}</p>
-      <button class="btn-ghost" style="margin-top:12px" @click="$emit('navigate','apikeys')">管理 API Key</button>
-    </WorkspacePanel>
-    <WorkspacePanel title="连接其他设备" subtitle="在统一接入页选择其他设备，复制 Prompt、MCP 或模型配置">
-      <button class="btn-primary" @click="$emit('navigate','access')">配置客户端 →</button>
     </WorkspacePanel>
     <p v-if="feedback" class="sharing-feedback" role="status">{{ feedback }}</p>
-    <details class="sharing-help"><summary>网络与访问范围</summary>
-      <div class="sharing-rules"><div><h3>模型接口</h3><p>其他设备使用网关 API Key 访问 /v1 接口。</p></div><div><h3>管理页面</h3><p>账号、密钥与设置仅在本机管理。</p></div><div><h3>网络连接</h3><p>设备需位于可互通的网络，系统防火墙需允许网关端口。Tailscale 地址仅供同一网络内的设备使用。</p></div></div>
-    </details>
   </div>
 </template>
 <style scoped>
-.sharing-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
-.sharing-summary>div { padding:16px; border:1px solid var(--border); border-radius:10px; background:var(--bg); min-width:0; }
-.sharing-summary span { display:block; color:var(--text-3); font-size:12px; }
-.sharing-summary strong { display:block; margin-top:8px; font-size:15px; font-weight:550; overflow-wrap:anywhere; }
-.sharing-empty { margin-top:20px; padding:20px; border:1px solid var(--border); background:var(--bg); border-radius:12px; }
-h3 { font-size:13px; font-weight:600; } p { font-size:12px; color:var(--text-2); line-height:1.7; margin-top:6px; }
-.sharing-empty code { display:block; margin-top:16px; color:var(--primary); font-size:13px; }
-.sharing-control { margin-top:20px; padding:20px; border:1px solid var(--border); background:var(--bg); border-radius:12px; }
-.sharing-control-top { display:flex; align-items:center; justify-content:space-between; gap:24px; }
-.sharing-control-top button { flex:none; white-space:nowrap; }
-.sharing-control h3 { display:flex; align-items:center; gap:9px; }
-.sharing-dot { width:8px; height:8px; background:var(--text-3); border-radius:50%; }.sharing-dot.enabled { background:var(--primary); box-shadow:0 0 0 4px var(--primary-soft); }
-.sharing-port-row { display:flex; align-items:center; flex-wrap:wrap; gap:12px 16px; margin-top:20px; padding-top:18px; border-top:1px solid var(--border); }
-.sharing-port-row label { display:flex; align-items:center; gap:12px; font-size:12px; color:var(--text-2); }
-.sharing-port-row input { width:100px; padding:9px 12px; background:var(--card); border:1px solid var(--border-strong); border-radius:8px; color:var(--text); font:inherit; font-variant-numeric:tabular-nums; }
-.sharing-port-row input:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
-.sharing-port-row p { margin:0; flex:1; min-width:220px; }
+.sharing-summary,.access-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
+.sharing-tile,.access-tile { min-width:0; padding:18px; border:1px solid var(--border); border-radius:10px; background:var(--bg); }
+.sharing-tile { display:flex; flex-direction:column; gap:12px; justify-content:space-between; min-height:108px; }
+.sharing-tile>span,.sharing-tile>label { color:var(--text-3); font-size:12px; }
+.sharing-tile strong,.access-tile>strong { color:var(--text); font-size:15px; font-weight:550; overflow-wrap:anywhere; }
+.port-controls { display:flex; align-items:center; gap:8px; min-height:24px; }
+.port-controls input { width:80px; min-width:0; max-width:100%; padding:3px 0; border:0; border-bottom:1px solid var(--border-strong); background:transparent; color:var(--text); font:550 15px var(--mono); }
+.port-controls button { padding:3px 7px; font-size:11px; }
+.sharing-toggle { display:inline-flex; align-items:center; flex:none; width:36px; height:22px; padding:3px; border:0; border-radius:20px; background:var(--border-strong); cursor:pointer; }
+.sharing-toggle span { width:16px; height:16px; border-radius:50%; background:white; box-shadow:0 1px 3px #0002; transition:transform .15s; }
+.sharing-toggle.on { background:var(--primary); }
+.sharing-toggle.on span { transform:translateX(14px); }
+.sharing-toggle:disabled { opacity:.45; cursor:wait; }
+.access-tile-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:14px; }
+.access-tile h3 { font-size:12px; color:var(--text-3); font-weight:500; margin:0 0 18px; }
+.access-tile-head h3 { margin:0; }
+.access-tile p { margin:8px 0 0; font-size:11px; color:var(--text-3); line-height:1.6; }
+.sharing-notice { color:var(--rose); font-size:12px; margin-top:12px; }
+.sharing-feedback,.sharing-hint { font-size:12px; color:var(--text-3); }
 .sharing-cancel { margin-top:12px; }
-.sharing-rules { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:24px; }
-.sharing-notice { color:var(--rose); }.sharing-feedback { color:var(--primary); }.sharing-hint { color:var(--amber); }
-@media(max-width:1000px) { .sharing-summary { grid-template-columns:minmax(0,1fr); } }
-@media(max-width:760px) { .sharing-rules { grid-template-columns:minmax(0,1fr); gap:16px; }.sharing-control-top { align-items:flex-start; flex-direction:column; gap:16px; } }
-.sharing-help { font-size:12px; color:var(--text-3); line-height:1.7; }.sharing-help summary { cursor:pointer; }
+@media(max-width:1100px) { .sharing-summary,.access-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:520px) { .sharing-summary,.access-grid { grid-template-columns:1fr; } }
 </style>

@@ -293,71 +293,42 @@ onUnmounted(() => {
     <!-- 主卡片 -->
     <div class="card">
       <div class="card-title-row">
-        <div class="card-title">API Key</div>
+        <div class="card-title">API Key <span class="key-help" tabindex="0" title="客户端使用 Bearer API Key 接入；可限制到指定账号。" aria-label="API Key 说明">ⓘ</span></div>
         <span class="card-meta">{{ keys.length }} 个 Key</span>
         <button class="btn-primary sm" @click="startCreate">
           <span>+ 新建 Key</span>
         </button>
       </div>
-      <div class="card-sub" style="margin-bottom: 14px">
-        给 WorkBuddy 等外部客户端用的「网关层」API Key —— 鉴权走 <code>Authorization: Bearer</code>，
-        默认不锁定单一账号；指定账号后请求会被限制在所选账号内。
-      </div>
-
       <div v-if="loadErr" class="msg err">{{ loadErr }}</div>
 
-      <div v-if="!keys.length && !loading" class="empty">
+      <div v-if="!keys.length && !loading && !loadErr" class="empty">
         还没有 API Key。点「+ 新建 Key」创建第一个。
       </div>
 
-      <div class="k-row head">
-        <span class="c-name">名称</span>
-        <span class="c-token">Token（掩码）</span>
-        <span class="c-acc">绑定账号</span>
-        <span class="c-time">创建 / 最近使用</span>
-        <span class="c-call sortable" @click="toggleSortCalls()" title="按调用次数排序">
-          调用 / Token<span class="sort-ar" :class="sortDir">{{ sortDir === 'desc' ? '▼' : sortDir === 'asc' ? '▲' : '↕' }}</span>
-        </span>
-        <span class="c-act"></span>
-      </div>
-
-      <div v-for="k in visible" :key="k.id" class="k-row">
-        <div class="c-name">
-          <div class="kn">{{ k.name }}</div>
-          <div class="kid">{{ k.id }}</div>
-        </div>
-        <div class="c-token">
-          <code>{{ k.mask }}</code>
-          <span class="prefix" v-if="k.prefix">{{ k.prefix }}…</span>
-        </div>
-        <div class="c-acc">
-          <span class="scope-pill" :class="{ all: !k.accountIds || k.accountIds.length === 0 }">
-            {{ scopeLabel(k) }}
-          </span>
-        </div>
-        <div class="c-time">
-          <div class="t1">建：{{ fmtTime(k.createdAt) }}</div>
-          <div class="t2">用：{{ fmtTime(k.lastUsedAt) }}</div>
-        </div>
-        <div class="c-call">
-          <span class="call-n">{{ k.callCount ? k.callCount.toLocaleString() : '—' }}</span>
-          <span class="call-tok" v-if="k.tokens">{{ fmtTok(k.tokens) }} tok</span>
-          <span v-if="k.id === topCallKeyId" class="call-tag">最活跃</span>
-        </div>
-        <div class="c-act">
-          <button class="btn-copy sm" :class="{ copied: copiedId === k.id }" @click="copyKey(k)">
-            {{ copiedId === k.id ? '✓ 已复制' : '复制' }}
-          </button>
-          <button
-            class="btn-invite sm"
-            :class="{ copied: inviteCopiedId === k.id }"
-            title="复制「接入页地址 + 该 Key」发给同事：对方打开 /setup 输入 Key，全程网页完成配置"
-            @click="copyInvite(k)"
-          >
-            {{ inviteCopiedId === k.id ? '✓ 已发出' : '接入' }}
-          </button>
-          <button class="btn-del sm" :disabled="loading" @click="onDelete(k)">删除</button>
-        </div>
+      <div v-if="loading && !keys.length" class="empty" role="status">正在读取密钥…</div>
+      <div v-if="keys.length" class="key-table-wrap">
+        <table class="key-table" aria-label="API Key 列表">
+          <thead><tr>
+            <th>名称</th><th>密钥</th><th>授权范围</th><th>最近使用</th>
+            <th :aria-sort="sortDir === 'asc' ? 'ascending' : sortDir === 'desc' ? 'descending' : 'none'"><button class="sort-button" @click="toggleSortCalls">调用次数 <span>{{ sortDir === 'desc' ? '↓' : sortDir === 'asc' ? '↑' : '↕' }}</span></button></th>
+            <th>Token</th><th class="key-actions-heading">操作</th>
+          </tr></thead>
+          <tbody>
+            <tr v-for="k in visible" :key="k.id" :class="{disabled:k.disabled}">
+              <td data-label="名称"><div class="key-name"><strong>{{ k.name }}</strong><span class="key-state" :class="{off:k.disabled}">{{ k.disabled ? '停用' : '启用' }}</span></div><small class="key-id" :title="k.id">{{ k.id.slice(-8) }}</small></td>
+              <td data-label="密钥"><code class="key-mask">{{ k.mask }}</code></td>
+              <td data-label="授权范围"><span class="key-scope" :title="scopeLabel(k)">{{ scopeLabel(k) }}</span></td>
+              <td data-label="最近使用"><span class="key-date">{{ fmtTime(k.lastUsedAt) }}</span><small class="key-created" :title="'创建于 ' + fmtTime(k.createdAt)">创建 {{ fmtTime(k.createdAt) }}</small></td>
+              <td data-label="调用次数"><span class="key-number">{{ (k.callCount || 0).toLocaleString() }}</span><span v-if="k.id === topCallKeyId" class="activity-dot" title="调用最多"></span></td>
+              <td data-label="Token"><span class="key-number" :title="(k.tokens || 0).toLocaleString()">{{ fmtTok(k.tokens || 0) }}</span></td>
+              <td data-label="操作"><div class="key-actions">
+                <button class="key-action" :class="{copied:copiedId===k.id}" @click="copyKey(k)">{{ copiedId===k.id ? '已复制' : '复制' }}</button>
+                <button class="key-action" :class="{copied:inviteCopiedId===k.id}" title="复制客户端接入页和此密钥" @click="copyInvite(k)">{{ inviteCopiedId===k.id ? '已复制' : '接入' }}</button>
+                <button class="key-action danger" :disabled="loading" @click="onDelete(k)">删除</button>
+              </div></td>
+            </tr>
+          </tbody>
+        </table>
       </div>
       <div v-if="copyErr" class="msg err">{{ copyErr }}</div>
     </div>
@@ -488,7 +459,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.content { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 18px; }
+.content { flex: 1; overflow-y: auto; padding: 4px 24px 24px; display: flex; flex-direction: column; gap: 18px; }
 
 .card-title-row { display: flex; align-items: center; gap: 12px; }
 .card-meta { font-size: 11.5px; color: var(--text-3); margin-left: auto; }
@@ -533,39 +504,6 @@ onUnmounted(() => {
 .msg.err { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
 
 .empty { font-size: 13px; color: var(--text-3); padding: 18px 4px; text-align: center; }
-
-/* Key 列表 */
-.k-row {
-  display: grid;
-  grid-template-columns: 1.2fr 1.5fr 1.1fr 1.4fr 0.9fr 172px;
-  align-items: center; gap: 12px;
-  padding: 12px 10px; border-bottom: 1px solid var(--border);
-}
-.k-row.head { font-size: 11.5px; color: var(--text-3); padding: 8px 10px; border-bottom-color: var(--border-strong); }
-.k-row.head > span { font-weight: 500; }
-.c-name .kn { font-size: 13.5px; font-weight: 600; color: var(--text); }
-.c-name .kid { font-size: 11px; color: var(--text-3); font-family: var(--mono); margin-top: 2px; }
-.c-token code { font-family: var(--mono); font-size: 12px; color: var(--emerald-light); }
-.c-token .prefix { font-size: 11px; color: var(--text-3); margin-left: 6px; }
-.c-acc { font-size: 12.5px; color: var(--text-2); }
-.scope-pill {
-  display: inline-flex; align-items: center;
-  font-size: 11.5px; color: var(--text);
-  background: rgba(139,107,214,0.10); border: 1px solid rgba(139,107,214,0.25);
-  border-radius: 999px; padding: 3px 10px;
-}
-.scope-pill.all { background: rgba(139,107,214,0.10); border-color: rgba(139,107,214,0.25); color: var(--emerald-light); }
-.c-time .t1, .c-time .t2 { font-size: 11.5px; color: var(--text-3); font-family: var(--mono); }
-.c-time .t2 { color: var(--text-2); margin-top: 2px; }
-.c-call { text-align: left; display: flex; flex-direction: column; gap: 4px; }
-.c-call.sortable { cursor: pointer; user-select: none; flex-direction: row; align-items: center; gap: 5px; }
-.c-call.sortable:hover { color: var(--text-2); }
-.sort-ar { font-size: 9px; color: var(--emerald-light); opacity: 0.45; }
-.sort-ar.desc, .sort-ar.asc { opacity: 1; }
-.c-call .call-n { font-size: 14px; font-weight: 700; color: var(--text); font-family: var(--mono); }
-.c-call .call-tok { font-size: 10.5px; color: var(--text-3); font-family: var(--mono); }
-.call-tag { font-size: 10px; color: var(--primary); background: rgba(139,107,214,0.12); border: 1px solid rgba(139,107,214,0.3); border-radius: 999px; padding: 1px 7px; align-self: flex-start; }
-.c-act { text-align: right; }
 
 /* 弹窗 */
 .modal-mask {
@@ -664,5 +602,49 @@ onUnmounted(() => {
 .btn-ghost {
   background: var(--card-2); color: var(--text-2); border: 1px solid var(--border-strong); border-radius: 8px;
   height: 40px; padding: 0 14px; font-size: 13px; cursor: pointer;
+}
+
+.key-help { color:var(--text-3); font-size:12px; font-weight:400; cursor:help; margin-left:6px; }
+.key-table-wrap { width:100%; overflow-x:auto; margin-top:18px; }
+.key-table { width:100%; border-collapse:collapse; min-width:740px; text-align:left; }
+.key-table th { padding:11px 12px; font-size:11px; color:var(--text-3); font-weight:500; background:var(--bg); border-bottom:1px solid var(--border); white-space:nowrap; }
+.key-table th:first-child { border-radius:8px 0 0 0; }
+.key-table th:last-child { border-radius:0 8px 0 0; }
+.key-table td { padding:16px 12px; border-bottom:1px solid var(--border); vertical-align:middle; font-size:12px; }
+.key-table tbody tr:last-child td { border-bottom:0; }
+.key-table tbody tr:hover { background:var(--bg); }
+.key-table tr.disabled { color:var(--text-3); }
+.key-name { display:flex; align-items:center; flex-wrap:wrap; gap:8px; min-width:110px; }
+.key-name strong { font-weight:550; color:var(--text); overflow-wrap:anywhere; }
+.key-state { padding:2px 6px; border-radius:4px; background:var(--primary-soft); color:var(--primary); font-size:10px; white-space:nowrap; }
+.key-state.off { color:var(--text-3); background:var(--card-2); }
+.key-id,.key-created { display:block; margin-top:6px; font-size:10px; color:var(--text-3); }
+.key-id,.key-mask,.key-date,.key-number { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+.key-mask { color:var(--text-2); white-space:nowrap; }
+.key-scope { display:inline-block; max-width:150px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:middle; }
+.key-date { font-size:11px; white-space:nowrap; }
+.key-created { white-space:nowrap; }
+.key-number { font-size:12px; color:var(--text); }
+.sort-button { display:inline-flex; gap:6px; align-items:center; padding:0; border:0; background:transparent; color:inherit; font:inherit; cursor:pointer; }
+.sort-button span { color:var(--primary); }
+.activity-dot { display:inline-block; width:5px; height:5px; border-radius:50%; margin-left:5px; background:var(--primary); vertical-align:middle; }
+.key-actions { display:flex; align-items:center; justify-content:flex-end; gap:4px; white-space:nowrap; }
+.key-actions-heading { text-align:right; }
+.key-action { border:0; border-radius:6px; padding:6px 8px; background:transparent; color:var(--text-2); font:inherit; font-size:11px; cursor:pointer; }
+.key-action:hover,.key-action.copied { background:var(--primary-soft); color:var(--primary); }
+.key-action.danger:hover { background:rgba(220,70,90,.1); color:var(--rose); }
+.key-action:disabled { opacity:.5; cursor:wait; }
+@media(max-width:760px) {
+  .content { padding:4px 14px 18px; }
+  .key-table { display:block; min-width:0; }
+  .key-table thead { display:none; }
+  .key-table tbody { display:grid; gap:12px; }
+  .key-table tr { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); padding:10px; border:1px solid var(--border); border-radius:10px; }
+  .key-table td { display:block; min-width:0; padding:10px; border:0; }
+  .key-table td::before { content:attr(data-label); display:block; color:var(--text-3); font-size:10px; margin-bottom:8px; }
+  .key-table td:last-child { grid-column:1 / -1; border-top:1px solid var(--border); margin-top:6px; }
+  .key-table td:last-child::before { display:none; }
+  .key-name { min-width:0; }
+  .key-scope { max-width:100%; }
 }
 </style>

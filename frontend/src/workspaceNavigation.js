@@ -7,7 +7,6 @@ export const accessPages = [
   { key: 'access', label: '配置客户端' },
   { key: 'models', label: '模型目录' },
   { key: 'apikeys', label: 'API Key' },
-  { key: 'lan', label: '共享与鉴权' },
   { key: 'settings', label: '出网代理' }
 ]
 
