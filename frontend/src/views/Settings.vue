@@ -1,7 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { gwRequest } from '../api/client'
-import AccessConfig from '../components/AccessConfig.vue'
 import WorkspacePanel from '../components/WorkspacePanel.vue'
 defineEmits(['navigate'])
 // ---- 出网代理 ----
@@ -102,7 +101,6 @@ onMounted(loadProxy)
 </script>
 <template>
   <div class="content settings-page">
-    <AccessConfig @navigate="$emit('navigate',$event)" />
     <WorkspacePanel title="出网代理" subtitle="供登录授权和模型请求使用，与客户端接入地址无关" :badge="!proxyLoaded ? '读取中' : proxyEnabled ? '已启用' : '直连'">
       <label class="proxy-label" for="proxy-address">代理地址</label>
       <div class="proxy-row"><input id="proxy-address" v-model="proxyInput" placeholder="http://127.0.0.1:7897" spellcheck="false" :disabled="!proxyAvailable || !proxyLoaded || saving" @keyup.enter="saveProxy" /><button class="btn-primary" :disabled="saving || !proxyLoaded || !proxyAvailable" @click="saveProxy">{{ saving ? '应用中…' : '保存并应用' }}</button><button class="btn-ghost" :disabled="testing || !proxyLoaded || !proxyAvailable" @click="testProxyConn">{{ testing ? '测试中…' : '测试连接' }}</button></div>

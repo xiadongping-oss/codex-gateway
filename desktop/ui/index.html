@@ -9,28 +9,26 @@
         <button class="nav-item" data-page="overview" title="概览"><span data-icon="overview"></span><span>概览</span></button>
         <button class="nav-item" data-page="account" title="账号管理"><span data-icon="account"></span><span>账号管理</span></button>
         <button class="nav-item" data-page="images" title="图片素材"><span data-icon="images"></span><span>图片素材</span></button>
-        <button class="nav-item" data-page="models" title="模型能力"><span data-icon="models"></span><span>模型能力</span></button>
       </div>
       <div class="nav-group"><p class="nav-heading">开发接入</p>
         <button class="nav-item" data-page="access" title="客户端接入"><span data-icon="access"></span><span>客户端接入</span></button>
-        <button class="nav-item" data-page="apikeys" title="API Key"><span data-icon="apikeys"></span><span>API Key</span></button>
-        <button class="nav-item" data-page="lan" title="局域网共享"><span data-icon="lan"></span><span>局域网共享</span></button>
         <button class="nav-item" data-page="logs" title="调用日志"><span data-icon="logs"></span><span>调用日志</span></button>
-        <button class="nav-item" data-page="settings" title="连接配置"><span data-icon="settings"></span><span>连接配置</span></button>
       </div>
       <div class="nav-group"><p class="nav-heading">管理</p>
-        <button class="nav-item" data-page="runtime" title="运行详情"><span data-icon="runtime"></span><span>运行详情</span></button>
-        <button class="nav-item active" data-page="service" title="服务与诊断" aria-current="page"><span data-icon="service"></span><span>服务与诊断</span></button>
-        <button class="nav-item" data-page="data" title="数据与备份"><span data-icon="data"></span><span>数据与备份</span></button>
-        <button class="nav-item" data-page="desktop" title="应用偏好"><span data-icon="desktop"></span><span>应用偏好</span></button>
-        <button class="nav-item" data-page="about" title="关于"><span data-icon="about"></span><span>关于</span></button>
+        <button class="nav-item active" data-page="desktop" title="设置" aria-current="page"><span data-icon="settings"></span><span>设置</span></button>
       </div>
     </nav>
     <div class="aside-bottom"><span class="status-dot" aria-hidden="true"></span><div class="status-copy"><div class="status-label" id="sidebar-state">本机服务</div><div class="status-meta" id="sidebar-endpoint">等待连接</div></div></div>
   </aside>
   <main>
-    <header class="workspace-header"><div><h1 id="page-title">服务与诊断</h1><div class="subtitle" id="page-subtitle">管理本机服务与运行状态</div></div><span class="version">桌面预览版</span></header>
+    <header class="workspace-header"><div><h1 id="page-title">设置</h1><div class="subtitle" id="page-subtitle">管理本机服务与运行状态</div></div><span class="version">桌面预览版</span></header>
     <div class="page-content">
+    <nav class="workspace-sections" aria-label="设置分类">
+      <button class="secondary" data-page="desktop">应用偏好</button>
+      <button class="secondary" data-page="service">服务与诊断</button>
+      <button class="secondary" data-page="data">数据与备份</button>
+      <button class="secondary" data-page="about">关于与更新</button>
+    </nav>
     <div id="nav-notice" class="nav-notice" hidden><span id="nav-notice-text"></span><button id="nav-notice-go" class="secondary" hidden></button><button id="nav-notice-close" class="notice-close" aria-label="关闭提示">×</button></div>
     <section data-local-page="service" aria-label="服务与诊断">
     <section class="card service-card" id="service-card" aria-busy="false">

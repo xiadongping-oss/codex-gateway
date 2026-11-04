@@ -1,47 +1,18 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { loadAccessConfig, loadAccessConfigWithKey, formatAccessConfig } from '../api/access-config'
-import { copyText } from '../api/client'
 import { useTheme } from '../composables/useTheme'
 
 // 构建时由 vite define 注入（根 package.json 的 version）。
 // 双保险判空：测试环境 / 直接引源码跑 dev 时未 define 也不炸。
 const gwVersion = typeof __GW_VERSION__ !== 'undefined' ? __GW_VERSION__ : ''
 
-const props = defineProps({
+defineProps({
   title: { type: String, default: '网关概览' },
   subtitle: { type: String, default: '本地 Codex 网关' },
   address: { type: String, default: '' },
-  running: { type: Boolean, default: true },
-  showCopyConfig: { type: Boolean, default: true }
+  running: { type: Boolean, default: true }
 })
 
 const { theme, themeError, toggleTheme } = useTheme()
-const copied = ref(false)
-const copyErr = ref('')
-const access = ref({ baseUrl: props.address, apiKey: null })
-onMounted(() => { loadAccessConfig().then((c) => (access.value = { ...access.value, ...c })) })
-
-// 展示地址：优先用控制面返回的真实启动器地址（启动器端口），
-// 回退到 props.address。此前硬编码默认 10531（bridge 内部端口）——
-// 外部客户端访问不到，且局域网用户按它填会直接连不上。
-const shownAddress = computed(() => access.value?.baseUrl || props.address || '')
-
-// 复制时才取明文密钥：地址常驻展示，密钥不进入轮询与 DOM 常驻态
-async function copyConfig() {
-  copyErr.value = ''
-  try {
-    const cfg = await loadAccessConfigWithKey()
-    access.value = { baseUrl:cfg.baseUrl, apiKey:null }
-    if (!cfg.apiKey) throw new Error('请先在 API Key 页面创建密钥，再复制接入配置。')
-    const text = formatAccessConfig(cfg.baseUrl, cfg.apiKey, cfg.model)
-    await copyText(text)
-    copied.value = true
-    setTimeout(() => (copied.value = false), 1500)
-  } catch (e) {
-    copyErr.value = e?.message || '复制失败'
-  }
-}
 </script>
 
 <template>
@@ -54,16 +25,12 @@ async function copyConfig() {
       <button class="theme-toggle" @click="toggleTheme" :aria-label="theme === 'light' ? '切换深色主题' : '切换浅色主题'" :title="theme === 'light' ? '切换深色主题' : '切换浅色主题'">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path v-if="theme === 'light'" d="M20 14A8 8 0 0110 4a8.5 8.5 0 1010 10Z"/><g v-else><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/></g></svg>
       </button>
-      <span class="addr-chip">{{ shownAddress }}</span>
       <span class="pill" :class="{ off: !running }">
         <span class="dot" :class="{ off: !running }"></span>{{ running ? '运行中' : '已停止' }}
       </span>
-      <button v-if="showCopyConfig" class="btn-primary" @click="copyConfig">
-        {{ copied ? '已复制 ✓' : '复制接入配置' }}
-      </button>
+
     </div>
   </header>
-  <div v-if="copyErr && showCopyConfig" class="copy-err">{{ copyErr }}</div>
   <div v-if="themeError" class="copy-err" role="alert">{{ themeError }}</div>
 </template>
 

@@ -13,8 +13,20 @@ import Runtime from './views/Runtime.vue'
 import LanSharing from './views/LanSharing.vue'
 import ClientAccess from './views/ClientAccess.vue'
 import { useLiveData } from './composables/useLiveData'
+import { overviewPages, accessPages, workspaceSection } from './workspaceNavigation'
 
 const activePage = ref('overview')
+const clientModel = ref('')
+function navigate(page) {
+  if (typeof page === 'object' && page?.page === 'access') {
+    clientModel.value = page.model || ''
+    activePage.value = 'access'
+  } else if (typeof page === 'string' && titles[page]) {
+    activePage.value = page
+  }
+}
+const section = computed(() => workspaceSection(activePage.value))
+const pageTabs = computed(() => section.value === 'overview' ? overviewPages : section.value === 'access' ? accessPages : [])
 function workspaceNavigate(event) {
   const page = event?.detail?.page
   if (['overview','account','images','models','apikeys','logs','settings','runtime','lan','access'].includes(page)) activePage.value = page
@@ -76,21 +88,24 @@ const titles = {
 
 <template>
   <div class="app">
-    <Sidebar :active="activePage" :gw-running="gw.running" :connected="gwConnected === true" :collapsed="effectiveCollapsed" @navigate="activePage = $event" @toggle="onToggleSidebar" />
+    <Sidebar :active="activePage" :gw-running="gw.running" :connected="gwConnected === true" :collapsed="effectiveCollapsed" @navigate="navigate" @toggle="onToggleSidebar" />
 
     <main class="main" :data-workspace-current="activePage">
-      <Topbar :title="titles[activePage].title" :subtitle="titles[activePage].subtitle" :running="gw.running" :show-copy-config="!['lan','settings','models','access'].includes(activePage)" />
+      <Topbar :title="titles[section].title" :subtitle="titles[activePage].subtitle" :running="gw.running" />
+      <nav v-if="pageTabs.length" class="workspace-sections" aria-label="页面分类">
+        <button v-for="item in pageTabs" :key="item.key" :data-workspace-page="item.key" :aria-current="activePage === item.key ? 'page' : undefined" @click="activePage = item.key">{{ item.label }}</button>
+      </nav>
 
-      <Overview v-if="activePage === 'overview'" @navigate="activePage = $event" />
+      <Overview v-if="activePage === 'overview'" @navigate="navigate" />
       <Accounts v-else-if="activePage === 'account'" />
       <Images v-else-if="activePage === 'images'" />
       <Logs v-else-if="activePage === 'logs'" />
-      <Models v-else-if="activePage === 'models'" @navigate="activePage = $event" />
-      <Runtime v-else-if="activePage === 'runtime'" @navigate="activePage = $event" />
-      <LanSharing v-else-if="activePage === 'lan'" @navigate="activePage = $event" />
-      <ClientAccess v-else-if="activePage === 'access'" @navigate="activePage = $event" />
+      <Models v-else-if="activePage === 'models'" @navigate="navigate" />
+      <Runtime v-else-if="activePage === 'runtime'" @navigate="navigate" />
+      <LanSharing v-else-if="activePage === 'lan'" @navigate="navigate" />
+      <ClientAccess v-else-if="activePage === 'access'" :initial-model="clientModel" @navigate="navigate" />
       <ApiKeys v-else-if="activePage === 'apikeys'" />
-      <Settings v-else-if="activePage === 'settings'" @navigate="activePage = $event" />
+      <Settings v-else-if="activePage === 'settings'" @navigate="navigate" />
     </main>
   </div>
 </template>

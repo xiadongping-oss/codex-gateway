@@ -100,3 +100,16 @@ dialog{border:1px solid var(--border);border-radius:14px;padding:26px;width:min(
 .updater-card{margin-top:20px}.updater-card .card-top{align-items:flex-start}.updater-card h2{font-size:16px;margin:0}#updater-status{font-size:13px;line-height:1.7;margin:16px 0;color:var(--text-2)}#updater-status.update-error{color:var(--danger)}#updater-progress{width:100%;height:8px;accent-color:var(--primary);margin-bottom:14px}#updater-notes{max-height:180px;overflow:auto;padding:14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 inherit;color:var(--text-2);margin-bottom:16px}
 
 .diagnostic-content{max-height:360px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 var(--mono);color:var(--text-2)}
+
+.workspace-sections { display:flex; flex-wrap:wrap; align-items:center; gap:6px; flex-shrink:0; }
+.workspace-sections button { padding:9px 14px; border:1px solid transparent; border-radius:8px; background:transparent; color:var(--text-2); font:inherit; font-size:12px; cursor:pointer; }
+.workspace-sections button:hover { background:var(--card); color:var(--primary); }
+.workspace-sections button[aria-current=page] { background:var(--soft); border-color:var(--border); color:var(--primary); font-weight:600; }
+.workspace-sections button:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
+
+.workspace-sections { margin-bottom:16px; }
+@media(max-height:640px) {
+  .sidebar .brand { padding-bottom:12px; }
+  .sidebar nav { gap:10px; }
+  .sidebar .nav-heading { padding-bottom:3px; }
+}
