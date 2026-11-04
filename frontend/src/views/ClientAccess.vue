@@ -65,11 +65,11 @@ onUnmounted(()=>{disposed=true;revision++})
     <div v-if="error" class="notice error" role="alert">{{error}} <button class="btn-ghost" :disabled="loading" @click="load">重试</button></div>
     <WorkspacePanel title="连接位置" subtitle="本机和局域网共用一套接入方式；每位用户建议单独创建 API Key">
       <template #actions><button class="btn-ghost" @click="emit('navigate','lan')">管理共享</button><button class="btn-ghost" @click="emit('navigate','apikeys')">管理密钥</button></template>
-      <div class="target-picker" role="radiogroup" aria-label="客户端位置">
-        <label class="target-option" :class="{selected:target==='local'}"><input type="radio" name="client-target" v-model="target" value="local" :disabled="busy" /><span><strong>本机</strong><small>网关所在电脑</small></span></label>
-        <label class="target-option" :class="{selected:target==='remote'}"><input type="radio" name="client-target" v-model="target" value="remote" :disabled="busy" /><span><strong>局域网用户</strong><small>连接这台网关的其他设备</small></span></label>
-      </div>
-      <p v-if="target==='remote' && !lan?.enabled" class="connection-note">请先在「共享与鉴权」开启局域网共享。</p>
+      <template #title-extra><div class="mode target-picker" role="radiogroup" aria-label="客户端位置">
+        <label class="target-option" :class="{selected:target==='local'}"><input type="radio" name="client-target" v-model="target" value="local" :disabled="busy" /><span>本机</span></label>
+        <label class="target-option" :class="{selected:target==='remote'}"><input type="radio" name="client-target" v-model="target" value="remote" :disabled="busy" /><span>局域网用户</span></label>
+      </div></template>
+      <p v-if="target==='remote' && !lan?.enabled" class="connection-note">请先在「局域网共享」开启局域网共享。</p>
       <div class="fields">
         <label>连接地址<select v-model="base" :disabled="loading || busy"><option v-if="!connections.length" value="">{{target==='remote'?'请先开启共享':'请先选择 Agent 所在电脑'}}</option><option v-for="c in connections" :key="c.url" :value="c.url">{{c.label}}</option></select></label>
         <label>API Key<select v-model="keyId" :disabled="loading || busy || manual"><option value="">请选择密钥</option><option v-for="k in keys" :key="k.id" :value="k.id">{{k.name}} · {{k.mask}}</option></select></label>
@@ -82,18 +82,18 @@ onUnmounted(()=>{disposed=true;revision++})
     </WorkspacePanel>
 
     <WorkspacePanel title="Agent 配置" subtitle="复制 Prompt 到目标 Agent，由它安装 Skill、合并 MCP 配置并检查连接">
-      <div class="mode" role="group" aria-label="配置方式"><button :class="{active:mode==='install'}" @click="mode='install'">首次配置</button><button :class="{active:mode==='update'}" @click="mode='update'">更新 Skill / MCP</button></div>
+      <template #title-extra><div class="mode" role="group" aria-label="配置方式"><button :class="{active:mode==='install'}" @click="mode='install'">首次配置</button><button :class="{active:mode==='update'}" @click="mode='update'">更新 Skill / MCP</button></div></template>
 
       <textarea class="preview" :value="prompt" readonly rows="7" placeholder="选择 Agent 所在电脑后生成配置 Prompt" aria-label="配置 Prompt 预览，密钥已隐藏" />
-      <div class="actions"><button class="btn-primary" :disabled="loading || busy || !hasKey || !manifest || !base || !target" @click="copy('prompt')">{{busy?'复制中…':mode==='update'?'复制更新 Prompt':'复制配置 Prompt'}}</button><span class="hint">验证连接不会自动生成或删除图片。</span></div>
-      <div v-if="manifest" class="versions"><span>Skill <code>{{manifest.skill.sha256.slice(0,12)}}</code></span><span>MCP <code>{{manifest.mcp.sha256.slice(0,12)}}</code></span><button class="btn-ghost" :disabled="loading || busy" @click="load">刷新版本</button></div>
-<details class="access-help"><summary>配置说明</summary><p>将 Prompt 粘贴到目标 Agent，安装或更新 MCP 与图片 Skill。配置会保留已有连接器；安装后需重新连接。</p><p>复制内容包含所选 API Key，请仅用于目标客户端的私有配置。</p></details>
+      <div class="actions"><button class="btn-primary" :disabled="loading || busy || !hasKey || !manifest || !base || !target" @click="copy('prompt')">{{busy?'复制中…':mode==='update'?'复制更新 Prompt':'复制配置 Prompt'}}</button>
+      <div v-if="manifest" class="versions"><span>Skill <code>{{manifest.skill.sha256.slice(0,12)}}</code></span><span>MCP <code>{{manifest.mcp.sha256.slice(0,12)}}</code></span><button class="btn-ghost" :disabled="loading || busy" @click="load">刷新版本</button></div></div>
+
     </WorkspacePanel>
 
     <WorkspacePanel title="手动接入" subtitle="支持 Streamable HTTP MCP 和 OpenAI 兼容客户端">
       <div class="manual">
-        <label>
-          接入模型
+        <label class="model-field">
+          <span>接入模型</span>
           <select v-model="model" :disabled="loading || busy">
             <option v-for="m in models" :key="m.id" :value="m.id">{{m.id}}</option>
           </select>
@@ -116,14 +116,20 @@ onUnmounted(()=>{disposed=true;revision++})
 .manual select, .manual button { min-height: 40px; }
 .manual + .hint { overflow-wrap: anywhere; }
 
-.target-picker { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-bottom:20px; }
-.target-option { display:flex; flex-direction:row; align-items:center; gap:12px; padding:14px 16px; border:1px solid var(--border-strong); border-radius:10px; background:var(--bg); cursor:pointer; }
-.target-option.selected { border-color:var(--primary); background:var(--primary-soft); box-shadow:inset 0 0 0 1px var(--primary); }
-.target-option input { width:16px; height:16px; accent-color:var(--primary); flex:none; }
-.target-option strong { display:block; font-size:14px; color:var(--text); }
-.target-option.selected strong { color:var(--primary); }
-.target-option small { display:block; margin-top:4px; color:var(--text-3); font-size:11px; }
-.access-help { color:var(--text-3); font-size:12px; line-height:1.7; }
-.access-help summary { cursor:pointer; }
-@media(max-width:420px) { .target-picker { grid-template-columns:1fr; } }
+
+.target-picker { margin-left:4px; }
+.mode { font-size:12px; }
+.mode button { font:inherit; line-height:20px; }
+.target-option { position:relative; display:flex; align-items:center; padding:8px 16px; border-radius:7px; cursor:pointer; }
+.target-option input { position:absolute; opacity:0; width:1px; height:1px; }
+.target-option span { font-size:12px; line-height:20px; color:var(--text-3); }
+.target-option.selected { background:var(--primary-soft); }
+.target-option.selected span { color:var(--primary); }
+.target-option:has(input:focus-visible) { outline:2px solid var(--primary); outline-offset:2px; }
+.target-option:has(input:disabled) { opacity:.5; cursor:wait; }
+.actions .versions { margin:0 0 0 auto; padding:0; border:0; }
+.manual .model-field { flex-direction:row; align-items:center; max-width:none; flex:1 1 300px; gap:12px; }
+.model-field span { white-space:nowrap; flex:none; }
+.model-field select { flex:1; width:auto; }
+.manual { align-items:center; }
 </style>

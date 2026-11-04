@@ -120,3 +120,11 @@ dialog{border:1px solid var(--border);border-radius:14px;padding:26px;width:min(
 .workspace-header .workspace-sections { margin:0; }
 .brand small { letter-spacing:0; font:10px/1.5 ui-monospace,Consolas,monospace; }
 @media(max-width:680px) { .workspace-header { padding:12px 14px; } .page-heading { gap:8px 16px; } }
+
+.hover-help { display:inline-block; color:var(--muted); font-size:12px; cursor:help; }
+.hover-help:focus-visible { outline:2px solid var(--primary); outline-offset:3px; }
+@media(max-height:640px) {
+  .sidebar .nav-item { min-height:34px; padding-top:7px; padding-bottom:7px; }
+  .sidebar .brand { padding-bottom:8px; }
+  .sidebar>nav { gap:8px; }
+}

@@ -240,7 +240,7 @@ impl Check {
         if value["state"]["error"] == true {
             return Err("WORKSPACE_LOCAL_IPC_DENIED".into());
         }
-        if value["sidebarFits"] != true || value["sidebarItems"] != 6 {
+        if value["sidebarFits"] != true || value["sidebarItems"] != 7 {
             return Err("WORKSPACE_SIDEBAR_OVERFLOW_OR_DUPLICATES".into());
         }
         let page = app.state::<Desktop>().page.lock().unwrap().clone();

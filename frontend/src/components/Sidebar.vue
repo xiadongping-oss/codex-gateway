@@ -11,7 +11,7 @@ const version = typeof __GW_VERSION__ !== 'undefined' ? __GW_VERSION__ : ''
 const endpoint=computed(()=>{const {host,port}=parseBase();return `${host}:${port}`})
 const groups=[
  {label:'工作区',items:[{key:'overview',label:'概览'},{key:'account',label:'账号管理'},{key:'images',label:'图片素材'}]},
- {label:'开发接入',items:[{key:'access',label:'客户端接入'},{key:'logs',label:'调用日志'}]},
+ {label:'开发接入',items:[{key:'access',label:'客户端接入'},{key:'lan',label:'局域网共享'},{key:'logs',label:'调用日志'}]},
  ...(isDesktopWorkspace()?[{label:'管理',items:[{key:'desktop',label:'设置',native:true}]}]:[])
 ]
 function navigate(item){if(item.native)openDesktopWorkspace(item.key);else emit('navigate',item.key)}
