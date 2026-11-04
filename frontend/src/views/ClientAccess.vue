@@ -11,12 +11,12 @@ const props = defineProps({ initialModel: { type:String, default:'' } })
 const keys=ref([]), models=ref([]), lan=ref(null), keyId=ref(''), model=ref(props.initialModel), base=ref(''), device=ref('')
 const manual = ref(false), manualKey = ref('')
 const hasKey = computed(() => manual.value ? !!manualKey.value.trim() : !!keyId.value)
-const target=ref('')
+const target=ref('local')
 const manifest=ref(null), loading=ref(true), busy=ref(false), error=ref(''), feedback=ref(''), mode=ref('install')
 let disposed=false, revision=0
 const localBase=(BASE || window.location.origin).replace(/\/$/,'')
 const connections=computed(()=>target.value==='local' ? [{url:localBase,label:'网关本机 · '+localBase}] : target.value==='remote' && lan.value?.enabled ? (lan.value.addresses || []).map(a=>({url:`http://${a.address.includes(':') ? '['+a.address+']' : a.address}:${lan.value.port}`,label:`共享主机 · ${a.address}:${lan.value.port}`,preferred:a.preferred})) : [])
-watch(connections,items=>{if(!items.some(c=>c.url===base.value))base.value=items.find(c=>c.preferred)?.url || items[0]?.url || ''},{flush:'sync'})
+watch(connections,items=>{if(!items.some(c=>c.url===base.value))base.value=items.find(c=>c.preferred)?.url || items[0]?.url || ''},{flush:'sync',immediate:true})
 const prompt=computed(()=>base.value ? globalThis.CGWClientSetup.buildClientPrompt({base:base.value,target:target.value,key:'<复制时填入所选 API Key>',device:device.value,update:mode.value==='update'}) : '')
 watch([base,keyId,device,model,mode,target,manual,manualKey],()=>{revision++;feedback.value=''}, {flush:'sync'})
 async function load() {
@@ -63,12 +63,13 @@ onUnmounted(()=>{disposed=true;revision++})
 <template>
   <div class="content access-page">
     <div v-if="error" class="notice error" role="alert">{{error}} <button class="btn-ghost" :disabled="loading" @click="load">重试</button></div>
-    <WorkspacePanel title="连接到客户端" subtitle="本机和局域网共用一套接入方式；每位用户建议单独创建 API Key">
+    <WorkspacePanel title="连接位置" subtitle="本机和局域网共用一套接入方式；每位用户建议单独创建 API Key">
       <template #actions><button class="btn-ghost" @click="emit('navigate','lan')">管理共享</button><button class="btn-ghost" @click="emit('navigate','apikeys')">管理密钥</button></template>
-      <div class="mode target-picker" role="group" aria-label="Agent 在哪台电脑上使用"><button :class="{active:target==='local'}" :disabled="busy" @click="target='local'">网关这台电脑</button><button :class="{active:target==='remote'}" :disabled="busy" @click="target='remote'">其他设备 · 无需安装网关</button></div>
-      <p v-if="!target" class="hint">先选择 Agent 所在的电脑，再复制配置，避免把本机回环地址发给其他用户。</p>
-      <p v-else-if="target==='local'" class="connection-note">127.0.0.1 只代表网关这台电脑。给其他电脑的用户配置时，请选择“其他设备”。</p>
-      <p v-else class="connection-note">用户电脑只需 Agent 和 API Key；MCP、Skill 下载与素材页均连接网关主机，无需安装网关或 Node.js。{{lan?.enabled?'请选择两台电脑可互通的主机地址。':'共享尚未开启，请先在“管理共享”中开启局域网共享。'}}</p>
+      <div class="target-picker" role="radiogroup" aria-label="客户端位置">
+        <label class="target-option" :class="{selected:target==='local'}"><input type="radio" name="client-target" v-model="target" value="local" :disabled="busy" /><span><strong>本机</strong><small>网关所在电脑</small></span></label>
+        <label class="target-option" :class="{selected:target==='remote'}"><input type="radio" name="client-target" v-model="target" value="remote" :disabled="busy" /><span><strong>局域网用户</strong><small>连接这台网关的其他设备</small></span></label>
+      </div>
+      <p v-if="target==='remote' && !lan?.enabled" class="connection-note">请先在「共享与鉴权」开启局域网共享。</p>
       <div class="fields">
         <label>连接地址<select v-model="base" :disabled="loading || busy"><option v-if="!connections.length" value="">{{target==='remote'?'请先开启共享':'请先选择 Agent 所在电脑'}}</option><option v-for="c in connections" :key="c.url" :value="c.url">{{c.label}}</option></select></label>
         <label>API Key<select v-model="keyId" :disabled="loading || busy || manual"><option value="">请选择密钥</option><option v-for="k in keys" :key="k.id" :value="k.id">{{k.name}} · {{k.mask}}</option></select></label>
@@ -76,18 +77,17 @@ onUnmounted(()=>{disposed=true;revision++})
       </div>
       <label class="manual-key-toggle"><input v-model="manual" type="checkbox" :disabled="busy" />手动填写 API Key</label>
       <label v-if="manual">API Key<input v-model="manualKey" type="password" autocomplete="off" :disabled="busy" placeholder="填写客户端使用的 API Key" /></label>
-      <p class="hint">局域网地址需要先开启共享。密钥只在复制时读取，预览始终隐藏密钥；设备名由客户端自报，IP 由连接记录。</p>
+
       <div class="actions"><button class="btn-ghost" :disabled="!base" @click="copySetup">复制网页接入地址</button></div>
     </WorkspacePanel>
 
-    <WorkspacePanel title="让 Agent 完成配置" subtitle="复制 Prompt 到目标 Agent，由它安装 Skill、合并 MCP 配置并检查连接">
-      <template #actions><span v-if="manifest" class="badge">网关 {{manifest.gatewayVersion}}</span></template>
+    <WorkspacePanel title="Agent 配置" subtitle="复制 Prompt 到目标 Agent，由它安装 Skill、合并 MCP 配置并检查连接">
       <div class="mode" role="group" aria-label="配置方式"><button :class="{active:mode==='install'}" @click="mode='install'">首次配置</button><button :class="{active:mode==='update'}" @click="mode='update'">更新 Skill / MCP</button></div>
-      <p class="intro">{{mode==='update'?'比较内容哈希、备份并合并更新，保留现有密钥与其他配置；重新连接后验证工具定义。':'安装「GPT 图片生成」Skill（/gpt-image）与图片 MCP，保留现有模型和其他连接器。'}}</p>
+
       <textarea class="preview" :value="prompt" readonly rows="7" placeholder="选择 Agent 所在电脑后生成配置 Prompt" aria-label="配置 Prompt 预览，密钥已隐藏" />
       <div class="actions"><button class="btn-primary" :disabled="loading || busy || !hasKey || !manifest || !base || !target" @click="copy('prompt')">{{busy?'复制中…':mode==='update'?'复制更新 Prompt':'复制配置 Prompt'}}</button><span class="hint">验证连接不会自动生成或删除图片。</span></div>
       <div v-if="manifest" class="versions"><span>Skill <code>{{manifest.skill.sha256.slice(0,12)}}</code></span><span>MCP <code>{{manifest.mcp.sha256.slice(0,12)}}</code></span><button class="btn-ghost" :disabled="loading || busy" @click="load">刷新版本</button></div>
-      <p class="hint">这里显示网关提供的版本。目标客户端是否已安装、是否已重新加载，由更新 Prompt 实际检查。出图后 Skill 会要求 Agent 每次打开或刷新素材页；客户端需要支持浏览器工具。</p>
+<details class="access-help"><summary>配置说明</summary><p>将 Prompt 粘贴到目标 Agent，安装或更新 MCP 与图片 Skill。配置会保留已有连接器；安装后需重新连接。</p><p>复制内容包含所选 API Key，请仅用于目标客户端的私有配置。</p></details>
     </WorkspacePanel>
 
     <WorkspacePanel title="手动接入" subtitle="支持 Streamable HTTP MCP 和 OpenAI 兼容客户端">
@@ -109,10 +109,21 @@ onUnmounted(()=>{disposed=true;revision++})
 </template>
 
 <style scoped>
-.target-picker{margin-bottom:14px}.connection-note{padding:10px 12px;margin:0 0 16px;background:var(--primary-soft);border-radius:8px;color:var(--primary);font-size:12px;line-height:1.7}.fields{display:grid;grid-template-columns:1.35fr 1fr 1fr;gap:14px}label{display:flex;flex-direction:column;gap:8px;min-width:0;font-size:12px;color:var(--text-2)}label span,.hint{font-size:12px;color:var(--text-3);line-height:1.7}input,select,.preview{min-width:0;width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--text);font:inherit}.hint{margin-top:12px}.actions,.manual,.versions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:16px}.actions .hint{margin:0}.actions a{text-decoration:none}.mode{display:inline-flex;gap:4px;background:var(--bg);border:1px solid var(--border);padding:4px;border-radius:10px}.mode button{border:0;border-radius:7px;background:transparent;color:var(--text-3);padding:8px 16px;cursor:pointer}.mode .active{background:var(--primary-soft);color:var(--primary)}.intro{font-size:13px;color:var(--text-2);line-height:1.7;margin:14px 0}.preview{font:11px/1.7 var(--mono);resize:vertical}.versions{border-top:1px solid var(--border);padding-top:14px;color:var(--text-3);font-size:11px}.versions code{margin-left:6px}.versions button{margin-left:auto}.manual{margin-top:0}.manual label{flex:1;max-width:390px}.badge{font-size:11px;color:var(--primary);background:var(--primary-soft);padding:5px 10px;border-radius:20px}.notice{padding:12px 16px;background:var(--primary-soft);color:var(--primary);border-radius:10px;font-size:12px}.copy-feedback{position:fixed;bottom:24px;left:50%;transform:translateX(-35%);max-width:min(600px,80vw);box-shadow:0 6px 28px #0002;z-index:20}.notice.error{background:var(--card);color:var(--rose)}@media(max-width:1000px){.fields{grid-template-columns:1fr}.manual label{flex-basis:100%;max-width:none}}
+.connection-note{padding:10px 12px;margin:0 0 16px;background:var(--primary-soft);border-radius:8px;color:var(--primary);font-size:12px;line-height:1.7}.fields{display:grid;grid-template-columns:1.35fr 1fr 1fr;gap:14px}label{display:flex;flex-direction:column;gap:8px;min-width:0;font-size:12px;color:var(--text-2)}label span,.hint{font-size:12px;color:var(--text-3);line-height:1.7}input,select,.preview{min-width:0;width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:var(--bg);color:var(--text);font:inherit}.hint{margin-top:12px}.actions,.manual,.versions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:16px}.actions .hint{margin:0}.actions a{text-decoration:none}.mode{display:inline-flex;gap:4px;background:var(--bg);border:1px solid var(--border);padding:4px;border-radius:10px}.mode button{border:0;border-radius:7px;background:transparent;color:var(--text-3);padding:8px 16px;cursor:pointer}.mode .active{background:var(--primary-soft);color:var(--primary)}.intro{font-size:13px;color:var(--text-2);line-height:1.7;margin:14px 0}.preview{font:11px/1.7 var(--mono);resize:vertical}.versions{border-top:1px solid var(--border);padding-top:14px;color:var(--text-3);font-size:11px}.versions code{margin-left:6px}.versions button{margin-left:auto}.manual{margin-top:0}.manual label{flex:1;max-width:390px}.badge{font-size:11px;color:var(--primary);background:var(--primary-soft);padding:5px 10px;border-radius:20px}.notice{padding:12px 16px;background:var(--primary-soft);color:var(--primary);border-radius:10px;font-size:12px}.copy-feedback{position:fixed;bottom:24px;left:50%;transform:translateX(-35%);max-width:min(600px,80vw);box-shadow:0 6px 28px #0002;z-index:20}.notice.error{background:var(--card);color:var(--rose)}@media(max-width:1000px){.fields{grid-template-columns:1fr}.manual label{flex-basis:100%;max-width:none}}
 .manual { align-items: flex-end; }
 .manual-key-toggle { flex-direction:row; align-items:center; margin-top:12px; }
 .manual-key-toggle input { width:auto; }
 .manual select, .manual button { min-height: 40px; }
 .manual + .hint { overflow-wrap: anywhere; }
+
+.target-picker { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-bottom:20px; }
+.target-option { display:flex; flex-direction:row; align-items:center; gap:12px; padding:14px 16px; border:1px solid var(--border-strong); border-radius:10px; background:var(--bg); cursor:pointer; }
+.target-option.selected { border-color:var(--primary); background:var(--primary-soft); box-shadow:inset 0 0 0 1px var(--primary); }
+.target-option input { width:16px; height:16px; accent-color:var(--primary); flex:none; }
+.target-option strong { display:block; font-size:14px; color:var(--text); }
+.target-option.selected strong { color:var(--primary); }
+.target-option small { display:block; margin-top:4px; color:var(--text-3); font-size:11px; }
+.access-help { color:var(--text-3); font-size:12px; line-height:1.7; }
+.access-help summary { cursor:pointer; }
+@media(max-width:420px) { .target-picker { grid-template-columns:1fr; } }
 </style>

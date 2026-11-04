@@ -91,10 +91,11 @@ const titles = {
     <Sidebar :active="activePage" :gw-running="gw.running" :connected="gwConnected === true" :collapsed="effectiveCollapsed" @navigate="navigate" @toggle="onToggleSidebar" />
 
     <main class="main" :data-workspace-current="activePage">
-      <Topbar :title="titles[section].title" :subtitle="titles[activePage].subtitle" :running="gw.running" />
+      <Topbar :title="titles[section].title">
       <nav v-if="pageTabs.length" class="workspace-sections" aria-label="页面分类">
         <button v-for="item in pageTabs" :key="item.key" :data-workspace-page="item.key" :aria-current="activePage === item.key ? 'page' : undefined" @click="activePage = item.key">{{ item.label }}</button>
       </nav>
+      </Topbar>
 
       <Overview v-if="activePage === 'overview'" @navigate="navigate" />
       <Accounts v-else-if="activePage === 'account'" />

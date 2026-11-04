@@ -60,8 +60,8 @@ const authOk = computed(() => account.value?.loggedIn !== false)
       <section class="gateway-hero" aria-label="模型代理运行控制">
         <div class="hero-copy">
           <span class="eyebrow">MODEL PROXY <span class="hero-status" :class="{ stopped: !gw.running }"><i></i>{{ !gwConnected ? '等待连接' : gw.running ? '运行中' : '已停止' }}</span><button class="restart-link" :disabled="gwBusy || !gw.running || !gwConnected" @click="gwRestart">↻ 重启模型代理</button></span>
-          <h2>{{ !gwConnected ? '连接你的 AI 工作站' : gw.running ? '让 AI 随时就绪' : '从这里，连接 AI' }}</h2>
-          <p>{{ !gwConnected ? '正在等待本地网关返回运行状态。' : gw.running ? '模型代理已启动，可以处理 AI 客户端请求。' : '启动模型代理，开始使用你的模型与工具。' }}</p>
+          <h2>{{ !gwConnected ? '等待连接' : gw.running ? '模型代理运行中' : '模型代理已停止' }}</h2>
+          <p>{{ !gwConnected ? '正在连接本地网关。' : gw.running ? '可接收客户端请求。' : '启动后可接收客户端请求。' }}</p>
           <div class="hero-facts">
             <div><span>运行时长</span><strong>{{ gw.running ? fmtUptime(gw.uptimeSec || 0) : '—' }}</strong></div>
             <div><span>服务端口</span><strong>{{ status.port }}</strong></div>
