@@ -47,10 +47,6 @@ const pressureLabel = computed(() => {
 })
 
 
-// 认证健康：真正的登录态来自 /__gw/auth/state 的 account.loggedIn。
-// 此前误用 gw.health.ok（那是 bridge 的 HTTP 存活探测），
-// 结果 bridge 一停或健康检查超时，界面就误报「需重新授权」。
-const authOk = computed(() => account.value?.loggedIn !== false)
 </script>
 
 <template>
@@ -77,22 +73,17 @@ const authOk = computed(() => account.value?.loggedIn !== false)
           <span>{{ !gwConnected ? '等待连接' : gwBusy ? '处理中…' : gw.running ? '点击停止' : '点击启动' }}</span>
         </div>
       </section>
-      <section class="account-summary">
-        <div class="section-top"><span>当前账号</span><span class="account-state" :class="{ missing: !authOk }">{{ authOk ? '已登录' : '待连接' }}</span></div>
-        <div class="account-symbol"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0116 0v2"/></svg></div>
-        <h3>{{ authOk ? (account.name || '当前账号') : '连接你的账号' }}</h3>
-        <p class="account-description">{{ authOk ? (account.email?.includes('@') ? account.email : '已保存本机登录态') : '登录后即可调用模型、生成图片。' }}</p>
-        <button class="btn-ghost" @click="$emit('navigate', 'account')">{{ authOk ? '管理登录' : '连接 / 登录' }} <span>↗</span></button>
-      </section>
+      <QuotaMiniCard :account="account" @open="$emit('navigate', 'account')" />
     </div>
 
     <button class="lan-overview" @click="$emit('navigate','lan')">
       <span class="lan-indicator" :class="{enabled:gwConnected && gw.lan?.enabled}"></span><strong>局域网共享</strong>
       <span>{{ !gwConnected ? '等待连接' : gw.lan?.enabled ? '已开启' : gw.lan?.error ? '开启失败' : '已关闭' }}</span>
       <code v-if="gwConnected && gw.lan?.enabled">{{ gw.lan.listenHost }}:{{ gw.lan.port }}</code>
+      <span v-if="gwConnected" class="lan-usage" title="最近 5 分钟有请求的局域网 API Key 数；每位用户使用独立密钥"><span class="lan-count-label">使用中 </span><b>{{ gw.lanUsage?.activeUsers ?? '—' }}</b> 人</span>
+      <span v-if="gwConnected" class="lan-usage" :title="gw.lanUsage?.trackingSince ? '局域网 Token，统计自 ' + new Date(gw.lanUsage.trackingSince).toLocaleString() : '等待服务返回局域网用量'">Token <b>{{ gw.lanUsage ? fmtTok(gw.lanUsage.tokensTotal) : '—' }}</b></span>
       <span class="lan-manage">管理 →</span>
     </button>
-    <div class="section-heading"><h2>使用概况</h2><span>累计用量 · 随调用更新</span></div>
     <div class="stat-grid">
       <section class="stat-card"><div class="stat-label"><span>网关调用</span><span class="stat-icon">↗</span></div><strong>{{ gwConnected ? requests.toLocaleString() : '—' }}</strong><span class="stat-foot">累计请求次数</span></section>
       <section class="stat-card"><div class="stat-label"><span>Token 用量</span><span class="stat-icon">◇</span></div><strong>{{ gwConnected ? fmtTok(gw.tokensTotal || 0) : '—' }}</strong><span class="stat-foot">输入与输出总量</span></section>
@@ -104,7 +95,6 @@ const authOk = computed(() => account.value?.loggedIn !== false)
     <div class="quick-grid">
       <button v-for="item in workspaceLinks" :key="item.key" class="quick-card" @click="$emit('navigate',item.key)"><span class="quick-icon"><AppIcon :name="item.key" /></span><span class="quick-copy"><b>{{ item.title }}</b><small>{{ item.description }}</small></span><span class="arrow" aria-hidden="true">→</span></button>
     </div>
-    <QuotaMiniCard @open="$emit('navigate', 'account')" />
   </div>
 </template>
 
@@ -133,14 +123,6 @@ h2 { font-size: 27px; font-weight: 650; letter-spacing: -.8px; margin-top: 15px;
 .power-button:hover { transform: translateY(-3px); }
 .power-button.running { background: var(--primary); color: var(--on-primary); }
 .power-button svg { width: 40px; height: 40px; }
-.account-summary { background: var(--card); border: 1px solid var(--border); border-radius: 26px; padding: 22px; min-width: 0; }
-.section-top { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--text-2); }
-.account-state { background: var(--emerald-dim); color: var(--success); padding: 3px 9px; border-radius: 20px; font-size: 10px; }
-.account-state.missing { color: var(--text-3); background: var(--card-2); }
-.account-symbol { width: 43px; height: 43px; border-radius: 16px; background: var(--primary-soft); color: var(--primary); display: grid; place-items: center; margin: 18px 0 12px; }
-.account-summary h3 { font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
-.account-description { color: var(--text-3); font-size: 11px; margin-top: 5px; overflow-wrap: anywhere; }
-.account-summary button { width: 100%; display: flex; justify-content: space-between; margin-top: 18px; font-size: 12px; padding: 8px 14px; }
 .section-heading { display: flex; justify-content: space-between; align-items: center; margin-top: 5px; }
 .section-heading h2 { font-size: 15px; letter-spacing: 0; margin: 0; }
 .section-heading > span { font-size: 10px; color: var(--text-3); }
@@ -163,7 +145,7 @@ h2 { font-size: 27px; font-weight: 650; letter-spacing: -.8px; margin-top: 15px;
 .connection-note { color: var(--amber); background: var(--card); padding: 10px 16px; border: 1px solid var(--border); border-radius: 12px; font-size: 12px; }
 .overview :deep(.quota-strip), .overview :deep(.lan-strip) { border-radius: 18px; }
 @media(max-width:1150px) { .gateway-hero { padding: 24px; gap: 16px; }.hero-facts { gap: 18px; }.power-button { width: 70px; height: 70px; border-radius: 24px; }.quick-card { padding: 14px; gap: 9px; }.quick-card small { font-size: 9px; } }
-@media(max-width:760px) { .overview { padding: 4px 18px 20px; }.hero-grid { grid-template-columns: 1fr; }.account-summary { padding: 18px; }.stat-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.quick-grid { grid-template-columns: 1fr; }.quick-card small { font-size: 11px; } }
+@media(max-width:760px) { .overview { padding: 4px 18px 20px; }.hero-grid { grid-template-columns: 1fr; }.stat-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.quick-grid { grid-template-columns: 1fr; }.quick-card small { font-size: 11px; } }
 @media(max-width:420px) { .gateway-hero { padding: 20px 16px; gap: 12px; }h2 { font-size: 21px; }.eyebrow { flex-wrap: wrap; gap: 5px; }.hero-facts { gap: 12px; }.hero-facts strong { font-size: 12px; }.power-button { width: 52px; height: 52px; border-radius: 20px; box-shadow: 0 0 0 5px var(--primary-soft); }.power-button svg { width: 28px; }.stat-card { padding: 14px; }summary span + span { display: block; margin: 5px 0 0; } }
 
 @media(max-width:760px) {
@@ -175,7 +157,7 @@ h2 { font-size: 27px; font-weight: 650; letter-spacing: -.8px; margin-top: 15px;
   .detail-content :deep(.metric) { padding: 0; border: 0; flex-basis: 100%; }
   .stat-card strong { font-size: 25px; overflow-wrap: anywhere; }
 }
-.overview{padding:4px 24px 24px;gap:16px}.gateway-hero{border-radius:14px;padding:24px;min-height:190px}.account-summary,.stat-card,.quick-card{border-radius:12px}.stat-card{padding:18px}.power-button{border-radius:24px}.quick-card{padding:16px}
+.overview{padding:4px 24px 24px;gap:16px}.gateway-hero{border-radius:14px;padding:24px;min-height:190px}.stat-card,.quick-card{border-radius:12px}.stat-card{padding:18px}.power-button{border-radius:24px}.quick-card{padding:16px}
 @media(max-width:760px){.overview{padding:4px 14px 18px}.gateway-hero{min-height:180px;padding:20px}}
 
 .lan-overview { display:flex; align-items:center; flex-wrap:wrap; gap:12px; width:100%; padding:14px 18px; border:1px solid var(--border); border-radius:10px; background:var(--card); color:var(--text-2); text-align:left; font:inherit; font-size:12px; cursor:pointer; }
@@ -183,6 +165,17 @@ h2 { font-size: 27px; font-weight: 650; letter-spacing: -.8px; margin-top: 15px;
 .lan-indicator { width:7px; height:7px; background:var(--text-3); border-radius:50%; }
 .lan-indicator.enabled { background:var(--primary); }
 .lan-manage { margin-left:auto; color:var(--primary); }
+.lan-usage { white-space:nowrap; padding-left:12px; border-left:1px solid var(--border); font-size:11px; }
+.lan-usage b { color:var(--text); font:500 12px var(--mono); }
+@media(max-width:680px) {
+  .lan-overview { gap:8px; padding:12px; flex-wrap:nowrap; }
+  .lan-overview>code { display:none; }
+  .lan-count-label { display:none; }
+  .lan-overview>strong,.lan-indicator { flex-shrink:0; }
+  .lan-usage { padding-left:8px; }
+  .lan-manage { font-size:0; }
+  .lan-manage::after { content:'→'; font-size:12px; }
+}
 </style>
 
 <style scoped>
@@ -197,10 +190,4 @@ h2 { font-size: 27px; font-weight: 650; letter-spacing: -.8px; margin-top: 15px;
 .arrow { font-size:16px; }
 @media(max-width:1100px) { .quick-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:680px) { .quick-grid { grid-template-columns:minmax(0,1fr); }.quick-card { min-height:76px; } }
-
-.lan-overview { display:flex; align-items:center; flex-wrap:wrap; gap:12px; width:100%; padding:14px 18px; border:1px solid var(--border); border-radius:10px; background:var(--card); color:var(--text-2); text-align:left; font:inherit; font-size:12px; cursor:pointer; }
-.lan-overview strong { color:var(--text); font-weight:550; }
-.lan-indicator { width:7px; height:7px; background:var(--text-3); border-radius:50%; }
-.lan-indicator.enabled { background:var(--primary); }
-.lan-manage { margin-left:auto; color:var(--primary); }
 </style>

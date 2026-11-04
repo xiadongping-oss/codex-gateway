@@ -107,7 +107,7 @@ import {
   detectSystemProxies
 } from './proxy.mjs'
 import { verifyBridgePatched } from './bridge-patches.mjs'
-import { recordCallLog, getCallLogs, flushCallLogs } from './call-logs.mjs'
+import { recordCallLog, getCallLogs, getManagementLogs, getLanUsage, flushCallLogs } from './call-logs.mjs'
 import { writeJsonAtomic, sweepStaleTmpFiles } from './atomic-write.mjs'
 import { resolveDataRoot, isInstalledLayout } from './data-root.mjs'
 import { defaultReferenceRoot, checkReferencePaths } from './ref-roots.mjs'
@@ -1134,7 +1134,7 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
       encoding: headers?.['content-encoding'],
       onUsage(usage) {
         callUsage = usage
-        if (keyId) addKeyUsage(keyId, usage.promptTokens, usage.completionTokens, usage.totalTokens)
+        if (keyId) addKeyUsage(keyId, usage.promptTokens, usage.completionTokens, usage.totalTokens, req.__cgwCaller)
       }
     })
     const output = hideChatUsage ? createChatUsageFilter() : tap
@@ -1533,7 +1533,7 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
         tokens: extractUsage(buf)?.totalTokens ?? null
       })
       const imageUsage = extractUsage(buf)
-      if (keyId) addKeyUsage(keyId, imageUsage?.promptTokens || 0, imageUsage?.completionTokens || 0, imageUsage?.totalTokens || 0)
+      if (keyId) addKeyUsage(keyId, imageUsage?.promptTokens || 0, imageUsage?.completionTokens || 0, imageUsage?.totalTokens || 0, req.__cgwCaller)
     })
   })
   p.on('error', () => {
@@ -1981,6 +1981,11 @@ function authRejectBody(v) {
   }
 }
 
+function verifyRequestKey(req, token) {
+  // A strict-auth check and the MCP dispatcher may verify the same request.
+  // Count its authenticated use once while keeping the boundary lookup read-only.
+  return req.__verifiedApiKey ||= verifyApiKey(token)
+}
 function strictAuthReject(req, res, p) {
   const enforced = gwConfig.strictAuth || LAN_ENABLED || req.desktopLan
   if (!enforced) return false
@@ -1993,7 +1998,7 @@ function strictAuthReject(req, res, p) {
       res.end(JSON.stringify(authRejectBody({ reason: 'bad_prefix' })))
       return true
     }
-    const v = verifyApiKey(raw)
+    const v = verifyRequestKey(req, raw)
     if (v.ok) return false
     recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
     res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
@@ -2196,7 +2201,7 @@ async function handleMcpEndpoint(req, res) {
   const token = extractBearerToken(req.headers['authorization'])
   let caller = null
   if (token) {
-    const v = verifyApiKey(token)
+    const v = verifyRequestKey(req, token)
     if (!v.ok) {
       recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: '/mcp', model: '—', status: 401, latency: 0, tokens: null })
       res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
@@ -2467,6 +2472,7 @@ async function handleHttpRequest(req, res) {
         failover: failoverPolicy.snapshot(),
         // 列表是全量映射 + 排序，调一次即可 —— 这个接口前端每 3 秒轮一次
         ...apiKeysSummary(),
+        lanUsage: getLanUsage(),
         mode: gwConfig.mode,
         // 实际生图模型：本通道没有独立图片模型，一律由该对话模型 + image_generation 工具渲染
         imageModel: IMAGE_MODEL,
@@ -2549,7 +2555,7 @@ async function handleHttpRequest(req, res) {
       return sendJson(res, 200, { lines: logBuf.slice(-200) })
     }
     if (p === '/__gw/call-logs' && req.method === 'GET') {
-      return sendJson(res, 200, { logs: getCallLogs(100) })
+      return sendJson(res, 200, { logs: getCallLogs(100), management: getManagementLogs(100) })
     }
     if (p === '/__gw/models' && req.method === 'GET') {
       // 控制面模型列表：与 /v1/models 同源同处理，但 UI 轮询不进调用日志
@@ -3193,7 +3199,7 @@ async function handleHttpRequest(req, res) {
     let authKeyId = null
     let authOwner = null
     if (token) {
-      const v = verifyApiKey(token)
+      const v = verifyRequestKey(req, token)
       if (!v.ok) {
         recordCallLog({ caller:req.__cgwCaller, method: req.method, endpoint: p.split('?')[0], model: '—', status: 401, latency: 0, tokens: null })
         res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' })
