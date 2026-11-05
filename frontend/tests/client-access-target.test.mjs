@@ -9,7 +9,7 @@ const source=fs.readFileSync(new URL('../src/views/ClientAccess.vue',import.meta
 const assets={gatewayVersion:'test',skill:{sha256:'a'.repeat(64)},mcp:{sha256:'b'.repeat(64)}}
 function component({enabled=true,reveal,initialModel=''}={}) {
   const copied=[],unmounted=[],revealed=[]
-  const run=new Function('ref','computed','watch','onMounted','onUnmounted','defineEmits','defineProps','api','BASE','window','copyText','formatAccessConfig','gwRequest','fetch',source+'\nreturn {target,base,keyId,connections,prompt,error,feedback,copy,copySetup,load,device,manual,manualKey,model};')
+  const run=new Function('ref','computed','watch','onMounted','onUnmounted','defineEmits','defineProps','api','BASE','window','copyText','formatAccessConfig','gwRequest','fetch',source+'\nreturn {target,base,keyId,connections,prompt,error,feedback,copy,copySetup,load,device,manual,manualKey,model,mode};')
   const api={listApiKeys:async()=>[{id:'fixture-id',name:'Fixture',mask:'cgw-…'}],getModels:async()=>[{id:'fixture-text',kind:'text'}],revealApiKey:async id=>{revealed.push(id);return reveal?reveal(id):{token:'cgw-synthetic-fixture'}}}
   const c=run(ref,computed,watch,()=>{},fn=>unmounted.push(fn),()=>()=>{},()=>({initialModel}),api,'',{location:{origin:'http://127.0.0.1:4173'}},async text=>copied.push(text),(base,key,model)=>[base,key,model].join('\n'),async()=>({lan:{enabled,port:5199,addresses:[{address:'192.0.2.5',preferred:true},{address:'100.64.0.2'}]}}),async()=>({ok:true,json:async()=>assets}))
   return {...c,copied,revealed,dispose:()=>unmounted.forEach(fn=>fn())}
@@ -81,4 +81,35 @@ test('manual keys and selected models use the unified JSON export without reveal
   assert.equal(c.revealed.length, 0)
   assert.doesNotMatch(c.prompt.value, /synthetic-manual/)
   c.dispose()
+})
+
+
+test('update Prompt is independent of selected Key and never decrypts credentials, including with no selected Key', async () => {
+  const c=component({reveal:()=>{throw new Error('must not reveal a Key')}});await c.load();c.target.value='remote';c.mode.value='update'
+  const preview=c.prompt.value
+  c.manual.value=true;c.manualKey.value='cgw-other-user-secret'
+  assert.equal(c.prompt.value,preview)
+  await c.copy('prompt')
+  c.manual.value=false;c.keyId.value=''
+  await c.copy('prompt')
+  assert.equal(c.revealed.length,0);assert.equal(c.copied.length,2);assert.equal(c.copied[0],c.copied[1])
+  assert.doesNotMatch(c.copied[0],/cgw-other-user-secret|Bearer |"Authorization"/)
+  assert.match(c.copied[0],/保留现有凭据/);assert.match(c.feedback.value,/不包含 API Key/)
+  c.dispose()
+})
+
+test('explicit Key change Prompt uses the selected new Key and explains scoped galleries and session reload', async () => {
+  const c=component();await c.load();c.target.value='remote';c.mode.value='switch-key';c.manual.value=true;c.manualKey.value='cgw-new-user-fixture'
+  assert.doesNotMatch(c.prompt.value,/cgw-new-user-fixture/)
+  await c.copy('prompt')
+  assert.match(c.copied[0],/Bearer cgw-new-user-fixture/)
+  for(const phrase of ['只替换指定连接器的凭据','旧图不会自动迁移','当前会话尚未切换','不修改对话模型 Key'])assert.ok(c.copied[0].includes(phrase),phrase)
+  assert.equal(c.revealed.length,0)
+  c.dispose()
+})
+
+test('shared helper update never reads supplied Key; conflicting actions are rejected',()=>{
+  const options={base:'http://192.0.2.5:4174',target:'remote',update:true,get key(){throw new Error('must not read Key')}}
+  assert.match(helpers.buildClientPrompt(options),/不携带新 API Key/)
+  assert.throws(()=>helpers.buildClientPrompt({base:options.base,target:'remote',update:true,switchKey:true,key:'test'}))
 })

@@ -95,8 +95,8 @@
     <div class="desc">复制提示词，粘贴给能操作本机文件的 Agent。它会合并 MCP 配置、安装生图 Skill，再检查连接。支持本机和局域网接入。</div>
     <label class="preview-label" for="agentPromptPreview">首次配置预览 · 密钥已隐藏</label>
     <textarea id="agentPromptPreview" class="prompt-preview" readonly rows="7" spellcheck="false"></textarea>
-    <div class="acts"><button class="primary" id="btnCopyAgentPrompt">复制给 Agent 的配置提示词</button><button id="btnCopyUpdatePrompt">复制更新 Prompt</button><span class="ok-note" id="agentPromptOk" role="status"></span></div>
-    <p class="desc" style="margin:8px 0 0">复制内容包含当前地址、端口和已验证的 API Key。连接验证不会自动生成图片。</p>
+    <div class="acts"><button class="primary" id="btnCopyAgentPrompt">复制给 Agent 的配置提示词</button><button id="btnCopyUpdatePrompt">复制更新 Prompt</button><button id="btnCopySwitchKeyPrompt">复制更换 API Key Prompt</button><span class="ok-note" id="agentPromptOk" role="status"></span></div>
+    <p class="desc" style="margin:8px 0 0">首次配置和更换 Key 的 Prompt 包含当前已验证的 API Key，请仅交给对应用户。更新 Prompt 不包含 Key，保留客户端原凭据。换 Key 会切换图库，旧图不会自动迁移。连接验证不会自动生成图片。</p>
   </div>
 
   <div class="step">
@@ -148,8 +148,8 @@
   $('hostInfo').textContent = host
   $('lnkGallery').hidden = true
 
-  function buildAgentPrompt(secret, update) {
-    return CGWClientSetup.buildClientPrompt({base:connectionBase,target:target,key:secret,update:!!update})
+  function buildAgentPrompt(secret, update, switchKey) {
+    return CGWClientSetup.buildClientPrompt({base:connectionBase,target:target,key:secret,update:!!update,switchKey:!!switchKey})
   }
   function invalidateSelection() {
     selectionVersion++; verification++
@@ -305,6 +305,7 @@
   bindCopy('btnCopyModel', 'modelOk', function () { return $('modelJson').textContent })
   bindCopy('btnCopyAgentPrompt', 'agentPromptOk', function () { return buildAgentPrompt(key) })
   bindCopy('btnCopyUpdatePrompt', 'agentPromptOk', function () { return buildAgentPrompt(key,true) })
+  bindCopy('btnCopySwitchKeyPrompt', 'agentPromptOk', function () { return buildAgentPrompt(key,false,true) })
   $('btnCopyCmd').addEventListener('click', function () {
     if (!key || !connectionBase) return
     copyText('node setup-client.mjs --host ' + new URL(connectionBase).hostname + ' --name ' + connectorName + ' --port ' + (new URL(connectionBase).port || (new URL(connectionBase).protocol==='https:'?'443':'80')) + ' --key ' + key).then(function () { toast('已复制，包含当前端口和密钥') })

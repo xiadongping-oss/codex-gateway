@@ -77,7 +77,8 @@ test('update Prompt preserves credentials and user settings, verifies hashes, re
   await p.verify(KEY_A);p.node('btnCopyUpdatePrompt').click()
   const prompt=p.copied[0]
   for(const text of ['请更新','/client-assets.json','SHA-256','保留现有凭据','tools/list','不重复新增','当前会话已重新加载','Skill 发现目录之外','skills/gpt-image/SKILL.md','GPT 图片生成'])assert.ok(prompt.includes(text),text)
-  assert.match(prompt,/Bearer cgw-fixture-A/)
+  assert.ok(!prompt.includes(KEY_A))
+  assert.ok(!prompt.includes('Authorization":'))
   assert.ok(!p.node('agentPromptPreview').value.includes(KEY_A))
 })
 
@@ -126,4 +127,14 @@ test('switching user type while address discovery is pending ignores the late re
   finish({ok:true,status:200,json:async()=>({sharingEnabled:true,sharedOrigins:[{origin:'http://192.0.2.5:5199'}]})});await settle()
   await p.verify(KEY_A);p.node('btnCopyMcp').click()
   assert.equal(JSON.parse(p.copied[0]).mcpServers['codex-gateway'].url,'http://127.0.0.1:4173/mcp')
+})
+
+
+test('public setup separates secret-free updates from explicit Key replacement',async()=>{
+  const p=page('http://192.0.2.5:5199')
+  await p.verify(KEY_A);p.node('btnCopyUpdatePrompt').click();const updateA=p.copied.at(-1)
+  await p.verify('cgw-fixture-B');p.node('btnCopyUpdatePrompt').click();assert.equal(p.copied.at(-1),updateA)
+  p.node('btnCopySwitchKeyPrompt').click();const replacement=p.copied.at(-1)
+  assert.match(replacement,/Bearer cgw-fixture-B/);assert.ok(!replacement.includes(KEY_A))
+  assert.match(replacement,/旧图不会自动迁移/);assert.match(replacement,/当前会话尚未切换/)
 })
