@@ -1,3 +1,4 @@
+import { startMcpProgress } from './mcp-progress.mjs'
 // codex-gateway 生图 MCP Server（stdio，零依赖）
 //
 // 把网关的 /v1/images/generations 暴露为 MCP 工具，供 WorkBuddy 内任意模型
@@ -162,7 +163,10 @@ async function dispatch(id, method, params, res) {
     const name = params?.name
     const args = params?.arguments || {}
     let r
-    if (name === 'generate_image') r = await generateImage(args)
+    if (name === 'generate_image') {
+      const stopProgress = startMcpProgress(params, res)
+      try { r = await generateImage(args) } finally { stopProgress() }
+    }
     else if (name === 'list_generated_images') r = listImages(args)
     else return res({ id, error: { code: -32602, message: 'unknown tool: ' + name } })
     if (!r.ok) return res({ id, result: { content: [{ type: 'text', text: '✗ ' + r.error }], isError: true } })

@@ -1,3 +1,19 @@
+// Report elapsed waiting time, never an invented completion percentage.
+function startMcpProgress(params, send, { intervalMs = 10000, heartbeat = () => {} } = {}) {
+  const token = params?._meta?.progressToken
+  const started = Date.now()
+  const timer = setInterval(() => {
+    if (typeof token === 'string' || typeof token === 'number') {
+      send({ jsonrpc: '2.0', method: 'notifications/progress', params: {
+        progressToken: token, progress: (Date.now() - started) / 1000,
+        message: '图片仍在生成，请继续等待。'
+      } })
+    } else heartbeat()
+  }, intervalMs)
+  timer.unref?.()
+  return () => clearInterval(timer)
+}
+
 // codex-gateway 生图 MCP Server（stdio，零依赖）
 //
 // 把网关的 /v1/images/generations 暴露为 MCP 工具，供 WorkBuddy 内任意模型
@@ -203,7 +219,10 @@ async function dispatch(id, method, params, res) {
     const name = params?.name
     const args = params?.arguments || {}
     let r
-    if (name === 'generate_image') r = await generateImage(args)
+    if (name === 'generate_image') {
+      const stopProgress = startMcpProgress(params, res)
+      try { r = await generateImage(args) } finally { stopProgress() }
+    }
     else if (name === 'list_generated_images') r = listImages(args)
     else return res({ id, error: { code: -32602, message: 'unknown tool: ' + name } })
     if (!r.ok) return res({ id, result: { content: [{ type: 'text', text: '✗ ' + r.error }], isError: true } })

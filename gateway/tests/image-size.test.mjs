@@ -142,7 +142,7 @@ test('real gateway HTTP and both stdio MCP clients report returned size; bridge 
     assert.equal(bridgeRequests.length, 5); assert.equal(wire.length, 5)
     assert.ok(wire.every(t => t.size === 'auto' || t.size === '1024x1024'))
     const advanced={prompt:'transparent fixture',background:'transparent',output_format:'png',quality:'low'}
-    await request('/mcp',{jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'generate_image',arguments:advanced}})
+    await (await request('/mcp',{jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'generate_image',arguments:advanced}})).text()
     assert.equal(wire.at(-1).background,'transparent')
     for (const file of [path.join(harness.sandbox,'mcp-server.mjs'),path.join(harness.sandbox,'lan-kit/mcp-server.mjs')]) {
       const result=await stdioCall(file,{...harness.env,CGW_BASE:harness.base,CGW_API_KEY:key},advanced)

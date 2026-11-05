@@ -41,6 +41,7 @@ import { parseImageTransport, imageAttachmentSpecs, alphaInfo } from './image-ed
 import { imageFileInfo } from './image-file.mjs'
 import { gatewayCapabilities } from './capabilities.mjs'
 import { readImageVerification } from './image-verification.mjs'
+import { startMcpProgress } from './mcp-progress.mjs'
 import { imageToolProperties, imageToolRequest, imagePresentation, imageToolResult } from './image-mcp.mjs'
 import { createShutdownManager } from './shutdown-manager.mjs'
 import { createDesktopLan, DEFAULT_LAN_PORT } from './desktop-lan.mjs'
@@ -2070,7 +2071,7 @@ const MCP_HTTP_TOOLS = [
 // 真正的 MCP 客户端（mcp.json 里配 url 的那种）跑在 Node 进程里，不受同源策略限制，
 // 移除通配 CORS 对它们没有任何影响。浏览器里的 JS 则会被同源策略挡住。
 function mcpSse(res, obj, headers = {}) {
-  res.writeHead(200, {
+  if (!res.headersSent) res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
@@ -2082,7 +2083,7 @@ function mcpSse(res, obj, headers = {}) {
 
 // 生图：内部走 /v1/images/generations，完整复用鉴权 / 按 key 账号热切 / b64 落盘 / 调用日志。
 // 唯一补充：把响应里的 127.0.0.1 链接改写成调用方 Host，局域网客户端拿到可携带当前 Key 下载的地址。
-async function mcpGenerateImage(args, req) {
+async function mcpGenerateImage(args, req, signal) {
   let body, endpoint
   try { ({body,endpoint} = imageToolRequest(args)) } catch (error) { return {ok:false,error:error.message} }
   let r, j
@@ -2095,7 +2096,7 @@ async function mcpGenerateImage(args, req) {
         ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(300000)
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(300000)]) : AbortSignal.timeout(300000)
     })
     j = await r.json().catch(() => null)
   } catch (e) {
@@ -2243,7 +2244,26 @@ async function handleMcpEndpoint(req, res) {
       const args = (params && params.arguments) || {}
       const t0 = Date.now()
       let r
-      if (name === 'generate_image') r = await mcpGenerateImage(args, req, caller)
+      if (name === 'generate_image') {
+        // Open the response before the slow image request; LAN clients otherwise
+        // see complete silence until generation finishes and may time out.
+        if (!res.headersSent) {
+          res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache',
+            Connection: 'keep-alive', 'X-Accel-Buffering': 'no',
+            ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {}) })
+          res.flushHeaders()
+        }
+        res.write(': generating image\n\n')
+        const controller = new AbortController()
+        const stopProgress = startMcpProgress(params,
+          notification => { if (!res.destroyed) res.write('event: message\ndata: ' + JSON.stringify(notification) + '\n\n') },
+          { heartbeat: () => { if (!res.destroyed) res.write(': generating image\n\n') } })
+        const onClose = () => { stopProgress(); controller.abort() }
+        res.once('close', onClose)
+        try { r = await mcpGenerateImage(args, req, controller.signal) }
+        finally { stopProgress(); res.off('close', onClose) }
+        if (res.destroyed) return
+      }
       else if (name === 'list_generated_images') r = mcpListImages(args, req, caller)
       else if (name === 'delete_generated_image') r = mcpDeleteImage(args, req, caller)
       else {

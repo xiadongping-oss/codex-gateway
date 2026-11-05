@@ -15,7 +15,7 @@ export const GATEWAY_FILES = Object.freeze([
   'account-quota.mjs', 'admin-auth.mjs', 'api-providers.mjs', 'apikeys.mjs', 'assets.mjs', 'asset-metadata.mjs', 'asset-trash.mjs', 'asset-library-routes.mjs', 'asset-library.html', 'asset-library.js', 'asset-library.css', 'asset-edits.mjs', 'asset-edit-routes.mjs', 'asset-editor.html', 'asset-editor.js', 'asset-editor.css', 'atomic-write.mjs',
   'auth-core.mjs', 'bridge-patches.mjs', 'bridge-pool.mjs', 'call-logs.mjs', 'call-log-policy.mjs', 'response-usage.mjs', 'chat-tools.mjs', 'codex-official-login.mjs',
   'capabilities.mjs', 'data-root.mjs', 'desktop-entry.mjs', 'desktop-lan.mjs', 'desktop-protocol.mjs', 'desktop-ticket.mjs', 'failover.mjs', 'gallery.html',
-  'image-size.mjs', 'image-edit.mjs', 'image-file.mjs', 'image-verification.mjs', 'image-mcp.mjs', 'lan-addr.mjs', 'launcher.mjs', 'mcp-server.mjs', 'model-catalog.mjs', 'package.json', 'port-util.mjs',
+  'image-size.mjs', 'image-edit.mjs', 'image-file.mjs', 'image-verification.mjs', 'image-mcp.mjs', 'lan-addr.mjs', 'launcher.mjs', 'mcp-server.mjs', 'mcp-progress.mjs', 'model-catalog.mjs', 'package.json', 'port-util.mjs',
   'proxy-preload.mjs', 'proxy.mjs', 'ref-roots.mjs', 'secret-perms.mjs', 'setup.html', 'shutdown-manager.mjs',
   'storage-bootstrap.mjs', 'storage-init.mjs', 'storage-paths.mjs', 'work-tracker.mjs'
 ])

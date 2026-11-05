@@ -1,6 +1,6 @@
 {
   "name": "codex-gateway",
-  "version": "1.14.10",
+  "version": "1.14.11",
   "private": true,
   "type": "module",
   "main": "gateway/launcher.mjs",
@@ -13,7 +13,7 @@
     "build": "npm --prefix frontend run build",
     "setup": "npm --prefix gateway install && npm run prepare:bridge",
     "prepare:bridge": "node prepare-bridge.mjs",
-    "test:mcp-client": "node --test --test-timeout=60000 gateway/tests/mcp-client.test.mjs",
+    "test:mcp-client": "node --test --test-timeout=60000 gateway/tests/mcp-client.test.mjs gateway/tests/mcp-progress.test.mjs",
     "test:mcp-gallery": "node --test --test-timeout=60000 gateway/tests/mcp-gallery.test.mjs",
     "test:assets": "node --test --test-timeout=60000 gateway/tests/asset-library.test.mjs gateway/tests/asset-edits.test.mjs gateway/tests/asset-management.test.mjs gateway/tests/mcp-gallery.test.mjs gateway/tests/storage-integration.test.mjs",
     "test:image-size": "node --test --test-timeout=60000 gateway/tests/image-size.test.mjs",

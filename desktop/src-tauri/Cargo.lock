@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "codex-gateway-desktop"
-version = "1.14.10"
+version = "1.14.11"
 dependencies = [
  "drag",
  "dunce",
