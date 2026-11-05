@@ -31,6 +31,26 @@ test('mask reaches upstream and edit prompt preserves the input image',async()=>
   assert.doesNotMatch(body.input[0].content,/NEW image/)
   assert.deepEqual(body.tool_choice,{type:'image_generation'})
 })
+
+test('generation and edits leave reasoning unset for image model compatibility',async()=>{
+  for(const extra of [{},{image:spec(png())}]){
+    const body=await capture({prompt:'Synthetic',...extra})
+    assert.equal(Object.hasOwn(body,'reasoning'),false)
+    assert.equal(body.tools[0].quality,'high')
+  }
+})
+
+test('image stream errors retain upstream details and failed responses never return partial images',async()=>{
+  for(const type of ['error','response.failed','response.incomplete']){
+    const error={code:'invalid_value',message:"Complexity 'low' is not supported for this image model."}
+    const event={type,...(type==='error'?{error}:{response:{error}})}
+    const upstream={async call(){return new Response(
+      'data: '+JSON.stringify({type:'response.output_item.done',item:{type:'image_generation_call',result:'partial'}})+'\n\n'+
+      'data: '+JSON.stringify(event)+'\n\n')},async raiseForStatus(){}}
+    await assert.rejects(generateImage({imageModel:'fixture',timeoutMs:1000},upstream,ImageRequest.parse({prompt:'Synthetic'})),
+      e=>e.status===502&&e.upstreamCode===error.code&&e.message===error.message)
+  }
+})
 test('outpainting adds transparent canvas and mask without changing input pixels',async()=>{
   const image=png()
   const result=prepareMaskedEdit({outpaint:{left:16,right:16,top:16,bottom:16},size:'auto'},[part(image)])

@@ -639,7 +639,7 @@ async function buildBody(cfg, req) {
       { role: "user", content: prepared.parts.length ? [...prepared.parts, { type: "input_text", text: prompt }] : prompt }
     ],
     tools: [tool], tool_choice: { type: "image_generation" },
-    reasoning: { effort: "low" }, stream: true, store: false, instructions: ""
+    stream: true, store: false, instructions: ""
   };
 }
 async function generateImage(cfg, upstream, req, signal) {
@@ -676,8 +676,10 @@ async function generateImage(cfg, upstream, req, signal) {
       if (ev.type === "response.completed") {
         usage = ev.data.response?.usage;
       }
-      if (ev.type === "error") {
-        throw new UpstreamError("Upstream stream returned error", 502);
+      if (ev.type === "error" || ev.type === "response.failed" || ev.type === "response.incomplete") {
+        const error = ev.data.error ?? ev.data.response?.error ?? ev.data;
+        const detail = error.message ?? ev.data.response?.incomplete_details?.reason;
+        throw new UpstreamError(typeof detail === "string" ? detail.slice(0, 1000) : "Upstream image generation failed", 502, typeof error.code === "string" ? error.code : undefined);
       }
     }
     if (!b64) {
