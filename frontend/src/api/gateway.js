@@ -409,6 +409,9 @@ export async function createApiKey({ name, accountIds } = {}) {
 export async function deleteApiKey(id) {
   return await gwRequest('/__gw/apikeys', 'DELETE', { id }).catch(() => null)
 }
+export async function renameApiKey(id, name) {
+  return gwRequest('/__gw/apikeys', 'PATCH', { id, name })
+}
 // 按需取单个 Key 的明文：仅在用户点「复制」时调用一次。
 // 列表接口不再携带明文，避免每 3 秒轮询把凭据摊在 DOM / 网络面板里。
 export async function revealApiKey(id) {

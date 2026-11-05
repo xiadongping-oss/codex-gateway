@@ -1,6 +1,6 @@
 [package]
 name = "codex-gateway-desktop"
-version = "1.14.11"
+version = "1.14.12"
 edition = "2021"
 publish = false
 

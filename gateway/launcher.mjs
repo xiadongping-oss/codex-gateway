@@ -92,6 +92,7 @@ import {
 import {
   listApiKeys,
   createApiKey,
+  renameApiKey,
   deleteApiKey,
   verifyApiKey,
   extractBearerToken,
@@ -3144,6 +3145,14 @@ async function handleHttpRequest(req, res) {
       } catch (e) {
         return sendJson(res, 400, { error: 'create_failed', detail: e.message })
       }
+    }
+    if (p === '/__gw/apikeys' && req.method === 'PATCH') {
+      try {
+        const body = await readBody(req)
+        if (typeof body.id !== 'string' || !body.id) return sendJson(res, 400, { error: 'missing_id', detail: '缺少 API Key ID。' })
+        const result = renameApiKey(body.id, body.name)
+        return sendJson(res, result.ok ? 200 : result.error === 'not_found' ? 404 : 400, result)
+      } catch { return sendJson(res, 500, { error: 'rename_failed', detail: '名称保存失败，请重试。' }) }
     }
     if (p === '/__gw/apikeys' && req.method === 'DELETE') {
       try {

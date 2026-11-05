@@ -293,6 +293,18 @@ export function createApiKey({ name, accountId = null, accountIds = null } = {})
   }
 }
 
+export function renameApiKey(id, name) {
+  const cleanName = typeof name === 'string' ? sanitizeDisplayName(name, '') : ''
+  if (!cleanName) return { ok: false, error: 'invalid_name', detail: '名称不能为空，最多 40 个字符。' }
+  const entry = reg().keys.find(key => key.id === id)
+  if (!entry) return { ok: false, error: 'not_found', detail: 'API Key 不存在。' }
+  const previous = entry.name
+  entry.name = cleanName
+  scheduleWrite()
+  try { flushApiKeys() } catch (error) { entry.name = previous; scheduleWrite(); throw error }
+  return { ok: true, id: entry.id, name: entry.name }
+}
+
 export function deleteApiKey(id) {
   const r = reg()
   const idx = r.keys.findIndex((k) => k.id === id)

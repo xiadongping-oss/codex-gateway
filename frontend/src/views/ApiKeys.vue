@@ -11,6 +11,31 @@ const accounts = ref([])
 const activeId = ref(null)
 const loading = ref(false)
 const loadErr = ref('')
+const renameTarget = ref(null)
+const renameName = ref('')
+const renaming = ref(false)
+const renameErr = ref('')
+function startRename(key) {
+  renameTarget.value = { id: key.id, name: key.name }
+  renameName.value = key.name
+  renameErr.value = ''
+}
+function closeRename() { if (!renaming.value) renameTarget.value = null }
+async function submitRename() {
+  if (renaming.value || !renameTarget.value) return
+  if (!renameName.value.trim()) { renameErr.value = '请输入名称'; return }
+  renaming.value = true
+  renameErr.value = ''
+  try {
+    const result = await api.renameApiKey(renameTarget.value.id, renameName.value)
+    if (!result?.ok) throw new Error(result?.detail || '名称保存失败')
+    const key = keys.value.find(key => key.id === result.id)
+    if (key) key.name = result.name
+    renameTarget.value = null
+    await silentRefresh()
+  } catch (error) { renameErr.value = error?.message || '名称保存失败，请重试' }
+  finally { renaming.value = false }
+}
 let pollTimer = null
 
 // 按调用次数排序（null=按创建顺序 / desc / asc）
@@ -315,7 +340,7 @@ onUnmounted(() => {
           </tr></thead>
           <tbody>
             <tr v-for="k in visible" :key="k.id" :class="{disabled:k.disabled}">
-              <td data-label="名称"><div class="key-name"><strong>{{ k.name }}</strong><span class="key-state" :class="{off:k.disabled}">{{ k.disabled ? '停用' : '启用' }}</span></div><div class="source-tags"><span v-for="usage in k.usageSources || []" :key="usage.source" class="source-tag" :title="'最近使用 ' + fmtTime(usage.lastUsedAt) + ' · ' + usage.callCount + ' 次 · ' + fmtTok(usage.tokens) + ' Token'">{{ usage.source === 'lan' ? '局域网' : '本机' }}</span><small v-if="!k.usageSources?.length" class="source-unknown" title="收到真实请求后自动标记；历史数据不推测来源">{{ k.lastUsedAt ? '来源待采集' : '未使用' }}</small></div><small class="key-id" :title="k.id">{{ k.id.slice(-8) }}</small></td>
+              <td data-label="名称"><div class="key-name"><strong>{{ k.name }}</strong><button class="rename-name" type="button" :aria-label="'修改 ' + k.name + ' 的名称'" title="修改名称" @click="startRename(k)">✎</button><span class="key-state" :class="{off:k.disabled}">{{ k.disabled ? '停用' : '启用' }}</span></div><div class="source-tags"><span v-for="usage in k.usageSources || []" :key="usage.source" class="source-tag" :title="'最近使用 ' + fmtTime(usage.lastUsedAt) + ' · ' + usage.callCount + ' 次 · ' + fmtTok(usage.tokens) + ' Token'">{{ usage.source === 'lan' ? '局域网' : '本机' }}</span><small v-if="!k.usageSources?.length" class="source-unknown" title="收到真实请求后自动标记；历史数据不推测来源">{{ k.lastUsedAt ? '来源待采集' : '未使用' }}</small></div><small class="key-id" :title="k.id">{{ k.id.slice(-8) }}</small></td>
               <td data-label="密钥"><code class="key-mask">{{ k.mask }}</code></td>
               <td data-label="授权范围"><span class="key-scope" :title="scopeLabel(k)">{{ scopeLabel(k) }}</span></td>
               <td data-label="最近使用"><span class="key-date">{{ fmtTime(k.lastUsedAt) }}</span><small class="key-created" :title="'创建于 ' + fmtTime(k.createdAt)">创建 {{ fmtTime(k.createdAt) }}</small></td>
@@ -334,6 +359,17 @@ onUnmounted(() => {
     </div>
 
     <Pagination v-model="page" :pages="pages" :total="displayKeys.length" />
+    <div v-if="renameTarget" class="modal-mask" @click.self="closeRename">
+      <form class="modal" role="dialog" aria-modal="true" aria-label="修改 API Key 名称" v-modal-focus="closeRename" @submit.prevent="submitRename">
+        <div class="modal-head"><div class="modal-title">修改名称</div><button type="button" class="x" :disabled="renaming" @click="closeRename" aria-label="关闭">×</button></div>
+        <div class="modal-body">
+          <label class="form-row"><span class="form-lbl">名称</span><input v-model="renameName" class="inp" maxlength="40" :disabled="renaming" placeholder="例如：设计部-小王" /></label>
+          <div class="hint">修改名称后，客户端继续使用原密钥。</div>
+          <div v-if="renameErr" class="msg err" role="alert">{{ renameErr }}</div>
+          <div class="btn-row"><button type="submit" class="btn-primary" :disabled="renaming || !renameName.trim()">{{ renaming ? '保存中…' : '保存' }}</button><button type="button" class="btn-ghost" :disabled="renaming" @click="closeRename">取消</button></div>
+        </div>
+      </form>
+    </div>
     <!-- 创建/一次性展示弹窗 -->
     <div v-if="showCreate" class="modal-mask" @click.self="closeCreate">
       <div class="modal" role="dialog" aria-modal="true" :aria-label="justCreated ? '已创建 Key' : '新建 API Key'" v-modal-focus="closeCreate">
@@ -459,6 +495,8 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.rename-name { background:transparent; border:0; color:var(--text-3); cursor:pointer; padding:2px 4px; border-radius:4px; font-size:14px; }
+.rename-name:hover, .rename-name:focus-visible { color:var(--primary); background:var(--primary-soft); }
 .source-tags { display:flex; gap:5px; flex-wrap:wrap; margin-top:7px; }
 .source-tag { font-size:10px; padding:2px 6px; border-radius:4px; color:var(--primary); background:var(--primary-soft); }
 .source-unknown { font-size:10px; color:var(--text-3); }

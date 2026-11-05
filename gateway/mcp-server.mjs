@@ -68,7 +68,7 @@ const TOOLS = [
   },
   {
     name: 'list_generated_images',
-    description: '列出网关生成图库（与网关配置的数据目录一致）中已有的图片（新→旧）。仅网关主机本机可用；局域网客户端请直接使用 generate_image 返回的链接。',
+    description: '列出当前 API Key 的个人生成图库（新→旧），支持本机与局域网。未配置 Key 时仅允许网关主机读取全量图库。',
     inputSchema: { type: 'object', properties: { limit: { type: 'number', description: '返回条数，默认 20' } } }
   }
 ]
@@ -117,7 +117,21 @@ async function generateImage(args) {
   return { ok:true, text:lines.join('\n'), localPath:item.local_path || null, url:item.url || null, gallery_url:presentation.gallery_url }
 }
 
-function listImages(args) {
+async function listImages(args) {
+  // A configured user Key is the identity boundary even on the gateway host.
+  // Never bypass per-Key authorization by reading the shared directory directly.
+  if (CGW_API_KEY) {
+    const limit = Math.max(1, Math.min(100, Number(args?.limit) || 20))
+    try {
+      const res = await fetch(CGW_BASE + '/v1/gen-images/list?limit=' + limit, {
+        headers: { Authorization: 'Bearer ' + CGW_API_KEY }, signal: AbortSignal.timeout(15000)
+      })
+      const data = await res.json()
+      if (!res.ok || !Array.isArray(data.images)) return { ok: false, error: '个人图库读取失败：HTTP ' + res.status }
+      const rows = data.images.map(item => item.name + (item.download_url ? '  ' + item.download_url : ''))
+      return { ok: true, text: rows.length ? `你的生成图库共 ${data.total} 张（前 ${rows.length}，下载需携带同一 API Key）：\n` + rows.join('\n') : '你的生成图库为空' }
+    } catch (error) { return { ok: false, error: '个人图库读取失败：' + error.message } }
+  }
   if (!IS_LOCAL) {
     return { ok: false, error: 'list_generated_images 仅在网关主机本机可用。局域网客户端请直接使用 generate_image 返回的链接查看图片。' }
   }
@@ -167,7 +181,7 @@ async function dispatch(id, method, params, res) {
       const stopProgress = startMcpProgress(params, res)
       try { r = await generateImage(args) } finally { stopProgress() }
     }
-    else if (name === 'list_generated_images') r = listImages(args)
+    else if (name === 'list_generated_images') r = await listImages(args)
     else return res({ id, error: { code: -32602, message: 'unknown tool: ' + name } })
     if (!r.ok) return res({ id, result: { content: [{ type: 'text', text: '✗ ' + r.error }], isError: true } })
     return res({ id, result: imageToolResult(r) })
