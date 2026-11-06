@@ -5,6 +5,7 @@ import Pagination from '../components/Pagination.vue'
 import { ref, computed, reactive, watch, onMounted, onBeforeUnmount } from 'vue'
 import * as api from '../api/gateway'
 import { copyText } from '../api/client'
+import { buildOwnerOptions, matchesOwner } from '../api/asset-owners'
 
 // ---------- 来源 ----------
 const sources = ref([])
@@ -24,18 +25,22 @@ onMounted(() => window.addEventListener('message', editorMessage))
 onBeforeUnmount(() => window.removeEventListener('message', editorMessage))
 const search = ref('')
 const favoritesOnly = ref(false)
+const ownerFilter = ref('')
+const ownerOptions = computed(() => active.value === 'generated' ? buildOwnerOptions(assets.value) : [])
 const sort = ref('newest')
 const cardSize = ref(260)
 try { cardSize.value = Math.max(180, Math.min(420, Number(localStorage.getItem('cgw_asset_card_size')) || 260)) } catch {}
 watch(cardSize, value => { try { localStorage.setItem('cgw_asset_card_size', String(value)) } catch {} })
 const filteredAssets = computed(() => {
   const terms = search.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
-  return assets.value.filter(img => (!favoritesOnly.value || img.favorite) && terms.every(term =>
+  return assets.value.filter(img => (!favoritesOnly.value || img.favorite)
+    && (active.value !== 'generated' || matchesOwner(img, ownerFilter.value))
+    && terms.every(term =>
     [img.title, img.name, img.notes, ...(img.tags || []), ...(img.collections || []), img.generation?.prompt, img.generation?.revisedPrompt].filter(Boolean).join(' ').toLocaleLowerCase().includes(term)))
     .sort(sort.value === 'name' ? (a, b) => (a.title || a.name).localeCompare(b.title || b.name, 'zh-CN') : (a, b) => (b.mtime || b.at || 0) - (a.mtime || a.at || 0))
 })
 const {page,pages,visible}=usePagination(filteredAssets)
-watch([search, favoritesOnly, sort], () => { page.value = 1; selected.value = new Set() })
+watch([search, favoritesOnly, ownerFilter, sort], () => { page.value = 1; selected.value = new Set() })
 const metadataBusy = ref(new Set())
 async function updateMetadata(img, changes) {
   if (metadataBusy.value.has(img.id)) return
@@ -120,6 +125,7 @@ function switchTab(id) {
   if (active.value === id) return
   active.value = id
   page.value = 1
+  ownerFilter.value = ''
   loaded.value = false
   assets.value = []
   selected.value = new Set()
@@ -492,6 +498,7 @@ const emptyText = computed(() => {
     <div class="asset-tools">
       <input v-model="search" type="search" placeholder="搜索标题、文件名或提示词" aria-label="搜索素材" />
       <button class="refresh" :aria-pressed="favoritesOnly" :class="{ primary: favoritesOnly }" @click="favoritesOnly = !favoritesOnly">{{ favoritesOnly ? '★ 已收藏' : '☆ 只看收藏' }}</button>
+      <select v-if="active === 'generated'" v-model="ownerFilter" aria-label="按来源用户筛选"><option value="">全部来源用户</option><option v-for="o in ownerOptions" :key="o.id" :value="o.id">{{ o.label }}（{{ o.count }}）</option></select>
       <select v-model="sort" aria-label="素材排序"><option value="newest">最新优先</option><option value="name">名称排序</option></select>
       <label>卡片大小 <input v-model.number="cardSize" type="range" min="180" max="420" step="20" aria-label="卡片大小" /></label>
       <span class="sub">{{ filteredAssets.length }} / {{ assets.length }} 项</span>
@@ -571,6 +578,7 @@ const emptyText = computed(() => {
           <span class="sub mono">
             <template v-if="img.generation?.actual?.actual">{{ img.generation.actual.actual }} · </template>{{ fmtSize(img.size) }} · {{ fmtDate(img.mtime || img.at) }}
             <template v-if="img.remote"> · {{ TYPE_META[sources.find((s) => s.id === active)?.type]?.tag }}</template>
+            <template v-if="active === 'generated' && img.ownerKeyId"> · 来源：{{ img.ownerKeyName || '已删除的 Key' }}（{{ img.ownerKeyId.slice(-8) }}）</template>
           </span>
         </div>
       </div>

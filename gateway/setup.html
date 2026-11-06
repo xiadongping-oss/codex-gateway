@@ -80,6 +80,7 @@
   <input id="keyInput" type="password" placeholder="cgw-xxxxxxxx" autocomplete="off">
   <div class="err" id="gateErr"></div>
   <button class="primary" id="btnVerify" disabled style="width:100%">验证并生成接入配置</button>
+  <div class="acts" style="margin-top:10px"><button id="btnCopyUninstallPromptGate">完全卸载旧配置（无需 Key）</button></div>
 </div>
 
 <main id="app" hidden>
@@ -95,8 +96,8 @@
     <div class="desc">复制提示词，粘贴给能操作本机文件的 Agent。它会合并 MCP 配置、安装生图 Skill，再检查连接。支持本机和局域网接入。</div>
     <label class="preview-label" for="agentPromptPreview">首次配置预览 · 密钥已隐藏</label>
     <textarea id="agentPromptPreview" class="prompt-preview" readonly rows="7" spellcheck="false"></textarea>
-    <div class="acts"><button class="primary" id="btnCopyAgentPrompt">复制给 Agent 的配置提示词</button><button id="btnCopyUpdatePrompt">复制更新 Prompt</button><button id="btnCopySwitchKeyPrompt">复制更换 API Key Prompt</button><span class="ok-note" id="agentPromptOk" role="status"></span></div>
-    <p class="desc" style="margin:8px 0 0">首次配置和更换 Key 的 Prompt 包含当前已验证的 API Key，请仅交给对应用户。更新 Prompt 不包含 Key，保留客户端原凭据。换 Key 会切换图库，旧图不会自动迁移。连接验证不会自动生成图片。</p>
+    <div class="acts"><button class="primary" id="btnCopyAgentPrompt">复制给 Agent 的配置提示词</button><button id="btnCopyUpdatePrompt">复制更新 Prompt</button><button id="btnCopySwitchKeyPrompt">复制更换 API Key Prompt</button><button id="btnCopyUninstallPrompt">复制完全卸载 Prompt</button><span class="ok-note" id="agentPromptOk" role="status"></span></div>
+    <p class="desc" style="margin:8px 0 0">首次配置和更换 Key 的 Prompt 包含当前已验证的 API Key，请仅交给对应用户。更新与完全卸载 Prompt 不包含 Key。换 Key 会同时更新<b>对话模型与 MCP 两处凭据</b>并做 keyId 一致性自检；只改其中一处会导致同一台电脑出现两个身份、图库分裂。完全卸载会清理模型、MCP、Skill 与记录文件，之后请重新用「首次配置」Prompt 一次装回。换 Key 会切换图库，旧图不会自动迁移；连接验证不会自动生成图片。</p>
   </div>
 
   <div class="step">
@@ -331,6 +332,15 @@
   bindCopy('btnCopyAgentPrompt', 'agentPromptOk', function () { return buildAgentPrompt(key) })
   bindCopy('btnCopyUpdatePrompt', 'agentPromptOk', function () { return buildAgentPrompt(key,true) })
   bindCopy('btnCopySwitchKeyPrompt', 'agentPromptOk', function () { return buildAgentPrompt(key,false,true) })
+  function copyUninstallPrompt() {
+    if (!connectionBase || !target) { toast('请先选择上方接入用户类型与连接地址'); return }
+    var text
+    try { text = CGWClientSetup.buildClientPrompt({base:connectionBase,target:target,uninstall:true}) }
+    catch (e) { toast(e.message || '卸载 Prompt 生成失败'); return }
+    copyText(text).then(function () { $('agentPromptOk').textContent = '✓ 已复制卸载 Prompt'; toast('已复制完全卸载 Prompt（不含 Key）') }, function () { toast('复制失败，请手动选择文本') })
+  }
+  $('btnCopyUninstallPrompt').addEventListener('click', copyUninstallPrompt)
+  $('btnCopyUninstallPromptGate').addEventListener('click', copyUninstallPrompt)
   $('btnCopyCmd').addEventListener('click', function () {
     if (!key || !connectionBase) return
     copyText('node setup-client.mjs --host ' + new URL(connectionBase).hostname + ' --name ' + connectorName + ' --port ' + (new URL(connectionBase).port || (new URL(connectionBase).protocol==='https:'?'443':'80')) + ' --key ' + key).then(function () { toast('已复制，包含当前端口和密钥') })

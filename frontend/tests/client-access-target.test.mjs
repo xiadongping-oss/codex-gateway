@@ -103,9 +103,38 @@ test('explicit Key change Prompt uses the selected new Key and explains scoped g
   assert.doesNotMatch(c.prompt.value,/cgw-new-user-fixture/)
   await c.copy('prompt')
   assert.match(c.copied[0],/Bearer cgw-new-user-fixture/)
-  for(const phrase of ['只替换指定连接器的凭据','旧图不会自动迁移','当前会话尚未切换','不修改对话模型 Key'])assert.ok(c.copied[0].includes(phrase),phrase)
+  for(const phrase of ['对话模型与生图 MCP 必须使用同一个新 Key','把 A 与 B 两处凭据统一替换','两处 keyId 必须相同','旧图不会自动迁移','当前会话尚未切换'])assert.ok(c.copied[0].includes(phrase),phrase)
+  assert.doesNotMatch(c.copied[0],/不修改对话模型 Key/)
   assert.equal(c.revealed.length,0)
   c.dispose()
+})
+
+test('uninstall Prompt needs no Key, never reveals one and asks for a single clean reinstall', async () => {
+  const c=component({reveal:()=>{throw new Error('must not reveal a Key')}});await c.load();c.target.value='remote';c.mode.value='uninstall'
+  c.manual.value=false;c.keyId.value=''
+  assert.doesNotMatch(c.prompt.value,/<复制时填入所选 API Key>|Bearer |"Authorization"/)
+  await c.copy('prompt')
+  assert.equal(c.revealed.length,0)
+  const text=c.copied[0]
+  for(const phrase of ['完全卸载','不含任何 API Key','先备份','保留其他 MCP','不删除图片','一次性配置模型 + MCP + Skill','http://192.0.2.5:5199/mcp'])assert.ok(text.includes(phrase),phrase)
+  assert.doesNotMatch(text,/Bearer |"Authorization"/)
+  assert.match(c.feedback.value,/不含 API Key/)
+  c.dispose()
+})
+
+test('all prompt modes enforce one Key across model config and MCP',()=>{
+  const base='http://192.0.2.5:5199'
+  const sw=helpers.buildClientPrompt({base,target:'remote',key:'cgw-new-fixture',switchKey:true})
+  assert.match(sw,/A\. 对话模型配置/);assert.match(sw,/B\. 生图 MCP/)
+  assert.match(sw,/两处 keyId 必须相同/);assert.doesNotMatch(sw,/不修改对话模型 Key/)
+  const up=helpers.buildClientPrompt({base,target:'remote',update:true})
+  assert.match(up,/凭据分叉/);assert.match(up,/本 Prompt 不授权更换 Key/);assert.doesNotMatch(up,/Bearer /)
+  const install=helpers.buildClientPrompt({base,target:'remote',key:'cgw-new-fixture'})
+  assert.match(install,/不要静默留下/);assert.match(install,/同一 keyId/)
+  const uninstall=helpers.buildClientPrompt({base:'http://127.0.0.1:4173',target:'local',uninstall:true})
+  assert.match(uninstall,/禁止转发给其他设备/)
+  assert.doesNotMatch(uninstall,/Bearer |"Authorization"/)
+  for(const extra of [{update:true,uninstall:true},{switchKey:true,uninstall:true},{update:true,switchKey:true,uninstall:true}])assert.throws(()=>helpers.buildClientPrompt({base,target:'remote',key:'x',...extra}))
 })
 
 test('shared helper update never reads supplied Key; conflicting actions are rejected',()=>{

@@ -305,11 +305,20 @@ function listGenerated() {
   const dir = genImagesDir()
   let names = []
   try { names = fs.readdirSync(dir).filter((n) => GEN_IMAGE_RE.test(n)) } catch { return [] }
+  // 落盘时 index.json 已写入 keyId/keyName（见 launcher 的 saveGenImageB64）。
+  // 后台素材页要按「来源用户」筛选，必须把归属透出；早期无主图保持 null。
+  let owners = {}
+  try { owners = JSON.parse(fs.readFileSync(path.join(STORAGE.generated, 'index.json'), 'utf8')) || {} } catch { owners = {} }
   const out = []
   for (const name of names) {
     try {
       const st = fs.statSync(path.join(dir, name))
-      out.push({ name, size: st.size, mtime: st.mtimeMs, url: assetFileUrl('generated', name) })
+      const meta = owners[name] || {}
+      out.push({
+        name, size: st.size, mtime: st.mtimeMs, url: assetFileUrl('generated', name),
+        ownerKeyId: meta.keyId ? String(meta.keyId) : null,
+        ownerKeyName: meta.keyName || null
+      })
     } catch {}
   }
   out.sort((a, b) => b.mtime - a.mtime)

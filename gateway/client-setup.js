@@ -11,6 +11,26 @@
       ? '范围限制：目标网关是 127.0.0.1 / localhost，本 Prompt 只对生成它的网关本机有效，禁止转发给其他设备。其他电脑必须由网关主机在「客户端接入」选择“局域网用户”、使用共享地址重新生成；仅端口相同但主机地址不同的连接不算匹配。'
       : '范围限制：只处理地址与上述目标网关完全一致的现有连接；127.0.0.1 / localhost 永远指执行请求的那台电脑，仅端口相同不算匹配。'
   }
+  // 客户端的 Key 至少存在两处：对话模型配置（/v1/chat/completions）与生图 MCP（/mcp）。
+  // 只改其中一处就会在调用日志里出现「同一 IP、两个 keyId」，图库也随之分裂。
+  function credentialSites(base) {
+    return [
+      '本网关的凭据可能同时存在多处，核对身份时必须逐处覆盖：',
+      '  A. 对话模型配置：url / baseUrl 指向 ' + base + '/v1 或 ' + base + '/v1/chat/completions 的条目（常见文件名 workbuddy-models-codex-gateway*.json，或客户端模型设置里的自定义模型），字段 apiKey / OPENAI_API_KEY。',
+      '  B. 生图 MCP：mcp.json 中 url 指向 ' + base + '/mcp 的条目（常见名 codex-gateway / codex-gateway-lan），字段 headers.Authorization；旧 stdio 为 env.CGW_API_KEY。',
+      '  C. 记录与脚本：cgw-client-assets.json、setup-client.mjs 生成的模型配置 JSON、Skill 文件内被手工填入的 Key。',
+      '  D. 浏览器素材站：' + base + '/gallery 的 localStorage（键 cgw_gallery_key），Agent 不得代改，需提示用户在网页右上「换 Key」手动更新。'
+    ]
+  }
+  function consistencyCheck(base, strict) {
+    return [
+      '一致性自检（必须执行）：分别从 A 与 B 读取当前 Key，用各自的 Key 作鉴权头请求 ' + base + '/v1/gen-images/me，比较两个响应的 keyId。',
+      strict
+        ? '两处 keyId 必须相同且与新 Key 一致；不同时明确报告「模型侧 / MCP 侧仍是旧 Key」并指出具体文件与字段，不能声称已完成、不能静默继续。'
+        : '若两处 keyId 不同，明确报告「凭据分叉」并列出各自文件与字段；本 Prompt 不授权更换 Key，只提示用户向宿主机索取「更换 API Key」Prompt。',
+      '查询只读，不调用 generate_image、不删除或迁移图片；报告里只出现掩码或 keyId 后 8 位，不回显明文 Key。'
+    ]
+  }
   function buildMcpConfig(options) {
     var url = new URL(options.base)
     if (!['http:','https:'].includes(url.protocol) || url.username || url.password || ['0.0.0.0','[::]'].includes(url.hostname)) throw new Error('请使用可访问的网关地址，不能使用监听通配地址或带凭据的 URL。')
@@ -35,7 +55,9 @@
       '6. 分别验证 Skill 原始字节的 SHA-256、MCP tools/list 的 result.tools 数组经 JSON.stringify 后 UTF-8 字节的 SHA-256；检查 /v1/models 和 /v1/gen-images/me，确认更新前后 keyId 一致，再记录已验证的哈希。只做只读检查，不出图、不删除图片。',
       '7. 区分网关已升级、文件已更新、当前会话已重新加载。比较会话连接与文件配置的 keyId；若不一致，停止生成并指出客户端重新加载连接器或重启的位置，不能声称已生效。没有会话工具时也明确报告尚未验证，不能猜测身份。',
       '8. 不自动改写浏览器素材站已保存的 Key。用户在 /gallery 使用与自己的 MCP 相同的 Key；历史图片仍归原 keyId。完成后给出备份位置、验证结果与剩余操作，不泄露密钥。'
-    ].join('\n')
+    ].concat(credentialSites(base), consistencyCheck(base, false), [
+      '9. 分别报告「文件已更新」「连通与身份检查」「模型侧与 MCP 侧凭据是否一致」「当前会话是否已重新加载」。发现两处 Key 不同时明确告警，不要因为 MCP 更新成功就报告一切正常。'
+    ]).join('\n')
   }
   function buildSwitchPrompt(base, config) {
     return [
@@ -45,21 +67,52 @@
       '指定连接器：' + Object.keys(config.mcpServers)[0] + '（客户端若使用其他名称，以现有名称为准并保留，按地址匹配）。',
       '以下配置中的 Authorization 是我明确选择的新 API Key，仅用于本次更换：',
       '```json', JSON.stringify(config, null, 2), '```',
+      '本次要求：对话模型与生图 MCP 必须使用同一个新 Key。此前出现过只换了 MCP、模型侧仍留旧 Key 的情况，调用日志会显示同一 IP 两个 keyId，个人图库也随之分裂。',
       '1. 先核对范围限制：若目标网关是 127.0.0.1 / localhost 而 Agent 不在网关这台电脑上，立即停止并要求用共享地址重新生成，不得按端口猜测或改写地址。再识别实际客户端与已有连接器，按目标网关地址（协议、主机、端口）完全一致匹配；多个匹配连接时让用户指定；没有匹配连接时停止说明，不能另行安装或覆盖其他连接。',
-      '2. 修改前备份。保留连接器名称、地址、设备名、其他请求头、其他 MCP、Skill 和模型设置，只替换指定连接器的凭据。HTTP 替换 Authorization；旧 stdio 替换 env.CGW_API_KEY，不顺带迁移传输方式。',
-      '3. 写入前用新 Key 只读检查 ' + base + '/v1/gen-images/me，确认新 keyId 和 keyName；旧 Key 可用时也检查原身份并说明变化。若新 Key 无效则停止且保留旧配置。不要把明文 Key 写入 Skill、URL、日志、最终回复或 cgw-client-assets.json。',
-      '4. 换 Key 后图库切换到新 keyId 范围；旧图不会自动迁移，也不删除、禁用原 Key 或修改图片归属。同一 Key 的不同名称仍是同一身份。',
-      '5. 保存后复查文件凭据对应的新 keyId；重新加载 MCP 连接器或重启客户端，再用当前会话的只读工具核对身份。会话仍使用旧 Key 时停止生成，明确报告“文件已更新，当前会话尚未切换”，不能声称换 Key 已完成。没有会话工具时说明尚待验证。',
-      '6. 素材页：' + base + '/gallery。提醒用户退出素材站旧 Key 后使用同一新 Key 登录；不自动覆盖浏览器凭据。只做连通与身份检查，不出图、不删除图片、不修改对话模型 Key。'
+      '2. 修改前备份。保留连接器名称、地址、设备名、其他请求头、其他 MCP、Skill 和模型设置。'
+    ].concat(credentialSites(base), [
+      '3. 逐处枚举 A/B/C，分别报告当前凭据属于哪个 keyId（用 /v1/gen-images/me 查询）与掩码，不要显示明文。只处理接口地址指向目标网关 origin 且凭据为 cgw- 前缀的条目；指向其他网关、其他端口或其他供应商的配置一律不动。多个匹配时让用户指定，不按名称猜测。',
+      '4. 把 A 与 B 两处凭据统一替换为本次新 Key（HTTP 替换 apiKey / Authorization；旧 stdio 替换 env.CGW_API_KEY，不顺带迁移传输方式）。C 中若发现明文旧 Key，改为与新 Key 一致或删除该副本。找不到模型配置文件、无权修改或无法确定归属时，停止该处并给出需要用户手动更新的具体文件与字段，不能声称已全量更换。',
+      '5. 写入前用新 Key 只读检查 ' + base + '/v1/gen-images/me，确认新 keyId 和 keyName；旧 Key 可用时也检查原身份并说明变化。若新 Key 无效则停止且保留旧配置。不要把明文 Key 写入 Skill、URL、日志、最终回复或 cgw-client-assets.json。',
+      '6. 换 Key 后图库切换到新 keyId 范围；旧图不会自动迁移，也不删除、禁用原 Key 或修改图片归属。同一 Key 的不同名称仍是同一身份。'
+    ], consistencyCheck(base, true), [
+      '7. 保存后复查 A/B 两处文件凭据；重新加载 MCP 连接器或重启客户端，再用当前会话的只读工具核对身份。会话仍使用旧 Key 时停止生成，明确报告“文件已更新，当前会话尚未切换”，不能声称换 Key 已完成。没有会话工具时说明尚待验证。',
+      '8. 素材页：' + base + '/gallery。提醒用户退出素材站旧 Key 后使用同一新 Key 登录；不自动覆盖浏览器凭据。只做连通与身份检查，不出图、不删除图片。'
+    ]).join('\n')
+  }
+  function buildUninstallPrompt(base) {
+    return [
+      '请把我当前 Agent 客户端里 Codex Gateway 的接入配置完全卸载，并逐项报告处理结果。',
+      '目标网关：' + base,
+      scopeLine(base),
+      '本 Prompt 不含任何 API Key，也不授权访问、删除或迁移网关上的任何图片与历史记录。',
+      '卸载清单（只处理指向上述目标网关的条目）：',
+      '  1. MCP：mcp.json 的 mcpServers 中 url 指向 ' + base + '/mcp 的条目（常见名 codex-gateway / codex-gateway-lan）；旧 stdio 中 env.CGW_BASE 指向同一地址的条目。',
+      '  2. 对话模型：url / baseUrl 指向 ' + base + '/v1 或 ' + base + '/v1/chat/completions 的条目（常见文件名 workbuddy-models-codex-gateway*.json），以及客户端模型设置里同源的自定义模型。',
+      '  3. Skill：~/.workbuddy/skills/gpt-image/ 与旧 codex-gateway-image/ 中属于本网关的 SKILL.md。',
+      '  4. 记录文件：cgw-client-assets.json 里该网关的记录（若还含其他网关，只删本条）。',
+      '  5. 浏览器素材站：' + base + '/gallery 在浏览器保存的 Key 由用户手动清除（网页右上「换 Key」或清除该站点数据）；Agent 不得代删其他站点数据。',
+      '执行规则：',
+      '1. 先备份：把将要改动的配置与 Skill 目录整体复制到带时间戳的备份目录，报告绝对路径。备份失败即停止，不删任何东西。',
+      '2. 严格按地址匹配，绝不按名称猜测；指向其他网关（含 127.0.0.1、其他端口/IP、其他供应商）的条目一律保留。多个匹配时列出来让用户确认；无法确定归属时保留并报告。',
+      '3. 保留其他 MCP、其他模型、其他 Skill、其他偏好与凭据；不要删除整个 mcp.json、模型配置目录或 ~/.workbuddy。配置损坏时保留原文件并说明原因。',
+      '4. 不读取、不显示、不回显任何明文 API Key；报告里只用掩码或 keyId 后 8 位。不请求网关接口、不出图、不删除图片，网关侧图片仍按原 keyId 保留。',
+      '5. 完成后逐项报告「已删除 / 已保留 / 需用户手动处理」，说明需要重新加载连接器或重启客户端。若要彻底收回访问权，请让网关宿主机在「API Key」页禁用或删除对应 Key。',
+      '6. 之后如需重新接入，让宿主机重新生成「首次配置」Prompt，一次性配置模型 + MCP + Skill，确保两处使用同一个 Key；不要分别用两个 Prompt 各配一半。'
     ].join('\n')
   }
   function buildClientPrompt(options) {
-    if (options.update && options.switchKey) throw new Error('更新与更换 Key 不能同时执行。')
-    if (options.update) {
-      buildMcpConfig({base:options.base,target:options.target,key:''})
-      return buildUpdatePrompt(new URL(options.base).origin)
-    }
+    var modes = ['update','switchKey','uninstall'].filter(function (m) { return !!options[m] })
+    if (modes.length > 1) throw new Error('更新、更换 Key 与完全卸载不能同时执行。')
     var base = new URL(options.base).origin
+    if (options.uninstall) {
+      buildMcpConfig({base:base,target:options.target,key:''})
+      return buildUninstallPrompt(base)
+    }
+    if (options.update) {
+      buildMcpConfig({base:base,target:options.target,key:''})
+      return buildUpdatePrompt(base)
+    }
     var config = buildMcpConfig(options)
     var connectorName = Object.keys(config.mcpServers)[0]
     if (options.switchKey) return buildSwitchPrompt(base, config)
@@ -86,7 +139,7 @@
       '6. 只做无出图成本的连接检查，不调用 generate_image，也不删除图片。将文件配置成功、接口检查成功、当前会话工具已加载分别报告。若需要用户重新加载连接器、重启客户端或完成信任操作，请指出确切位置，不要声称当前会话已可用。',
       '7. 完成后给我配置文件与备份位置、MCP/Skill 安装结果、各项验证结果、素材页地址和剩余操作。说明素材页使用与 MCP 相同的 Key，图片按 Key 分开显示；后续可让我发“调用网关 generate_image 生成一张图片”。',
       '',
-      '请只处理上述 MCP 与 Skill 配置，保留现有对话模型设置。'
+      '请只处理上述 MCP 与 Skill 配置，保留现有的其他模型设置。但若已存在指向本网关的对话模型配置，必须用 ' + base + '/v1/gen-images/me 核对它的 apiKey 与本次 MCP 的 Key 是否为同一 keyId；不一致时明确报告差异并让用户选择，不要静默留下「模型用旧 Key、MCP 用新 Key」的分叉。'
     ]
     lines.splice(1,0,
       '更新清单：' + base + '/client-assets.json（记录网关版本、Skill SHA-256、MCP 工具定义 SHA-256 和配置 Prompt SHA-256）。',

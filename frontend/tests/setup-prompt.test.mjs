@@ -33,7 +33,7 @@ test('verified local prompt preserves address/port, configures MCP and Skill, an
   assert.match(prompt,/http:\/\/127\.0\.0\.1:4173\/mcp/)
   assert.match(prompt,/http:\/\/127\.0\.0\.1:4173\/lan-kit\/skills\/codex-gateway-image\/SKILL.md/)
   assert.equal(JSON.parse(prompt.match(/```json\n([\s\S]*?)\n```/)[1]).mcpServers['codex-gateway'].headers.Authorization,'Bearer '+KEY_A)
-  for(const text of ['备份','保留其他连接器','同名条目','私有配置','不调用 generate_image','当前会话工具已加载','保留现有对话模型设置'])assert.ok(prompt.includes(text),text)
+  for(const text of ['备份','保留其他连接器','同名条目','私有配置','不调用 generate_image','当前会话工具已加载','保留现有的其他模型设置','不要静默留下'])assert.ok(prompt.includes(text),text)
   assert.deepEqual(p.requests.map(r=>r.url),['/v1/gen-images/me'])
 })
 test('LAN prompt and HTTP clipboard fallback retain actual shared port and LAN connector name',async()=>{
@@ -181,6 +181,21 @@ test('blocked shared-port page can still switch to a LAN user and generate a sha
   assert.match(prompt,/目标网关：http:\/\/192\.0\.2\.5:5199/)
   assert.match(prompt,/指定连接器：codex-gateway-lan/)
   assert.doesNotMatch(prompt,/禁止转发给其他设备/)
+})
+
+test('uninstall Prompt is reachable without verifying any Key and never embeds credentials',async()=>{
+  const p=page('http://127.0.0.1:4174',{localOrigin:'http://127.0.0.1:4173',fetcher:url=>Promise.resolve({ok:true,status:200,json:async()=>url==='/client-connection.json'?{sharingEnabled:true,sharedOrigins:[{origin:'http://192.0.2.5:5199',preferred:true}]}:{ok:true,keyName:'Fixture',images:0,bytes:0}})})
+  p.node('targetRemote').click();await settle()
+  p.node('btnCopyUninstallPromptGate').click()
+  assert.equal(p.copied.length,1,'没有有效 Key 也必须能卸载')
+  const text=p.copied[0]
+  assert.match(text,/目标网关：http:\/\/192\.0\.2\.5:5199/)
+  assert.match(text,/完全卸载/);assert.match(text,/不含任何 API Key/)
+  assert.match(text,/先备份/);assert.match(text,/不删除图片/)
+  assert.doesNotMatch(text,/Bearer |"Authorization"/)
+  assert.ok(!text.includes(KEY_A) && !text.includes(KEY_B))
+  p.node('btnCopyUninstallPrompt').click()
+  assert.equal(p.copied.length,2);assert.equal(p.copied[0],p.copied[1])
 })
 
 test('canonical local page still allows local mode when the injected local origin matches',async()=>{

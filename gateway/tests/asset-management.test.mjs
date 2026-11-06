@@ -36,12 +36,17 @@ test('cross-source collections, scoped batches, recycle/restore conflicts, resta
     const b = (await (await fixture.request('/__gw/apikeys', { name: 'B' })).json()).key
     const dir = path.join(fixture.dataRoot, 'gen-images'); fs.mkdirSync(dir, { recursive: true })
     for (const name of ['A.png', 'A2.png', 'B.png']) fs.writeFileSync(path.join(dir, name), bytes)
-    const originalIndex = { 'A.png': { keyId: a.id, createdAt: 1, generation: { prompt: 'blue mountain' } }, 'A2.png': { keyId: a.id, createdAt: 2 }, 'B.png': { keyId: b.id } }
+    const originalIndex = { 'A.png': { keyId: a.id, keyName: 'A', createdAt: 1, generation: { prompt: 'blue mountain' } }, 'A2.png': { keyId: a.id, keyName: 'A', createdAt: 2 }, 'B.png': { keyId: b.id, keyName: 'B' } }
     fs.writeFileSync(path.join(dir, 'index.json'), JSON.stringify(originalIndex))
     const localDir = path.join(root, 'local'); fs.mkdirSync(localDir); fs.writeFileSync(path.join(localDir, 'local.png'), bytes)
     const source = (await (await fixture.request('/__gw/assets/sources', { type: 'local', name: 'Local', config: { dir: localDir } })).json()).source
     const request = (route, key = a.token, body) => fetch(fixture.ready.origin + route, { method: body ? 'POST' : 'GET', headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(5000) })
     const side = '/v1/gen-images/library', admin = '/__gw/assets/library'
+    // 后台素材列表必须透出生成时的 keyId/keyName，供「按来源用户」筛选。
+    const generated = await (await fixture.request('/__gw/assets?src=generated')).json()
+    const byName = Object.fromEntries(generated.images.map(i => [i.name, i]))
+    assert.equal(byName['A.png'].ownerKeyId, a.id); assert.equal(byName['A.png'].ownerKeyName, 'A')
+    assert.equal(byName['B.png'].ownerKeyId, b.id); assert.equal(byName['B.png'].ownerKeyName, 'B')
     const all = await (await fixture.request(admin)).json()
     assert.equal(all.total, 4); assert.equal(all.sources.length, 2)
     const items = all.images.filter(i => ['A.png', 'local.png'].includes(i.name)).map(({ id, sourceId, name }) => ({ id, sourceId, name }))

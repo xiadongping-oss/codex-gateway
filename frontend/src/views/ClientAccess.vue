@@ -23,7 +23,7 @@ let disposed=false, revision=0
 const localBase=(BASE || window.location.origin).replace(/\/$/,'')
 const connections=computed(()=>target.value==='local' ? [{url:localBase,label:'网关本机 · '+localBase}] : target.value==='remote' && lan.value?.enabled ? (lan.value.addresses || []).map(a=>({url:`http://${a.address.includes(':') ? '['+a.address+']' : a.address}:${lan.value.port}`,label:`共享主机 · ${a.address}:${lan.value.port}`,preferred:a.preferred})) : [])
 watch(connections,items=>{if(!items.some(c=>c.url===base.value))base.value=items.find(c=>c.preferred)?.url || items[0]?.url || ''},{flush:'sync',immediate:true})
-const prompt=computed(()=>base.value ? globalThis.CGWClientSetup.buildClientPrompt({base:base.value,target:target.value,key:'<复制时填入所选 API Key>',device:device.value,update:mode.value==='update',switchKey:mode.value==='switch-key'}) : '')
+const prompt=computed(()=>base.value ? globalThis.CGWClientSetup.buildClientPrompt({base:base.value,target:target.value,key:'<复制时填入所选 API Key>',device:device.value,update:mode.value==='update',switchKey:mode.value==='switch-key',uninstall:mode.value==='uninstall'}) : '')
 watch([base,keyId,device,model,mode,target,manual,manualKey],()=>{revision++;feedback.value=''}, {flush:'sync'})
 async function load() {
   loading.value=true;error.value=''
@@ -38,22 +38,22 @@ async function load() {
   finally {if(!disposed)loading.value=false}
 }
 async function copy(kind) {
-  const updatePrompt = kind==='prompt' && mode.value==='update'
-  if(busy.value || (!hasKey.value && !updatePrompt) || !manifest.value)return
+  const noKeyPrompt = kind==='prompt' && (mode.value==='update' || mode.value==='uninstall')
+  if(busy.value || (!hasKey.value && !noKeyPrompt) || !manifest.value)return
   if(!target.value || !base.value){error.value='请先选择 Agent 所在电脑及可用的连接地址。';return}
   const selected=revision
   busy.value=true;feedback.value='';error.value=''
   try {
-    const token=updatePrompt ? undefined : manual.value ? manualKey.value.trim() : (await api.revealApiKey(keyId.value))?.token
+    const token=noKeyPrompt ? undefined : manual.value ? manualKey.value.trim() : (await api.revealApiKey(keyId.value))?.token
     if(disposed || selected!==revision)return
-    if(!updatePrompt && !token)throw new Error('未能读取密钥，请重新选择。')
+    if(!noKeyPrompt && !token)throw new Error('未能读取密钥，请重新选择。')
     let text
-    if(kind==='prompt')text=globalThis.CGWClientSetup.buildClientPrompt({base:base.value,target:target.value,key:token,device:device.value,update:mode.value==='update',switchKey:mode.value==='switch-key'})
+    if(kind==='prompt')text=globalThis.CGWClientSetup.buildClientPrompt({base:base.value,target:target.value,key:token,device:device.value,update:mode.value==='update',switchKey:mode.value==='switch-key',uninstall:mode.value==='uninstall'})
     else if(kind==='model')text=formatAccessConfig(base.value+'/v1',token,model.value)
     else if(kind==='json')text=JSON.stringify({baseUrl:base.value+'/v1',apiKey:token,model:model.value},null,2)
     else text=JSON.stringify(globalThis.CGWClientSetup.buildMcpConfig({base:base.value,target:target.value,key:token,device:device.value}),null,2)
     await copyText(text)
-    if(!disposed && selected===revision)feedback.value=updatePrompt ? '已复制更新 Prompt，不包含 API Key；保留目标客户端原凭据。' : mode.value==='switch-key' && kind==='prompt' ? '已复制更换 Key Prompt，包含所选新 Key；请仅发给对应用户。' : '已复制，包含所选 API Key。请粘贴到目标客户端的私有配置或对话。'
+    if(!disposed && selected===revision)feedback.value=mode.value==='uninstall' && kind==='prompt' ? '已复制完全卸载 Prompt，不含 API Key；执行后请重新用「首次配置」Prompt 一次装回，避免两处 Key 不一致。' : mode.value==='update' && kind==='prompt' ? '已复制更新 Prompt，不包含 API Key；保留目标客户端原凭据，并会只读检查模型侧与 MCP 侧凭据是否一致。' : mode.value==='switch-key' && kind==='prompt' ? '已复制更换 Key Prompt，包含所选新 Key；会同时更新对话模型与 MCP 并做一致性自检，请仅发给对应用户。' : '已复制，包含所选 API Key。请粘贴到目标客户端的私有配置或对话。'
   } catch(e) {if(!disposed && selected===revision)error.value=e.message || '复制失败，请重试。'}
   finally {if(!disposed)busy.value=false}
 }
@@ -86,13 +86,14 @@ onUnmounted(()=>{disposed=true;revision++})
     </WorkspacePanel>
 
     <WorkspacePanel title="Agent 配置" subtitle="复制 Prompt 到目标 Agent，由它安装 Skill、合并 MCP 配置并检查连接">
-      <template #title-extra><div class="mode" role="group" aria-label="配置方式"><button :class="{active:mode==='install'}" @click="mode='install'">首次配置</button><button :class="{active:mode==='update'}" @click="mode='update'">更新 Skill / MCP</button><button :class="{active:mode==='switch-key'}" @click="mode='switch-key'">更换 API Key</button></div></template>
+      <template #title-extra><div class="mode" role="group" aria-label="配置方式"><button :class="{active:mode==='install'}" @click="mode='install'">首次配置</button><button :class="{active:mode==='update'}" @click="mode='update'">更新 Skill / MCP</button><button :class="{active:mode==='switch-key'}" @click="mode='switch-key'">更换 API Key</button><button :class="{active:mode==='uninstall'}" @click="mode='uninstall'">完全卸载</button></div></template>
 
-      <p class="connection-note" v-if="mode==='update'">更新 Prompt 不包含上方所选 Key，始终保留目标客户端原有凭据，可发给连接同一网关的不同用户。</p>
-      <p class="connection-note" v-else-if="mode==='switch-key'">请在上方选择该用户的新 Key。换 Key 会切换个人图库，旧图片不会自动迁移；客户端需要重新加载连接。</p>
-      <p class="connection-note" v-else>首次配置使用上方所选 Key；请为每位用户分别选择自己的 Key，不要共用接入 Prompt。</p>
+      <p class="connection-note" v-if="mode==='update'">更新 Prompt 不包含上方所选 Key，保留目标客户端原有凭据，可发给连接同一网关的不同用户；会只读检查对话模型与 MCP 的 keyId 是否一致。</p>
+      <p class="connection-note" v-else-if="mode==='switch-key'">请在上方选择该用户的新 Key。换 Key 会同时更新<b>对话模型与 MCP 两处凭据</b>并做一致性自检；只改一处会出现同一台电脑两个身份、图库分裂。旧图片不会自动迁移，客户端需重新加载连接。</p>
+      <p class="connection-note" v-else-if="mode==='uninstall'">完全卸载 Prompt 不含任何 Key，会备份后清理指向本网关的模型配置、MCP、Skill 与记录文件，不删网关图片。适用于凭据已分叉或准备换人；之后请用「首次配置」Prompt 一次装回。</p>
+      <p class="connection-note" v-else>首次配置使用上方所选 Key；请为每位用户分别选择自己的 Key，不要共用接入 Prompt。若已存在指向本网关的对话模型配置，会核对其 Key 与 MCP 是否一致。</p>
       <textarea class="preview" :value="prompt" readonly rows="7" placeholder="选择 Agent 所在电脑后生成配置 Prompt" aria-label="配置 Prompt 预览，密钥已隐藏" />
-      <div class="actions"><button class="btn-primary" :disabled="loading || busy || (!hasKey && mode!=='update') || !manifest || !base || !target" @click="copy('prompt')">{{busy?'复制中…':mode==='update'?'复制更新 Prompt':mode==='switch-key'?'复制换 Key Prompt':'复制配置 Prompt'}}</button>
+      <div class="actions"><button class="btn-primary" :disabled="loading || busy || (!hasKey && mode!=='update' && mode!=='uninstall') || !manifest || !base || !target" @click="copy('prompt')">{{busy?'复制中…':mode==='update'?'复制更新 Prompt':mode==='switch-key'?'复制换 Key Prompt':mode==='uninstall'?'复制完全卸载 Prompt':'复制配置 Prompt'}}</button>
       <div v-if="manifest" class="versions"><span>Skill <code>{{manifest.skill.sha256.slice(0,12)}}</code></span><span>MCP <code>{{manifest.mcp.sha256.slice(0,12)}}</code></span><button class="btn-ghost" :disabled="loading || busy" @click="load">刷新版本</button></div></div>
 
     </WorkspacePanel>
