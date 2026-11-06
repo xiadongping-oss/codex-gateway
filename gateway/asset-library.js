@@ -9,6 +9,27 @@ const headers = () => {
   return value
 }
 function error(e) { $('error').hidden = false; $('error').textContent = e.message || String(e) }
+// 内嵌浏览器 / 沙箱 iframe 会静默吞掉原生 confirm（一律返回 false），
+// 表现为「按钮点了没反应」。破坏性操作统一改用页面内浮层确认。
+let confirmResolve = null
+function askConfirm(text) {
+  return new Promise(resolve => {
+    if (confirmResolve) confirmResolve(false)
+    confirmResolve = resolve
+    $('confirmText').textContent = text
+    $('confirmLayer').hidden = false
+    try { $('confirmYes').focus() } catch {}
+  })
+}
+function closeConfirm(answer) {
+  $('confirmLayer').hidden = true
+  const resolve = confirmResolve; confirmResolve = null
+  if (resolve) resolve(answer)
+}
+$('confirmYes').onclick = () => closeConfirm(true)
+$('confirmNo').onclick = () => closeConfirm(false)
+$('confirmLayer').addEventListener('click', event => { if (event.target === $('confirmLayer')) closeConfirm(false) })
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && !$('confirmLayer').hidden) closeConfirm(false) })
 async function api(body, query = '', base = endpoint) {
   const r = await fetch(base + query, { method: body ? 'POST' : 'GET', headers: headers(), ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(20000) })
   const data = await r.json(); if (!r.ok) throw new Error(data.detail || data.error || '请求失败'); return data
@@ -89,8 +110,10 @@ async function load() {
 }
 async function mutate(action, items = [...selected.values()], operations) {
   if (busy || !items.length) return
-  if (action === 'trash' && !confirm(`将 ${items.length} 张素材移入回收站？可以恢复，编辑草稿和其他版本仍保留。`)) return
-  if (action === 'purge' && !confirm(`彻底删除所选 ${items.length} 张回收文件？此操作无法撤销；已有草稿和其他副本仍保留。`)) return
+  if (action === 'trash' && !(await askConfirm(`将 ${items.length} 张素材移入回收站？可以恢复，编辑草稿和其他版本仍保留。`))) return
+  if (action === 'purge' && !(await askConfirm(`彻底删除所选 ${items.length} 张回收文件？此操作无法撤销；已有草稿和其他副本仍保留。`))) return
+  // 浮层等待期间可能有其他操作抢占，重新检查后再落盘。
+  if (busy || !items.length) return
   busy = true; selection(); $('saveOrganize').disabled = true
   try {
     const body = ['restore', 'purge'].includes(action) ? { action, ids: items.map(i => i.trashId) } : { action, items: items.map(i => ({ id: i.id, sourceId: i.sourceId, name: i.name })), ...(operations ? { operations } : {}) }
@@ -115,6 +138,7 @@ for (const action of ['trash', 'restore', 'purge']) $(action).onclick = () => mu
 $('selectPage').onclick = () => { try { images.forEach(image => toggle(image, true)) } catch (e) { error(e) } selection() }
 $('clearSelection').onclick = () => { selected.clear(); selection() }
 function changeView(value) {
+  closeConfirm(false)
   trash = value; selected.clear(); page = 1
   for (const id of ['q', 'tag', 'collection']) $(id).value = ''
   $('libraryTab').setAttribute('aria-pressed', String(!trash)); $('trashTab').setAttribute('aria-pressed', String(trash))
@@ -168,7 +192,7 @@ $('wipePosition').oninput = () => { $('wipeOverlay').style.clipPath = `inset(0 $
 $('closeCompare').onclick = () => $('comparison').close()
 $('comparison').addEventListener('close', () => { pairGeneration++; compareUrls.forEach(u => URL.revokeObjectURL(u)); compareUrls = []; for (const id of ['leftImage', 'rightImage', 'wipeLeft', 'wipeRight']) $(id).removeAttribute('src') })
 $('back').onclick = () => { if (window.parent !== window) window.parent.postMessage({ type: 'cgw:editor-close' }, location.origin); else location.href = gallery ? '/gallery' : '/' }
-window.addEventListener('message', e => { if (e.origin === location.origin && e.source === window.parent && e.data?.type === 'cgw:editor-request-close') { if ($('organizer').open || $('comparison').open) return; $('back').click() } })
+window.addEventListener('message', e => { if (e.origin === location.origin && e.source === window.parent && e.data?.type === 'cgw:editor-request-close') { if ($('organizer').open || $('comparison').open || !$('confirmLayer').hidden) return; $('back').click() } })
 load()
 
 window.addEventListener('storage', e => { if (gallery && e.key === 'cgw_gallery_key') { selected.clear(); $('organizer').close(); $('comparison').close(); load() } })
