@@ -184,6 +184,11 @@ test('desktop LAN: live management, authentication, rollback, persistence and sh
       assert.ok(!body.includes('__CGW_LOCAL_ORIGIN__'),'共享端口的 /setup 必须注入本机规范地址')
       assert.ok(body.includes(`servedLocalOrigin = 'http://127.0.0.1:${ready.port}'`),'注入值必须是管理端口，不能是共享端口')
     }
+    if(route==='/gallery'){
+      assert.ok(!/(?<![.\w])confirm\s*\(/.test(body),'素材站不得依赖原生 confirm（内嵌浏览器会静默吞掉，换 Key 会没反应）')
+      assert.ok(body.includes('id="confirmLayer"'),'删除确认必须使用页面内浮层')
+      assert.ok(body.includes('验证并更换'),'换 Key 必须提供一步式验证切换')
+    }
     assert.equal((await fetch(origin+route,{method:'POST'})).status,403)
   }
   const client=await fetch(origin+`/lan-kit/setup-client.mjs?host=192.0.2.1&port=${port}`)

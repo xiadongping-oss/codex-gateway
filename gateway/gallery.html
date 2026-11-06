@@ -37,6 +37,13 @@
   #gate input { width: 100%; font: inherit; padding: 9px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); color: var(--txt); margin-bottom: 12px; }
   #gate input:focus { outline: none; border-color: var(--acc); }
   #gate .err { color: var(--danger); font-size: 12.5px; min-height: 18px; margin-bottom: 8px; }
+  #gate p[hidden] { display: none; }
+  #btnCancelSwitch { width: 100%; margin-top: 10px; }
+  #confirmLayer { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 18px; }
+  #confirmLayer[hidden] { display: none; }
+  #confirmBox { background: var(--panel); color: var(--txt); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 20px; max-width: min(92vw, 420px); }
+  #confirmBox p { margin-bottom: 16px; overflow-wrap: anywhere; }
+  #confirmBox .acts { display: flex; gap: 8px; justify-content: flex-end; }
   /* 工具条 */
   #bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
   #bar .count { color: var(--sub); font-size: 13px; }
@@ -99,11 +106,13 @@
 </header>
 
 <div id="gate" hidden>
-  <h2>输入你的 API Key</h2>
-  <p>仅显示<b>你自己的 Key</b> 生成的图片。向网关宿主机索取 <code>cgw-</code> 开头的 Key。<br>Key 会保存在本浏览器，下次免输入；换地址（如换网络后 IP 变了）需重输一次。</p>
+  <h2 id="gateTitle">输入你的 API Key</h2>
+  <p id="gateDescLogin">仅显示<b>你自己的 Key</b> 生成的图片。向网关宿主机索取 <code>cgw-</code> 开头的 Key。<br>Key 会保存在本浏览器，下次免输入；换地址（如换网络后 IP 变了）需重输一次。</p>
+  <p id="gateDescSwitch" hidden>输入<b>新的</b> <code>cgw-</code> Key；验证通过后才会切换，验证失败保留原 Key。<br>历史图片仍归原 Key，换 Key 后不会出现在新图库里，也不会被删除。</p>
   <input id="keyInput" type="password" placeholder="cgw-xxxxxxxx" autocomplete="off">
   <div class="err" id="gateErr"></div>
   <button class="primary" id="btnSave" style="width:100%">进入素材站</button>
+  <button id="btnCancelSwitch" hidden>取消，继续使用原 Key</button>
 </div>
 
 <main id="app" hidden>
@@ -129,6 +138,12 @@
 <dialog id="renameDialog"><form id="renameForm"><label for="renameTitle">展示标题</label><input id="renameTitle" maxlength="160" placeholder="留空使用原文件名"><p>修改展示标题，保留原文件名。</p><div class="rename-actions"><button id="renameCancel" type="button">取消</button><button id="renameSave" class="primary">保存</button></div></form></dialog>
 <dialog id="editorDialog"><iframe id="editorFrame" title="图片标注与复用"></iframe></dialog>
 <div class="toast" id="toast" role="status"></div>
+<div id="confirmLayer" hidden>
+  <div id="confirmBox" role="alertdialog" aria-modal="true" aria-labelledby="confirmText">
+    <p id="confirmText"></p>
+    <div class="acts"><button id="confirmNo">取消</button><button id="confirmYes" class="primary">确定</button></div>
+  </div>
+</div>
 
 <script>
 (function () {
@@ -140,6 +155,7 @@
   var pendingTarget = new URL(location.href).searchParams.get('image')
   if (pendingTarget) $('search').value = pendingTarget
   var page = 1, pageSize = 24, totalPages = 1, favoriteOnly = false, searchTimer, renameItem = null, viewerCopyFn = null
+  var gateMode = 'login', pendingOldKey = '', confirmResolve = null, saveToken = 0
   var size = 240
   try { size = Math.max(160, Math.min(380, Number(localStorage.getItem('cgw_gallery_card_size')) || 240)) } catch {}
   $('cardSize').value = size
@@ -150,6 +166,32 @@
   function toast(msg) {
     var t = $('toast'); t.textContent = msg; t.classList.add('show')
     clearTimeout(t._h); t._h = setTimeout(function () { t.classList.remove('show') }, 1800)
+  }
+  // 内嵌浏览器 / 沙箱 iframe 会静默吞掉原生 confirm（一律返回 false），
+  // 表现为「按钮点了没反应」。素材站所有确认与身份切换都用页面内元素完成。
+  function askConfirm(text) {
+    return new Promise(function (resolve) {
+      if (confirmResolve) confirmResolve(false)
+      confirmResolve = resolve
+      $('confirmText').textContent = text
+      $('confirmLayer').hidden = false
+      try { $('confirmYes').focus() } catch (e) {}
+    })
+  }
+  function closeConfirm(answer) {
+    $('confirmLayer').hidden = true
+    var resolve = confirmResolve; confirmResolve = null
+    if (resolve) resolve(answer)
+  }
+  function focusKeyInput() {
+    try { $('keyInput').focus(); $('keyInput').select() } catch (e) {}
+  }
+  function closeOverlays() {
+    ;['viewer', 'editorDialog', 'renameDialog'].forEach(function (id) {
+      var d = $(id)
+      if (d && d.open) { try { d.close() } catch (e) {} }
+    })
+    $('editorFrame').removeAttribute('src')
   }
   function copyText(text) {
     if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text)
@@ -172,18 +214,28 @@
     generation++
     requests.abort(); requests = new AbortController()
     if (observer) { observer.disconnect(); observer = null }
-    $('viewer').close(); viewerCopyFn = null; $('viewerInfo').replaceChildren(); $('viewerImg').removeAttribute('src'); $('viewerImg')._url = ''
+    try { if ($('viewer').open) $('viewer').close() } catch (e) {}
+    viewerCopyFn = null; $('viewerInfo').replaceChildren(); $('viewerImg').removeAttribute('src'); $('viewerImg')._url = ''
     imageUrls.forEach(function (url) { URL.revokeObjectURL(url) }); imageUrls = []
     $('grid').innerHTML = ''
   }
 
-  function showGate(err) {
+  function setGateUi(mode, canRestore) {
+    gateMode = mode === 'switch' ? 'switch' : 'login'
+    $('gateTitle').textContent = gateMode === 'switch' ? '更换 API Key' : '输入你的 API Key'
+    $('gateDescLogin').hidden = gateMode === 'switch'
+    $('gateDescSwitch').hidden = gateMode !== 'switch'
+    $('btnSave').textContent = gateMode === 'switch' ? '验证并更换' : '进入素材站'
+    $('btnCancelSwitch').hidden = gateMode !== 'switch' || !canRestore
+  }
+  function showGate(err, mode) {
     resetImages()
+    setGateUi(mode, !!pendingOldKey)
     $('gate').hidden = false; $('app').hidden = true
     $('gateErr').textContent = err || ''
     $('userChip').hidden = true
-    $('keyInput').value = key || ''
-    setTimeout(function () { $('keyInput').focus() }, 50)
+    $('keyInput').value = ''
+    focusKeyInput()
   }
   function showApp() { $('gate').hidden = true; $('app').hidden = false }
 
@@ -197,7 +249,7 @@
     fetch('/v1/gen-images/list?' + new URLSearchParams({ limit: pageSize, offset: (page - 1) * pageSize, q: $('search').value, favorite: favoriteOnly, sort: $('sort').value }), { headers: authHeaders(), signal: requests.signal })
       .then(function (r) {
         if (current !== generation) return null
-        if (r.status === 401) { try { localStorage.removeItem(KEY_STORE) } catch {}; key = ''; throw new Error('Key 无效或已被禁用，请重新输入') }
+        if (r.status === 401) { try { localStorage.removeItem(KEY_STORE) } catch {}; key = ''; pendingOldKey = ''; throw new Error('Key 无效或已被禁用，请重新输入') }
         if (!r.ok) throw new Error('HTTP ' + r.status)
         return r.json()
       })
@@ -319,14 +371,16 @@
         }).catch(function (e) { if (current === generation) toast('下载失败：' + e.message) })
       }))
       secondary.appendChild(mkBtn('删除', function () {
-        if (!confirm('确定删除 ' + it.name + ' 移入回收站？可以恢复，编辑草稿和其他版本仍保留。')) return
-        fetch('/v1/gen-images/' + encodeURIComponent(it.name), { method: 'DELETE', headers: authHeaders() })
-          .then(function (r) {
-            if (r.status === 403) { toast('删除失败：这张图不属于你'); return null }
-            if (!r.ok) { toast('删除失败：HTTP ' + r.status); return null }
-            toast('已移入回收站'); load()
-          })
-          .catch(function () { toast('删除失败：网络错误') })
+        askConfirm('确定删除 ' + it.name + ' 移入回收站？可以恢复，编辑草稿和其他版本仍保留。').then(function (ok) {
+          if (!ok) return
+          fetch('/v1/gen-images/' + encodeURIComponent(it.name), { method: 'DELETE', headers: authHeaders() })
+            .then(function (r) {
+              if (r.status === 403) { toast('删除失败：这张图不属于你'); return null }
+              if (!r.ok) { toast('删除失败：HTTP ' + r.status); return null }
+              toast('已移入回收站'); load()
+            })
+            .catch(function () { toast('删除失败：网络错误') })
+        })
       }, 'danger'))
       thumb.addEventListener('click', function () {
         loadImage().then(function (url) {
@@ -392,15 +446,59 @@
 
   $('btnSave').addEventListener('click', function () {
     var v = $('keyInput').value.trim()
-    if (!v) { $('gateErr').textContent = '请输入 Key'; return }
-    key = v; page = 1; try { localStorage.setItem(KEY_STORE, v) } catch {}; $('gateErr').textContent = ''
-    load()
+    if (!v) { $('gateErr').textContent = '请输入 Key'; focusKeyInput(); return }
+    var myToken = ++saveToken, wasSwitch = gateMode === 'switch'
+    $('btnSave').disabled = true
+    $('gateErr').textContent = '正在验证 Key…'
+    fetch('/v1/gen-images/me', { headers: { 'Authorization': 'Bearer ' + v } })
+      .then(function (r) {
+        if (r.status === 401 || r.status === 403) throw new Error('Key 无效或已被禁用，请重新输入')
+        if (!r.ok) throw new Error('验证失败：HTTP ' + r.status)
+        return r.json()
+      })
+      .then(function (me) {
+        if (myToken !== saveToken) return
+        if (!me || !me.ok) throw new Error('Key 验证失败，请重新输入')
+        key = v
+        try { localStorage.setItem(KEY_STORE, v) } catch (e) {}
+        if (wasSwitch) {
+          page = 1; favoriteOnly = false; pendingTarget = null
+          $('search').value = ''
+          $('favorites').setAttribute('aria-pressed', 'false'); $('favorites').textContent = '☆ 只看收藏'
+        }
+        pendingOldKey = ''; setGateUi('login', false)
+        $('gateErr').textContent = ''
+        $('userChip').hidden = true
+        showApp()
+        load()
+        toast(wasSwitch ? '已切换到 ' + (me.keyName || '新 Key') : '已登录素材站')
+      })
+      .catch(function (e) { if (myToken === saveToken) { $('gateErr').textContent = e.message; focusKeyInput() } })
+      .finally(function () { $('btnSave').disabled = false })
   })
   $('keyInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('btnSave').click() })
-  $('btnKey').addEventListener('click', function () {
-    if (key && !confirm('更换/退出当前身份？本机保存的 Key 将被清除，需重新输入。')) return
-    try { localStorage.removeItem(KEY_STORE) } catch {}; key = ''; showGate()
+  $('btnCancelSwitch').addEventListener('click', function () {
+    saveToken++
+    if (!pendingOldKey) { showGate(); return }
+    key = pendingOldKey; pendingOldKey = ''; setGateUi('login', false)
+    $('gateErr').textContent = ''
+    load(); toast('已恢复原 Key')
   })
+  $('btnKey').addEventListener('click', function () {
+    // 不调用原生 confirm：内嵌浏览器会静默返回 false，导致按钮毫无反应。
+    if (gateMode === 'switch' && !$('gate').hidden) {
+      focusKeyInput(); toast('请输入新 Key 后点「验证并更换」'); return
+    }
+    saveToken++
+    pendingOldKey = key
+    closeOverlays()
+    showGate('', 'switch')
+    toast(key ? '已暂停当前身份，输入新 Key 后确认更换' : '当前未登录，输入新 Key 即可')
+  })
+  $('confirmYes').addEventListener('click', function () { closeConfirm(true) })
+  $('confirmNo').addEventListener('click', function () { closeConfirm(false) })
+  $('confirmLayer').addEventListener('click', function (e) { if (e.target === this) closeConfirm(false) })
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !$('confirmLayer').hidden) closeConfirm(false) })
   $('btnRefresh').addEventListener('click', function () { load(); toast('已刷新') })
   $('viewerClose').addEventListener('click', function () { $('viewer').close() })
   $('viewerCopy').addEventListener('click', function () {
