@@ -1478,23 +1478,31 @@ function imagesGenProxy(req, res, targetPath, keyId, bodyBuf, owner) {
       }
       try {
         const j = JSON.parse(buf)
-        const b64 = j?.data?.[0]?.b64_json
-        if (j?.data?.[0] && typeof b64 === 'string' && b64.length > 0) {
-          j.data[0].cgw_image_size = imageFileInfo(b64, requestedSize)
-          if (j.data[0].cgw_image_size.format === 'png') {
-            try { j.data[0].cgw_image_alpha = alphaInfo(Buffer.from(b64, 'base64')) } catch {}
-          }
-          if (requestedBackground === 'transparent' && j.data[0].cgw_image_alpha && !j.data[0].cgw_image_alpha.hasTransparentBackground) j.data[0].cgw_warning = '已请求透明背景，但返回图未检测到有效透明背景，请检查原图。'
-          if (j.data[0].cgw_image_size.matchesRequested === false) pushLog('🖼 ' + j.data[0].cgw_image_size.message)
-          const name = saveGenImageB64(b64, owner || (keyId ? { keyId } : null), { prompt: generationRequest.prompt || '', revisedPrompt: j.data[0].revised_prompt || null, requested: generationRequest, actual: { model: IMAGE_MODEL, ...j.data[0].cgw_image_size }, edit: editContext })
-          if (name) {
-            // url 跟随请求的 Host：本机调用=127.0.0.1:4173（行为不变）；
-            // 局域网调用=http://<局域网IP>:4173/...，客户端浏览器可直接打开取图
-            const hostHeader = req.headers.host || `127.0.0.1:${LAUNCHER_PORT}`
-            j.data[0].url = `http://${hostHeader}/__gw/gen-images/${name}`
-            if (keyId) j.data[0].download_url = `http://${hostHeader}/v1/gen-images/${name}`
-            j.data[0].local_path = path.join(genImagesDir(), name)
-            pushLog('🖼 生成图片已落盘：' + name)
+        if (Array.isArray(j?.data)) {
+          const hostHeader = req.headers.host || `127.0.0.1:${LAUNCHER_PORT}`
+          for (const item of j.data) {
+            const b64 = item?.b64_json
+            if (typeof b64 !== 'string' || !b64) continue
+            item.cgw_image_size = imageFileInfo(b64, requestedSize)
+            if (item.cgw_image_size.format === 'png') {
+              try { item.cgw_image_alpha = alphaInfo(Buffer.from(b64, 'base64')) } catch {}
+            }
+            if (requestedBackground === 'transparent' && item.cgw_image_alpha && !item.cgw_image_alpha.hasTransparentBackground) item.cgw_warning = '已请求透明背景，但返回图未检测到有效透明背景，请检查原图。'
+            if (item.cgw_image_size.matchesRequested === false) pushLog('🖼 ' + item.cgw_image_size.message)
+            const saved = saveGenImageB64(b64, { ...owner, keyId, source: req.__cgwCaller?.source }, {
+              prompt: generationRequest.prompt || '', revisedPrompt: item.revised_prompt || null,
+              requested: generationRequest, actual: { model: IMAGE_MODEL, ...item.cgw_image_size }, edit: editContext
+            })
+            if (saved) {
+              item.url = `http://${hostHeader}/__gw/gen-images/${saved.name}`
+              if (keyId && saved.indexed) item.download_url = `http://${hostHeader}/v1/gen-images/${saved.name}`
+              item.local_path = path.join(genImagesDir(), saved.name)
+              pushLog('🖼 生成图片已落盘：' + saved.name)
+            }
+            if (!saved?.indexed) {
+              const warning = saved ? '主机已保存原图，但归属索引写入失败。' : '主机保存图片失败，请保留本次响应中的原图。'
+              item.cgw_warning = [item.cgw_warning, warning].filter(Boolean).join(' ')
+            }
           }
           buf = JSON.stringify(j)
         }
@@ -1869,22 +1877,19 @@ function saveGenImageB64(b64, owner, generation = null) {
     fs.mkdirSync(genImagesDir(), { recursive: true })
     const filePath = path.join(genImagesDir(), name)
     fs.writeFileSync(filePath, Buffer.from(b64, 'base64'))
-    {
-      // 顺手把 size / mtime 记进 index：列表接口的调用频率远高于生图，
-      // 在这里多花一次 stat（每张图一生一次）换掉列表时每张都 stat，非常划算。
-      const st = fs.statSync(filePath)
-      const idx = readImageIndex()
-      idx[name] = {
-        keyId: owner?.keyId ? String(owner.keyId) : null,
-        keyName: owner?.keyName || null,
-        generation,
-        createdAt: Date.now(),
-        size: st.size,
-        mtime: st.mtimeMs
-      }
-      writeImageIndex(idx)
+    // 在落盘时记录尺寸与时间，归属图库可以免去逐图 stat。
+    const st = fs.statSync(filePath)
+    const idx = readImageIndex()
+    idx[name] = {
+      keyId: owner?.keyId ? String(owner.keyId) : null,
+      keyName: owner?.keyName || null,
+      source: owner?.source || null,
+      generation,
+      createdAt: Date.now(),
+      size: st.size,
+      mtime: st.mtimeMs
     }
-    return name
+    return { name, indexed: writeImageIndex(idx) }
   } catch (e) {
     // 绝不能再静默：返回 null 会让上层以为「这次没有图」，用户看到的是
     // 生成成功但图库里什么都没有，且日志里一条线索都没有。

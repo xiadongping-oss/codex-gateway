@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { NO_OWNER, buildOwnerOptions, matchesOwner } from '../src/api/asset-owners.js'
+import { LOCAL_OWNER, NO_OWNER, buildOwnerOptions, matchesOwner } from '../src/api/asset-owners.js'
 
 const images = [
   { name: 'a.png', ownerKeyId: 'key_aaaa1111', ownerKeyName: 'lan' },
@@ -11,24 +11,35 @@ const images = [
   { name: 'e.png', ownerKeyId: null }
 ]
 
-test('owner options group by keyId, count images and keep a bucket for legacy unowned images', () => {
+test('owner options group by keyId and keep separate buckets for local and legacy unowned images', () => {
   const options = buildOwnerOptions(images)
-  assert.equal(options.length, 4)
-  assert.deepEqual(options.map(o => o.count), [2, 1, 1, 1])
+  assert.equal(options.length, 5)
+  assert.equal(options[0].id, LOCAL_OWNER)
+  assert.deepEqual(options.map(o => o.count), [0, 2, 1, 1, 1])
   const lan = options.find(o => o.id === 'key_aaaa1111')
   assert.equal(lan.label, 'lan · aaaa1111')
   assert.equal(options.find(o => o.id === 'key_bbbb2222').label, 'lan2 · bbbb2222')
   assert.equal(options.find(o => o.id === 'key_cccc3333').label, '已删除的 Key · cccc3333', 'Key 被删后仍可按 keyId 筛选')
   assert.equal(options.find(o => o.id === NO_OWNER).label, '无归属（旧图）')
-  assert.deepEqual(buildOwnerOptions([]), [])
+  assert.deepEqual(buildOwnerOptions([]), [{ id: LOCAL_OWNER, label: '本机', count: 0 }])
 })
 
-test('owner filter only matches the selected keyId; non-generated sources are never filtered out', () => {
+test('local requests group together even when the same Key is also used over LAN', () => {
   assert.equal(images.filter(i => matchesOwner(i, '')).length, 5, '空筛选显示全部')
   assert.deepEqual(images.filter(i => matchesOwner(i, 'key_aaaa1111')).map(i => i.name), ['a.png', 'b.png'])
   assert.deepEqual(images.filter(i => matchesOwner(i, 'key_bbbb2222')).map(i => i.name), ['c.png'])
   assert.deepEqual(images.filter(i => matchesOwner(i, NO_OWNER)).map(i => i.name), ['e.png'])
   assert.equal(matchesOwner({ name: 'local.png' }, 'key_aaaa1111'), false)
+  const local = [
+    { name: 'f.png', ownerSource: 'local', ownerKeyId: 'key_aaaa1111' },
+    { name: 'g.png', ownerSource: 'local', ownerKeyId: null }
+  ]
+  assert.deepEqual(buildOwnerOptions([...images, ...local]).find(o => o.id === LOCAL_OWNER), { id: LOCAL_OWNER, label: '本机', count: 2 })
+  for (const image of local) {
+    assert.equal(matchesOwner(image, LOCAL_OWNER), true)
+    assert.equal(matchesOwner(image, 'key_aaaa1111'), false)
+    assert.equal(matchesOwner(image, NO_OWNER), false)
+  }
 })
 
 test('generated list exposes ownership and the workspace page wires the filter', () => {

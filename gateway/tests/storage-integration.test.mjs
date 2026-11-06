@@ -103,15 +103,16 @@ test('managed 真实网关：模块写入在初始化后，图库/素材/下载/
     }).join('\n')
     const context = { fs, path, crypto, Buffer, console, writeJsonAtomic, imageFileInfo: () => ({format:'png'}), storagePaths: paths }
     vm.runInNewContext(funcs + '\nthis.saved=saveGenImageB64', context)
-    const name = context.saved(PNG.toString('base64'), { keyId: 'fixture-key', keyName: 'fixture' })
+    const { name, indexed } = context.saved(PNG.toString('base64'), { keyId: 'fixture-key', keyName: 'fixture', source: 'lan' })
     assert.ok(name)
+    assert.equal(indexed, true)
     assert.deepEqual(fs.readFileSync(path.join(paths.generated, name)), PNG)
     assert.equal(JSON.parse(fs.readFileSync(path.join(paths.generated, 'index.json')))[name].keyId, 'fixture-key')
 
     const images = await (await request('/__gw/gen-images')).json()
     assert.ok(images.images.some((x) => x.name === name))
     const assets = await (await request('/__gw/assets?src=generated')).json()
-    assert.ok(assets.images.some((x) => x.name === name))
+    assert.ok(assets.images.some((x) => x.name === name && x.ownerSource === 'lan'))
     assert.deepEqual(Buffer.from(await (await request(`/__gw/gen-images/${name}`)).arrayBuffer()), PNG)
     assert.deepEqual(Buffer.from(await (await request(`/__gw/assets/file?src=generated&n=${name}`)).arrayBuffer()), PNG)
 

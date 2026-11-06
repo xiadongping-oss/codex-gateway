@@ -317,7 +317,8 @@ function listGenerated() {
       out.push({
         name, size: st.size, mtime: st.mtimeMs, url: assetFileUrl('generated', name),
         ownerKeyId: meta.keyId ? String(meta.keyId) : null,
-        ownerKeyName: meta.keyName || null
+        ownerKeyName: meta.keyName || null,
+        ownerSource: ['local', 'lan'].includes(meta.source) ? meta.source : null
       })
     } catch {}
   }

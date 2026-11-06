@@ -93,7 +93,8 @@ test('real gateway HTTP and both stdio MCP clients report returned size; bridge 
         const body = JSON.parse(Buffer.concat(parts)); bridgeRequests.push(body)
         const result = await generateImage(cfg, upstream, ImageRequest.parse(body))
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ data: [{ b64_json: result.b64, revised_prompt: 'offline revised prompt' }] }))
+        const item = { b64_json: result.b64, revised_prompt: 'offline revised prompt' }
+        res.end(JSON.stringify({ data: body.prompt === 'multiple results fixture' ? [item, item, item] : [item] }))
       } catch (e) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: e.message } })) }
     })
     harness.env.BRIDGE_PORT = String(await listen(bridge))
@@ -152,6 +153,23 @@ test('real gateway HTTP and both stdio MCP clients report returned size; bridge 
     for (const file of [path.join(harness.sandbox,'mcp-server.mjs'),path.join(harness.sandbox,'lan-kit/mcp-server.mjs')]) {
       const result=await stdioCall(file,{...harness.env,CGW_BASE:harness.base,CGW_API_KEY:key},edit)
       assert.notEqual(result.result.isError,true);assert.equal(wire.at(-1).action,'edit')
+    }
+    const batch = await (await request('/v1/images/generations', { prompt: 'multiple results fixture' })).json()
+    assert.equal(batch.data.length, 3)
+    const names = new Set(batch.data.map(result => path.basename(result.local_path)))
+    assert.equal(names.size, 3)
+    const assets = await fetch(harness.base + '/__gw/assets?src=generated', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) })
+    const generated = (await assets.json()).images.filter(asset => names.has(asset.name))
+    assert.equal(generated.length, 3)
+    for (const asset of generated) {
+      assert.equal(asset.ownerSource, 'local')
+      assert.equal(asset.ownerKeyName, 'offline-size-test')
+    }
+    for (const result of batch.data) {
+      assert.deepEqual(fs.readFileSync(result.local_path), original)
+      const download = await fetch(result.download_url, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(5000) })
+      assert.equal(download.status, 200)
+      await download.arrayBuffer()
     }
   } finally {
     await harness.close()

@@ -103,9 +103,11 @@ async function loadSources() {
 }
 
 let loadSequence = 0
+let loading = false
 const loadError = ref('')
 async function load() {
   const sequence = ++loadSequence
+  loading = true
   loadError.value = ''
   try {
     await loadSources()
@@ -117,7 +119,12 @@ async function load() {
     if (viewingName) { const index = list.findIndex(img => img.name === viewingName); if (index >= 0) viewerIdx.value = index; else viewerOpen.value = false }
     if (source === 'generated') lastGenKeys = genFingerprint(list)
   } catch (e) { if (sequence === loadSequence) loadError.value = '加载失败：' + e.message }
-  finally { if (sequence === loadSequence) loaded.value = true }
+  finally {
+    if (sequence === loadSequence) {
+      loaded.value = true
+      loading = false
+    }
+  }
 }
 onMounted(load)
 
@@ -246,16 +253,25 @@ async function clearSource() {
 // ---------- 生成图库轮询（外部生图落盘后自动出现，无需手动刷新） ----------
 const newGenCount = ref(0)
 let pollTimer = null
-let lastGenKeys = '' // 已知生成图的 name|size|mtime 指纹集合
+let pollInProgress = false
+let lastGenKeys = ''
 
 function genFingerprint(list) {
-  return list.map((i) => `${i.name}|${i.size}|${i.mtime || i.at || 0}|${i.title}|${i.favorite}|${JSON.stringify([i.tags, i.collections, i.notes])}`).join('\n')
+  return list.map(i => `${i.name}|${JSON.stringify([
+    i.size, i.mtime || i.at, i.title, i.favorite, i.tags, i.collections, i.notes,
+    i.ownerSource, i.ownerKeyId, i.ownerKeyName
+  ])}`).join('\n')
 }
 
 async function pollTick() {
-  if (document.hidden) return
-  const list = await api.getAssets('generated').catch(() => null)
-  if (!list) return
+  if (document.hidden || loading || pollInProgress) return
+  const sequence = loadSequence
+  pollInProgress = true
+  let list
+  try { list = await api.getAssets('generated').catch(() => null) }
+  finally { pollInProgress = false }
+  if (!list || sequence !== loadSequence) return
+  if (active.value === 'generated') loadError.value = ''
   const fp = genFingerprint(list)
   if (fp === lastGenKeys) return
   const known = new Set(lastGenKeys ? lastGenKeys.split('\n').map((l) => l.split('|')[0]) : [])
@@ -276,10 +292,12 @@ async function pollTick() {
 
 onMounted(() => {
   pollTimer = setInterval(pollTick, 4000)
+  document.addEventListener('visibilitychange', pollTick)
   window.addEventListener('keydown', onViewerKey)
 })
 onBeforeUnmount(() => {
   clearInterval(pollTimer)
+  document.removeEventListener('visibilitychange', pollTick)
   window.removeEventListener('keydown', onViewerKey)
 })
 
@@ -287,11 +305,39 @@ onBeforeUnmount(() => {
 const viewerOpen = ref(false)
 const viewerIdx = ref(0)
 const viewerImg = computed(() => assets.value[viewerIdx.value] || null)
+const viewerPicture = ref(null)
+const viewerViewport = ref(null)
+const zoom = ref(100)
+const fittedSize = ref(null)
+const zoomStyle = computed(() => {
+  if (!fittedSize.value || zoom.value === 100) return null
+  return {
+    width: `${fittedSize.value.width * zoom.value / 100}px`,
+    height: `${fittedSize.value.height * zoom.value / 100}px`
+  }
+})
+
+function resetZoom() {
+  zoom.value = 100
+  fittedSize.value = null
+  if (viewerViewport.value) viewerViewport.value.scrollTo(0, 0)
+}
+
+function setZoom(value) {
+  const image = viewerPicture.value
+  if (!image?.naturalWidth) return
+  if (value <= 100) return resetZoom()
+  if (!fittedSize.value) fittedSize.value = { width: image.clientWidth, height: image.clientHeight }
+  zoom.value = Math.min(400, value)
+}
+
+watch(() => viewerImg.value?.id, resetZoom)
 
 function openViewer(img) {
   const idx = assets.value.findIndex((x) => x.name === img.name)
   if (idx < 0) return
   viewerIdx.value = idx
+  resetZoom()
   viewerOpen.value = true
 }
 function closeViewer() { viewerOpen.value = false }
@@ -578,7 +624,8 @@ const emptyText = computed(() => {
           <span class="sub mono">
             <template v-if="img.generation?.actual?.actual">{{ img.generation.actual.actual }} · </template>{{ fmtSize(img.size) }} · {{ fmtDate(img.mtime || img.at) }}
             <template v-if="img.remote"> · {{ TYPE_META[sources.find((s) => s.id === active)?.type]?.tag }}</template>
-            <template v-if="active === 'generated' && img.ownerKeyId"> · 来源：{{ img.ownerKeyName || '已删除的 Key' }}（{{ img.ownerKeyId.slice(-8) }}）</template>
+            <template v-if="active === 'generated' && img.ownerSource === 'local'"> · 来源：本机</template>
+            <template v-else-if="active === 'generated' && img.ownerKeyId"> · 来源：{{ img.ownerKeyName || '已删除的 Key' }}（{{ img.ownerKeyId.slice(-8) }}）</template>
           </span>
         </div>
       </div>
@@ -682,15 +729,15 @@ const emptyText = computed(() => {
       </div>
     </div>
 
-    <!-- 图片查看器（页面内 Lightbox，Esc 关闭 / ←→ 切换；两侧空白点击同样翻页） -->
-    <div class="lightbox" v-if="viewerOpen && viewerImg" @wheel.self.prevent role="dialog" aria-modal="true" aria-label="图片预览" v-modal-focus="closeViewer">
-      <button class="lb-close" title="关闭 (Esc)" @click="closeViewer">✕</button>
-      <button v-if="filteredAssets.length > 1" class="lb-nav prev" title="上一张 (←)" @click="viewerStep(-1)">
+    <div class="lightbox" v-if="viewerOpen && viewerImg" @click.self="closeViewer" @wheel.self.prevent role="dialog" aria-modal="true" aria-label="图片预览" v-modal-focus="closeViewer">
+      <button class="lb-control lb-close" aria-label="关闭" title="关闭 (Esc)" @click="closeViewer">✕</button>
+      <button v-if="filteredAssets.length > 1" class="lb-control lb-nav prev" aria-label="上一张" title="上一张 (←)" @click="viewerStep(-1)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
       </button>
-      <div class="lb-zone" :class="{ multi: filteredAssets.length > 1 }" title="上一张" @click="viewerStep(-1)"></div>
       <div class="lb-stage">
-        <img :src="thumbUrl(viewerImg)" :alt="viewerImg.name" @dragstart.prevent />
+        <div ref="viewerViewport" class="lb-viewport" @wheel.ctrl.prevent="setZoom(zoom + (Math.sign(-$event.deltaY) * 25))">
+          <img ref="viewerPicture" :src="thumbUrl(viewerImg)" :alt="viewerImg.name" :class="{ zoomed: zoom > 100 }" :style="zoomStyle" @dragstart.prevent />
+        </div>
         <details class="generation-info">
           <summary>素材信息与生成记录</summary>
           <div class="generation-body">
@@ -713,6 +760,11 @@ const emptyText = computed(() => {
             <span class="lb-sub mono">{{ fmtSize(viewerImg.size) }} · {{ fmtDate(viewerImg.mtime || viewerImg.at) }}<template v-if="viewerImg.remote"> · 云端</template> · {{ Math.max(1, filteredAssets.findIndex(img => img.id === viewerImg.id) + 1) }} / {{ filteredAssets.length }}</span>
           </div>
           <div class="lb-actions">
+            <div class="lb-zoom" role="group" aria-label="图片缩放">
+              <button type="button" class="act" :disabled="zoom === 100" aria-label="缩小" title="缩小" @click="setZoom(zoom - 25)">−</button>
+              <button type="button" class="act zoom-level" :aria-label="`重置缩放，当前 ${zoom}%`" title="重置缩放" @click="resetZoom">{{ zoom }}%</button>
+              <button type="button" class="act" :disabled="zoom === 400" aria-label="放大" title="放大" @click="setZoom(zoom + 25)">+</button>
+            </div>
             <template v-if="!viewerImg.remote">
               <button class="act primary" :class="{ done: copiedName === viewerImg.name }" @click="copyImg(viewerImg)" :disabled="busyCopy === viewerImg.name" title="复制为静态图片；保留原始格式和元数据请下载原文件">
                 {{ busyCopy === viewerImg.name ? '复制中…' : copiedName === viewerImg.name ? '✓ 已复制' : copyLabel(viewerImg) }}
@@ -737,8 +789,7 @@ const emptyText = computed(() => {
           </div>
         </div>
       </div>
-      <div class="lb-zone" :class="{ multi: filteredAssets.length > 1 }" title="下一张" @click="viewerStep(1)"></div>
-      <button v-if="filteredAssets.length > 1" class="lb-nav next" title="下一张 (→)" @click="viewerStep(1)">
+      <button v-if="filteredAssets.length > 1" class="lb-control lb-nav next" aria-label="下一张" title="下一张 (→)" @click="viewerStep(1)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
       </button>
     </div>
@@ -914,54 +965,59 @@ img[role="button"]:focus-visible { outline: 3px solid var(--primary); outline-of
   background: rgba(2, 6, 10, 0.86); backdrop-filter: blur(6px);
   display: flex; align-items: center; justify-content: center;
   padding: 30px 20px;
+  cursor: zoom-out;
 }
-/* 两侧空白热区：点击即翻页，不再误触退出 */
-.lb-zone { flex: 1; align-self: stretch; cursor: default; }
-.lb-zone.multi { cursor: pointer; }
-.lb-zone.multi:hover { background: rgba(139,107,214, 0.05); }
+.lb-control {
+  position: absolute; z-index: 1;
+  display: grid; place-items: center;
+  border: 0; border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12); color: #f5f3ff; cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.lb-control:hover { background: rgba(255, 255, 255, 0.24); }
+.lb-control:focus-visible, .lb-actions .act:focus-visible { outline: 2px solid var(--emerald); outline-offset: 2px; }
 .lb-close {
-  position: absolute; top: 16px; right: 18px;
-  width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--border-strong);
-  background: rgba(255, 255, 255, 0.06); color: var(--text-2); font-size: 14px; cursor: pointer;
-  transition: all 0.15s ease;
+  top: 12px; right: 16px;
+  width: 36px; height: 36px; font-size: 15px;
 }
-.lb-close:hover { color: var(--text); background: rgba(255, 255, 255, 0.14); }
-/* 翻页按钮：固定吸附屏幕左右两侧、垂直居中，热区加大 —— 连点不用重新瞄准，也碰不到遮罩 */
 .lb-nav {
-  position: absolute; top: 50%; transform: translateY(-50%); z-index: 72;
-  width: 52px; height: 72px; border-radius: 12px; border: 1px solid var(--border-strong);
-  background: rgba(255, 255, 255, 0.08); color: var(--text-2); cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: all 0.15s ease;
+  top: 50%; transform: translateY(-50%);
+  width: 42px; height: 42px;
 }
-.lb-nav.prev { left: 22px; }
-.lb-nav.next { right: 22px; }
-.lb-nav:hover { color: var(--text); background: rgba(255, 255, 255, 0.16); border-color: rgba(139,107,214, 0.5); }
+.lb-nav.prev { left: clamp(8px, 1vw, 20px); }
+.lb-nav.next { right: clamp(8px, 1vw, 20px); }
 .lb-nav:active { transform: translateY(-50%) scale(0.94); }
 .lb-nav svg { width: 20px; height: 20px; }
 .lb-stage {
-  min-width: 0; max-width: min(1100px, calc(100vw - 180px));
-  max-height: calc(100vh - 60px);
+  --viewer-width: min(1100px, calc(100vw - clamp(104px, 12vw, 180px)));
+  min-width: min(480px, var(--viewer-width)); max-width: var(--viewer-width);
+  max-height: calc(100dvh - 60px);
   display: flex; flex-direction: column; gap: 0;
-  background: var(--card); border: 1px solid var(--border-strong); border-radius: 14px;
-  overflow: hidden;
+  background: var(--card); border-radius: 14px; box-shadow: 0 18px 70px rgba(0,0,0,.38);
+  overflow: hidden; cursor: default;
 }
-.lb-stage img {
-  display: block; min-height: 0; flex: 1;
-  max-width: 100%; max-height: calc(100vh - 170px);
-  object-fit: contain; margin: 0 auto; background: #0b0d10;
+.lb-viewport {
+  min-height: 0; overflow: auto; overscroll-behavior: contain; background: #0b0d10;
 }
+.lb-viewport img {
+  display: block; max-width: 100%; max-height: calc(100dvh - 180px);
+  object-fit: contain; margin-inline: auto;
+}
+.lb-viewport img.zoomed { max-width: none; max-height: none; }
 .lb-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
-  padding: 10px 14px; border-top: 1px solid var(--border);
+  padding: 10px 14px; border-top: 1px solid var(--border); flex-shrink: 0;
   background: var(--card);
 }
 .lb-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .lb-name { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
 .lb-sub { font-size: 10.5px; color: var(--text-3); }
 .lb-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.lb-actions .act { background: rgba(255, 255, 255, 0.08); color: var(--text-2); border: 1px solid var(--border); }
-.lb-actions .act:hover { background: rgba(255, 255, 255, 0.16); color: var(--text); }
+.lb-zoom { display: flex; align-items: center; gap: 2px; padding: 2px; border-radius: 8px; background: var(--bg); }
+.lb-zoom .zoom-level { min-width: 48px; font-variant-numeric: tabular-nums; }
+.lb-actions .act { background: var(--bg); color: var(--text-2); border: 0; }
+.lb-actions .act:hover { background: var(--border); color: var(--text); }
+.lb-actions .act:disabled { opacity: .45; cursor: default; }
 .lb-actions .act.primary { background: var(--emerald); color: var(--on-primary); font-weight: 550; border-color: transparent; }
 .lb-actions .act.primary:hover { background: var(--emerald-light); }
 .lb-actions .act.primary.done { background: #7053c1; color: #fff; }
