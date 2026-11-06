@@ -145,8 +145,24 @@
   var verification = 0, pendingVerification = null
   var selectionVersion = 0, connectionRequest = null
   var localPage = CGWClientSetup.isLoopbackBase(location.origin)
+  // 由 launcher 在伺服 /setup 时替换为网关本机规范地址（管理端口）。静态打开源码时保留占位符，
+  // 此时不做阻断，避免旧版本/离线阅读 HTML 被误伤。共享端口的回环页也是同一个 handler 伺服，
+  // 注入值仍是管理端口，因此可用端口比对识别「127.0.0.1 + 共享端口」这种混血地址。
+  var servedLocalOrigin = '__CGW_LOCAL_ORIGIN__'
   $('hostInfo').textContent = host
   $('lnkGallery').hidden = true
+
+  function canonicalLocalOrigin() {
+    if (!servedLocalOrigin || servedLocalOrigin.indexOf('__') === 0) return null
+    try {
+      var parsed = new URL(servedLocalOrigin)
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed : null
+    } catch (e) { return null }
+  }
+  function defaultPort(protocol) { return protocol === 'https:' ? '443' : '80' }
+  function sharedPortLocalHint(canonical) {
+    return '当前打开的是共享端口的回环页（' + location.host + '），不能生成「网关本机用户」配置，也不能把此页的 Prompt 转发给其他电脑。给网关这台电脑配置请打开 ' + canonical.origin + '/setup；给局域网其他电脑配置请选择「局域网用户」并使用共享地址。'
+  }
 
   function buildAgentPrompt(secret, update, switchKey) {
     return CGWClientSetup.buildClientPrompt({base:connectionBase,target:target,key:secret,update:!!update,switchKey:!!switchKey})
@@ -200,6 +216,15 @@
     if(value==='local' && !localPage) {
       $('connectionHint').textContent='本机用户指在网关主机上运行的 Agent。请在网关电脑打开本机接入页；当前共享地址应选择“局域网用户”。'
       return
+    }
+    if(value==='local') {
+      var canonical = canonicalLocalOrigin()
+      if(canonical && (canonical.port || defaultPort(canonical.protocol)) !== (location.port || defaultPort(location.protocol))) {
+        $('connectionHint').textContent = sharedPortLocalHint(canonical)
+        $('btnVerify').disabled = true
+        $('lnkGallery').hidden = true
+        return
+      }
     }
     setBase(location.origin)
     $('connectionHint').textContent = value==='local'

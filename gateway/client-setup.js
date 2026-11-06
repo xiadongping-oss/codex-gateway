@@ -4,6 +4,13 @@
   function isLoopbackBase(base) {
     return /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$/i.test(new URL(base).hostname)
   }
+  // 回环地址生成的「更新 / 换 Key」Prompt 一旦转发给别的电脑，Agent 会因为找不到匹配连接而卡住，
+  // 或者更糟——按端口相同去猜一个本机连接。把范围限制写进 Prompt 正文，让接收方第一时间停住并要求重发。
+  function scopeLine(base) {
+    return isLoopbackBase(new URL(base).origin)
+      ? '范围限制：目标网关是 127.0.0.1 / localhost，本 Prompt 只对生成它的网关本机有效，禁止转发给其他设备。其他电脑必须由网关主机在「客户端接入」选择“局域网用户”、使用共享地址重新生成；仅端口相同但主机地址不同的连接不算匹配。'
+      : '范围限制：只处理地址与上述目标网关完全一致的现有连接；127.0.0.1 / localhost 永远指执行请求的那台电脑，仅端口相同不算匹配。'
+  }
   function buildMcpConfig(options) {
     var url = new URL(options.base)
     if (!['http:','https:'].includes(url.protocol) || url.username || url.password || ['0.0.0.0','[::]'].includes(url.hostname)) throw new Error('请使用可访问的网关地址，不能使用监听通配地址或带凭据的 URL。')
@@ -16,6 +23,7 @@
       '请更新我当前 Agent 客户端已配置的 Codex Gateway MCP 和生图 Skill，并实际验证。',
       '本次仅更新 Skill/MCP，保留现有凭据。本 Prompt 不携带新 API Key，不授权更换用户身份。',
       '网关地址：' + base,
+      scopeLine(base),
       '更新清单：' + base + '/client-assets.json',
       '生图 Skill 下载地址：' + base + '/lan-kit/skills/codex-gateway-image/SKILL.md',
       '素材页：' + base + '/gallery',
@@ -33,9 +41,11 @@
     return [
       '请为我当前 Agent 客户端明确更换 Codex Gateway 的 API Key；这不是首次安装，也不是普通 Skill/MCP 更新。',
       '目标网关：' + base,
+      scopeLine(base),
+      '指定连接器：' + Object.keys(config.mcpServers)[0] + '（客户端若使用其他名称，以现有名称为准并保留，按地址匹配）。',
       '以下配置中的 Authorization 是我明确选择的新 API Key，仅用于本次更换：',
       '```json', JSON.stringify(config, null, 2), '```',
-      '1. 识别实际客户端与已有连接器，按目标网关地址匹配。多个匹配连接时让用户指定；没有匹配连接时停止说明，不能另行安装或覆盖其他连接。',
+      '1. 先核对范围限制：若目标网关是 127.0.0.1 / localhost 而 Agent 不在网关这台电脑上，立即停止并要求用共享地址重新生成，不得按端口猜测或改写地址。再识别实际客户端与已有连接器，按目标网关地址（协议、主机、端口）完全一致匹配；多个匹配连接时让用户指定；没有匹配连接时停止说明，不能另行安装或覆盖其他连接。',
       '2. 修改前备份。保留连接器名称、地址、设备名、其他请求头、其他 MCP、Skill 和模型设置，只替换指定连接器的凭据。HTTP 替换 Authorization；旧 stdio 替换 env.CGW_API_KEY，不顺带迁移传输方式。',
       '3. 写入前用新 Key 只读检查 ' + base + '/v1/gen-images/me，确认新 keyId 和 keyName；旧 Key 可用时也检查原身份并说明变化。若新 Key 无效则停止且保留旧配置。不要把明文 Key 写入 Skill、URL、日志、最终回复或 cgw-client-assets.json。',
       '4. 换 Key 后图库切换到新 keyId 范围；旧图不会自动迁移，也不删除、禁用原 Key 或修改图片归属。同一 Key 的不同名称仍是同一身份。',

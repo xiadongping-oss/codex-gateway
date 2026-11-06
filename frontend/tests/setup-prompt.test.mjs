@@ -6,7 +6,7 @@ import vm from 'node:vm'
 const html=fs.readFileSync(new URL('../../gateway/setup.html',import.meta.url),'utf8')
 const script=html.match(/<script>([\s\S]*?)<\/script>/)[1]
 const KEY_A='cgw-fixture-A-000000',KEY_B='cgw-fixture-B-000000'
-function page(origin,{secure=true,fetcher,choose=true}={}){
+function page(origin,{secure=true,fetcher,choose=true,localOrigin}={}){
   const nodes=new Map(),copied=[],requests=[],appended=[]
   const node=id=>{
     if(!nodes.has(id))nodes.set(id,{id,textContent:'',value:'',hidden:false,disabled:false,style:{},listeners:{},children:[],setAttribute(name,value){this[name]=value},replaceChildren(){this.children=[]},appendChild(child){this.children.push(child)},change(value){this.value=value;return this.listeners.change?.call(this)},classList:{add(){},remove(){}},focus(){},select(){},addEventListener(name,fn){this.listeners[name]=fn},click(){return this.listeners.click?.()}})
@@ -16,7 +16,8 @@ function page(origin,{secure=true,fetcher,choose=true}={}){
   const document={getElementById:node,createElement:tag=>node(tag+'-'+(++created)),body:{appendChild(n){appended.push(n)},removeChild(){}},execCommand(){copied.push(appended.at(-1).value);return true}}
   const context=vm.createContext({URL,document,location:new URL(origin),window:{isSecureContext:secure},navigator:secure?{clipboard:{writeText(text){copied.push(text);return Promise.resolve()}}}:{},AbortController,setTimeout:()=>1,clearTimeout(){},fetch(url,options){requests.push({url,options});return fetcher?fetcher(url,options):Promise.resolve({ok:true,status:200,json:async()=>({ok:true,keyName:'Fixture',images:0,bytes:0})})}})
   vm.runInContext(fs.readFileSync(new URL('../../gateway/client-setup.js',import.meta.url),'utf8'),context)
-  vm.runInContext(script,context)
+  // 模拟 launcher 在伺服 /setup 时把锚点替换为网关本机规范地址；不给 localOrigin 时保留源码占位符。
+  vm.runInContext(localOrigin ? script.replace('__CGW_LOCAL_ORIGIN__',localOrigin) : script,context)
   if(choose)node(new URL(origin).hostname==='127.0.0.1'?'targetLocal':'targetRemote').click()
   return {node,copied,requests,async verify(key){node('keyInput').value=key;node('btnVerify').click();await settle()}}
 }
@@ -76,7 +77,7 @@ test('update Prompt preserves credentials and user settings, verifies hashes, re
   const p=page('http://192.0.2.5:5199')
   await p.verify(KEY_A);p.node('btnCopyUpdatePrompt').click()
   const prompt=p.copied[0]
-  for(const text of ['请更新','/client-assets.json','SHA-256','保留现有凭据','tools/list','不重复新增','当前会话已重新加载','Skill 发现目录之外','skills/gpt-image/SKILL.md','GPT 图片生成'])assert.ok(prompt.includes(text),text)
+  for(const text of ['请更新','范围限制','仅端口相同不算匹配','/client-assets.json','SHA-256','保留现有凭据','tools/list','不重复新增','当前会话已重新加载','Skill 发现目录之外','skills/gpt-image/SKILL.md','GPT 图片生成'])assert.ok(prompt.includes(text),text)
   assert.ok(!prompt.includes(KEY_A))
   assert.ok(!prompt.includes('Authorization":'))
   assert.ok(!p.node('agentPromptPreview').value.includes(KEY_A))
@@ -137,4 +138,53 @@ test('public setup separates secret-free updates from explicit Key replacement',
   p.node('btnCopySwitchKeyPrompt').click();const replacement=p.copied.at(-1)
   assert.match(replacement,/Bearer cgw-fixture-B/);assert.ok(!replacement.includes(KEY_A))
   assert.match(replacement,/旧图不会自动迁移/);assert.match(replacement,/当前会话尚未切换/)
+  assert.match(replacement,/范围限制/);assert.match(replacement,/仅端口相同不算匹配/)
+  assert.match(replacement,/指定连接器：codex-gateway-lan/)
+  assert.doesNotMatch(replacement,/禁止转发给其他设备/)
+})
+
+test('loopback switch-key Prompt bans forwarding and requires a full address match',async()=>{
+  const p=page('http://127.0.0.1:4173')
+  await p.verify(KEY_A);p.node('btnCopySwitchKeyPrompt').click()
+  const prompt=p.copied[0]
+  assert.match(prompt,/目标网关：http:\/\/127\.0\.0\.1:4173/)
+  assert.match(prompt,/禁止转发给其他设备/)
+  assert.match(prompt,/指定连接器：codex-gateway/)
+  assert.match(prompt,/不得按端口猜测或改写地址/)
+  assert.match(prompt,/仅端口相同但主机地址不同的连接不算匹配/)
+})
+
+test('loopback update Prompt also bans forwarding without embedding a Key',async()=>{
+  const p=page('http://127.0.0.1:4173')
+  await p.verify(KEY_A);p.node('btnCopyUpdatePrompt').click()
+  assert.match(p.copied[0],/禁止转发给其他设备/)
+  assert.ok(!p.copied[0].includes(KEY_A))
+})
+
+test('shared-port loopback setup refuses local user mode and points at the canonical local page',async()=>{
+  const p=page('http://127.0.0.1:4174',{localOrigin:'http://127.0.0.1:4173'})
+  assert.match(p.node('connectionHint').textContent,/共享端口的回环页/)
+  assert.match(p.node('connectionHint').textContent,/http:\/\/127\.0\.0\.1:4173\/setup/)
+  assert.equal(p.node('btnVerify').disabled,true)
+  await p.verify(KEY_A);p.node('btnCopyAgentPrompt').click();p.node('btnCopySwitchKeyPrompt').click()
+  assert.equal(p.requests.length,0,'没有选定有效目标前不能验证 Key')
+  assert.equal(p.copied.length,0)
+  assert.equal(p.node('mcpJson').textContent,'')
+})
+
+test('blocked shared-port page can still switch to a LAN user and generate a shared-address switch prompt',async()=>{
+  const p=page('http://127.0.0.1:4174',{localOrigin:'http://127.0.0.1:4173',fetcher:url=>Promise.resolve({ok:true,status:200,json:async()=>url==='/client-connection.json'?{sharingEnabled:true,sharedOrigins:[{origin:'http://192.0.2.5:5199',preferred:true}]}:{ok:true,keyName:'Fixture',images:0,bytes:0}})})
+  p.node('targetRemote').click();await settle()
+  assert.equal(p.node('sharedBase').value,'http://192.0.2.5:5199')
+  await p.verify(KEY_B);p.node('btnCopySwitchKeyPrompt').click()
+  const prompt=p.copied.at(-1)
+  assert.match(prompt,/目标网关：http:\/\/192\.0\.2\.5:5199/)
+  assert.match(prompt,/指定连接器：codex-gateway-lan/)
+  assert.doesNotMatch(prompt,/禁止转发给其他设备/)
+})
+
+test('canonical local page still allows local mode when the injected local origin matches',async()=>{
+  const p=page('http://127.0.0.1:4173',{localOrigin:'http://127.0.0.1:4173'})
+  await p.verify(KEY_A);p.node('btnCopyAgentPrompt').click()
+  assert.equal(JSON.parse(p.copied[0].match(/```json\n([\s\S]*?)\n```/)[1]).mcpServers['codex-gateway'].url,'http://127.0.0.1:4173/mcp')
 })

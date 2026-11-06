@@ -210,6 +210,15 @@ test('契约：EMBEDDED_HOST 注入锚点仍存在且格式未变', () => {
   const line = src.split('\n').find((l) => l.includes('EMBEDDED_HOST ='))
   assert.equal(line.trim(), "const EMBEDDED_HOST = ''")
 })
+test('契约：/setup 本机地址注入锚点在页面与 launcher 两侧逐字符一致', () => {
+  const anchor = '__CGW_LOCAL_ORIGIN__'
+  const page = fs.readFileSync(path.join(REPO, 'gateway', 'setup.html'), 'utf8')
+  const launcher = fs.readFileSync(path.join(REPO, 'gateway', 'launcher.mjs'), 'utf8')
+  assert.ok(page.includes("var servedLocalOrigin = '" + anchor + "'"), 'setup.html 的占位符被改动，注入会静默失效')
+  assert.ok(launcher.includes("const SETUP_LOCAL_ORIGIN_ANCHOR = '" + anchor + "'"), 'launcher 的锚点必须与页面一致')
+  assert.match(launcher, /html\.replace\(SETUP_LOCAL_ORIGIN_ANCHOR, `http:\/\/127\.0\.0\.1:\$\{LAUNCHER_PORT\}`\)/)
+})
+
 test('网页下载的脚本保留共享端口，显式 --port 仍可覆盖',()=>{
   const home=tmpdir(),script=path.join(home,'downloaded-client.mjs')
   const source=fs.readFileSync(SCRIPT,'utf8').replace("const EMBEDDED_HOST = ''",`const EMBEDDED_HOST = '${HOST}'`).replace("const EMBEDDED_PORT = ''","const EMBEDDED_PORT = '4174'")

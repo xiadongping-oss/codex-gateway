@@ -2351,8 +2351,17 @@ async function handleHttpRequest(req, res) {
         res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
         return res.end('setup.html 缺失（应位于 gateway/setup.html）')
       }
+      // 注入网关本机规范地址。共享端口的回环页也走这个 handler，注入值仍是管理端口，
+      // 页面据此识别「127.0.0.1 + 共享端口」并拒绝生成会被误转发的本机配置。
+      // 与 lan-kit 的 EMBEDDED_HOST 一样：锚点失配必须显式 500，不能静默降级。
+      const SETUP_LOCAL_ORIGIN_ANCHOR = '__CGW_LOCAL_ORIGIN__'
+      const html = buf.toString('utf8')
+      if (!html.includes(SETUP_LOCAL_ORIGIN_ANCHOR)) {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache' })
+        return res.end('setup.html 缺少本机地址注入锚点')
+      }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' })
-      res.end(buf)
+      res.end(html.replace(SETUP_LOCAL_ORIGIN_ANCHOR, `http://127.0.0.1:${LAUNCHER_PORT}`))
     })
     return
   }

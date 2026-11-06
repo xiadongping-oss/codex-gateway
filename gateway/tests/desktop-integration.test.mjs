@@ -179,7 +179,11 @@ test('desktop LAN: live management, authentication, rollback, persistence and sh
   for(const route of ['/setup','/gallery']) {
     const page=await fetch(origin+route);assert.equal(page.status,200,route)
     assert.match(page.headers.get('content-type'),/text\/html/)
-    assert.match(await page.text(),/API Key/)
+    const body=await page.text();assert.match(body,/API Key/)
+    if(route==='/setup'){
+      assert.ok(!body.includes('__CGW_LOCAL_ORIGIN__'),'共享端口的 /setup 必须注入本机规范地址')
+      assert.ok(body.includes(`servedLocalOrigin = 'http://127.0.0.1:${ready.port}'`),'注入值必须是管理端口，不能是共享端口')
+    }
     assert.equal((await fetch(origin+route,{method:'POST'})).status,403)
   }
   const client=await fetch(origin+`/lan-kit/setup-client.mjs?host=192.0.2.1&port=${port}`)
