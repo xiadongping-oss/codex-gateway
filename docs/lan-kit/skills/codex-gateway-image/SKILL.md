@@ -2,7 +2,7 @@
 name: gpt-image
 display_name_zh: GPT 图片生成
 display_name_en: GPT Image
-description: 用户要求通过 Codex 网关生成图片、透明底出图、参考图重绘、蒙版编辑或扩图时，调用已配置的 MCP generate_image；支持本机与局域网，每次生成成功后打开按 API Key 隔离的素材页。仅安装或验证连接时不生成图片。
+description: 用户要求生成/画/绘制图片，或要多角度、多视角、系列图、变体、换风格、参考图重绘、透明底、蒙版编辑、扩图时，必须调用已配置的 MCP generate_image 并等到工具返回结果；禁止只描述方案、列计划或声称「已生成」。当前模型没有原生生图能力时一律走本技能，无需用户点名网关或 Codex。支持本机与局域网网关，成功后打开按 API Key 隔离的 /gallery 素材页。仅安装、连通检查或查看图库时不生成图片。
 ---
 
 # GPT 图片生成

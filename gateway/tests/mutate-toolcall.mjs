@@ -38,7 +38,7 @@ const MUTANTS = [
   {
     id: 'MT2',
     desc: '无条件追加 image_generation（调用方已给时变成两个，上游拒绝整批工具）',
-    from: "    if (!hasImage) out.push({ type: 'image_generation' })",
+    from: "    if (!hasImage && !hasFunction) out.push({ type: 'image_generation' })",
     to: "    out.push({ type: 'image_generation' })"
   },
   {
@@ -214,6 +214,12 @@ const MUTANTS = [
     desc: '优先级反了：嵌套 reasoning.effort 覆盖顶层 reasoning_effort（调用方意图被吞）',
     from: '  const raw = body.reasoning_effort !== undefined ? body.reasoning_effort : nested ? nested.effort : undefined',
     to: '  const raw = nested ? nested.effort : body.reasoning_effort'
+  },
+  {
+    id: 'MT32',
+    desc: '有 function 工具时仍注入原生生图（模型看到两套生图能力，只写方案不调 MCP）',
+    from: "    if (!hasImage && !hasFunction) out.push({ type: 'image_generation' })",
+    to: "    if (!hasImage) out.push({ type: 'image_generation' })"
   }
 ]
 

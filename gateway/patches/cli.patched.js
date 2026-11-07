@@ -831,6 +831,17 @@ async function saveGeneratedImage(dataHome, b64) {
   await fsp.writeFile(path.join(dir, name), Buffer.from(b64, "base64"));
   return name;
 }
+// 局域网用户的图片链接必须是网关可达 origin，不能是 bridge 自己的回环端口。
+// launcher 转发非回环的 /v1/chat/completions 时注入 X-CGW-Public-Origin；
+// 没这个头（本机直连 bridge / 本机对话）时保持原来的回环路由，行为不变。
+function generatedImageUrl(c, cfg, imgName) {
+  const origin = c.req.header("x-cgw-public-origin");
+  if (origin && /^https?:\/\/[A-Za-z0-9._:-]+$/.test(origin)) {
+    return `${origin}/__gw/gen-images/${imgName}`;
+  }
+  const loopback = `http://127.0.0.1:${cfg.port}`;
+  return `${loopback}/gen-images/${imgName}`;
+}
 function createApp(cfg) {
   const auth = new Auth(cfg);
   const upstream = new Upstream(cfg, auth);
@@ -1015,8 +1026,10 @@ function createApp(cfg) {
           if (outItem.imageResult) {
             try {
               const imgName = await saveGeneratedImage(cfg.dataHome, outItem.imageResult);
-              acc.text += `\n\n![generated image](http://127.0.0.1:${cfg.port}/gen-images/${imgName})\n`;
-            } catch {}
+              acc.text += `\n\n![generated image](${generatedImageUrl(c, cfg, imgName)})\n`;
+            } catch (e) {
+              acc.text += `\n\n（生图结果保存失败：${e?.message ?? "未知错误"}；本次没有产出图片链接）\n`;
+            }
             return;
           }
           if (outItem.chunk)
@@ -1058,7 +1071,7 @@ function createApp(cfg) {
               if (outItem.imageResult) {
                 try {
                   const imgName = await saveGeneratedImage(cfg.dataHome, outItem.imageResult);
-                  const md = `\n\n![generated image](http://127.0.0.1:${cfg.port}/gen-images/${imgName})\n`;
+                  const md = `\n\n![generated image](${generatedImageUrl(c, cfg, imgName)})\n`;
                   controller.enqueue(enc.encode(`data: ${JSON.stringify({
                     id: tr.state.id,
                     object: "chat.completion.chunk",
@@ -1068,7 +1081,16 @@ function createApp(cfg) {
                   })}
 
 `));
-                } catch {}
+                } catch (e) {
+                  const warn = `\n\n（生图结果保存失败：${e?.message ?? "未知错误"}；本次没有产出图片链接）\n`;
+                  controller.enqueue(enc.encode("data: " + JSON.stringify({
+                    id: tr.state.id,
+                    object: "chat.completion.chunk",
+                    created: tr.state.created,
+                    model: body.model ?? DEFAULT_CHAT_MODEL,
+                    choices: [{ index: 0, delta: { content: warn }, finish_reason: null }]
+                  }) + "\n\n"));
+                }
                 return;
               }
               if (outItem.chunk) {

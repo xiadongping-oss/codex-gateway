@@ -83,7 +83,10 @@ function pushFunctionTool(out, fn) {
 
 /**
  * Chat Completions tools / legacy functions -> Responses tools
- * @returns {Array<Object>} 一定包含 image_generation（除非 ensureImageTool=false）
+ * 只有「调用方没给任何工具」才兜底补 image_generation。带 function 工具的
+ * Agent 请求一律不注入，避免上游在 MCP generate_image 与原生生图之间摇摆，
+ * 实测表现是模型既不调工具、只输出「我会生成 4 张图」的方案文字。
+ * @returns {Array<Object>}
  */
 export function convertChatToolsToResponses(tools, functions, opts = {}) {
   const out = []
@@ -109,7 +112,12 @@ export function convertChatToolsToResponses(tools, functions, opts = {}) {
   }
   if (opts.ensureImageTool !== false) {
     const hasImage = out.some((t) => isObj(t) && asString(t.type) === 'image_generation')
-    if (!hasImage) out.push({ type: 'image_generation' })
+    const hasFunction = out.some((t) => isObj(t) && asString(t.type) === 'function')
+    // Agent 客户端（WorkBuddy / Claude Code）必然带 function 工具；再塞一个原生
+    // image_generation，上游会看到两套生图能力，反而可能哪个都不调、只写方案。
+    // 而且原生生图回传的是 bridge 回环地址链接，局域网客户端根本打不开。
+    // 纯对话（没给任何工具）时保留兜底，兼容旧客户端的直接生图用法。
+    if (!hasImage && !hasFunction) out.push({ type: 'image_generation' })
   }
   return out
 }

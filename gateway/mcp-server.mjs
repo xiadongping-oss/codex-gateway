@@ -50,7 +50,8 @@ const TOOLS = [
     name: 'generate_image',
     description:
       '用本地 Codex 网关生成图片（OpenAI 图像模型，gpt-image 系）。' +
-      '适用于用户要求「画/生成/绘制图片」的任务。返回图片的 http url 与网关主机侧路径 local_path：' +
+      '只要用户要求画/生成/绘制图片，或多角度、多视角、系列图、变体、换风格、参考图重绘、透明底、蒙版编辑、扩图，就必须调用本工具并等到返回结果；只写方案文字或列计划不算完成。' +
+      '返回图片的 http url 与网关主机侧路径 local_path：' +
       '本机模式下可用 Read 工具查看 local_path 做视觉理解；局域网模式下请携带 Key 下载，或在素材站输入 Key 查看，local_path 在网关主机上不可读。',
     inputSchema: {
       type: 'object',

@@ -132,11 +132,14 @@ test('tools：缺 name 的 function 直接丢弃，不能发出一个没有名�
   assert.equal(out.length, 0, '没名字的工具会让上游直接拒绝整批请求')
 })
 
-test('tools：调用方没给 image_generation 时才追加，已经给了就不能重复', () => {
-  const appended = convertChatToolsToResponses([fnTool('read_file')])
-  assert.equal(appended.filter((t) => t.type === 'image_generation').length, 1, '默认补一个，保住生图能力')
-  const notDup = convertChatToolsToResponses([fnTool('read_file'), { type: 'image_generation' }])
-  assert.equal(notDup.filter((t) => t.type === 'image_generation').length, 1, '重复 image_generation 会被上游判为非法工具列表')
+test('tools：带 function 工具的 Agent 请求不再注入原生生图，纯对话才兜底', () => {
+  const agentTools = convertChatToolsToResponses([fnTool('read_file')])
+  assert.equal(agentTools.filter((t) => t.type === 'image_generation').length, 0,
+    '注入会和 MCP generate_image 形成两套生图能力，模型可能只写方案不调工具')
+  assert.equal(agentTools.length, 1)
+  assert.deepEqual(convertChatToolsToResponses(null, null), [{ type: 'image_generation' }], '纯对话仍保留兜底')
+  const explicit = convertChatToolsToResponses([fnTool('read_file'), { type: 'image_generation' }])
+  assert.equal(explicit.filter((t) => t.type === 'image_generation').length, 1, '显式给的原生生图不能丢也不能重复')
 })
 
 test('tools：ensureImageTool=false 时一个都不补（调用方明确只要 function）', () => {
@@ -202,13 +205,13 @@ test('tool_choice：allowed_tools 是选择策略不是具体工具，原样下�
 })
 
 test('tool_choice：其它类型在 tools 里不存在时降级 auto', () => {
-  // 注意 tools 必须是调用方真正下发的那份：默认追加的 image_generation 也算存在，
-  // 拿它来测"不存在"只会得到"原样下发"，测不出降级。
+  // tools 用不带任何 function 工具、也不带原生生图的那份；否则拿它测
+  // "不存在" 只会得到 "原样下发"，测不出降级。
   const tools = convertChatToolsToResponses([fnTool('read_file')], undefined, { ensureImageTool: false })
   assert.equal(convertChatToolChoiceToResponses({ type: 'web_search' }, undefined, tools), 'auto')
   assert.equal(convertChatToolChoiceToResponses({ type: 'image_generation' }, undefined, tools), 'auto')
-  // 反过来：工具列表里确实有它时必须原样下发，不能一律降级
-  const withImage = convertChatToolsToResponses([fnTool('read_file')])
+  // 反过来：调用方显式给了 image_generation 时必须原样下发，不能一律降级
+  const withImage = convertChatToolsToResponses([{ type: 'image_generation' }])
   assert.deepEqual(convertChatToolChoiceToResponses({ type: 'image_generation' }, undefined, withImage), {
     type: 'image_generation'
   })
@@ -551,7 +554,21 @@ test('bridge：dist 里不再硬编码 image_generation 工具列表', { skip: n
     assert.doesNotMatch(src, /upstreamBody\.temperature\s*=/, `${f} 不能把 temperature 原样转发给上游`)
     assert.doesNotMatch(src, /upstreamBody\.top_p\s*=/, `${f} 不能把 top_p 原样转发给上游`)
     assert.match(src, /chatTools\.buildResponsesReasoning/, `${f} 必须接上思考强度映射`)
+    // 原生生图的图片链接不能写死 bridge 回环端口：局域网用户拿到 127.0.0.1 会指向自己
+    assert.doesNotMatch(src, /!\[generated image\]\(http:\/\/127\.0\.0\.1:/, `${f} 不能把回环地址写进图片链接`)
+    assert.match(src, /generatedImageUrl\(c, cfg, imgName\)/, `${f} 必须按请求来源生成图片链接`)
+    assert.match(src, /x-cgw-public-origin/, `${f} 必须读取网关注入的对外 origin`)
+    // 落盘失败静默吞掉时，用户只会看到「方案文字」却没有图也没有错误
+    assert.match(src, /生图结果保存失败/, `${f} 落盘失败必须给出可见提示`)
   }
+})
+
+test('launcher：对外 origin 只注入非回环 chat 请求，且先清掉伪造的同名头', { skip: needBridge }, () => {
+  const src = fs.readFileSync(path.join(GW, 'launcher.mjs'), 'utf8')
+  assert.match(src, /delete h\['x-cgw-public-origin'\]/, '客户端自带的同名头必须先删掉')
+  assert.match(src, /chatEndpoint && !isLoopbackReq\(req\)/, '只给非回环的 chat 请求注入')
+  assert.match(src, /h\['x-cgw-public-origin'\] = `http:\/\/\$\{host\}`/, '注入网关对外 origin')
+  assert.match(src, /streamEnd = streamFinished \? 'normal' : 'interrupted'/, '调用日志必须区分流中断')
 })
 
 test('bridge：准备后的 dist 与快照规范化为 LF 后的字节一致', { skip: needBridge }, () => {

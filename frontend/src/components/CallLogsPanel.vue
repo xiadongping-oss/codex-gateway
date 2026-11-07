@@ -70,7 +70,7 @@ const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 40
           <span class="caller" :title="l.caller?.keyId || ''"><strong>{{l.caller?.device || l.caller?.ip || '历史记录'}}</strong><small v-if="l.caller?.device">{{l.caller.ip}} · 自报设备</small><small>{{l.caller?.keyName || (l.caller?.keyId ? '已验证密钥' : l.status === 401 ? '认证未通过' : l.caller ? '未携带 API Key' : '未记录来源')}}<template v-if="l.caller?.keyId"> · {{l.caller.keyId.slice(-8)}}</template></small></span>
           <span class="mono" :class="statusClass(l.status)">{{ l.status }}</span>
           <span v-if="!management" class="latency mono">{{ l.latency }}ms</span>
-          <span v-if="!management" class="tokens"><strong class="mono">{{ callTokenText(l) }}</strong><small v-if="detail && l.usage">输入 {{l.usage.promptTokens}} · 输出 {{l.usage.completionTokens}}</small></span>
+          <span v-if="!management" class="tokens"><strong class="mono">{{ callTokenText(l) }}</strong><small v-if="detail && l.usage">输入 {{l.usage.promptTokens}} · 输出 {{l.usage.completionTokens}}</small><small v-if="detail && l.streamEnd === 'interrupted'" class="stream-warn">响应流中断（客户端断开或上游掐断）</small><small v-else-if="detail && l.usageState === 'no-usage'">流已结束，上游未给 usage</small></span>
           <span class="mono time"><small v-if="detail">{{new Date(l.at).toLocaleDateString()}}</small><small>{{ fmtTime(l.at) }}</small></span>
         </div>
       </div>
@@ -98,7 +98,7 @@ const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 40
 .panel-heading h3 { grid-column:1 / -1;font-size:14px;margin:0; }
 .panel-heading .caller-search { box-sizing:border-box;min-width:0;width:100%;height:38px;font:inherit;font-size:12px; }
 .mode-switch{display:flex;height:38px;padding:3px;background:var(--card);border:1px solid var(--border);border-radius:8px}.mode-switch button{border:0;background:transparent;color:var(--text-2);padding:6px 10px;cursor:pointer;border-radius:5px;white-space:nowrap;font:inherit;font-size:12px}.mode-switch .active{background:var(--primary-soft);color:var(--primary)}
-.request,.tokens,.time{display:flex;flex-direction:column;gap:5px;min-width:0;overflow-wrap:anywhere}.request strong,.tokens strong{font-size:12px;font-weight:550}.request small,.tokens small,.time small{font-size:10px;color:var(--text-3)}
+.request,.tokens,.time{display:flex;flex-direction:column;gap:5px;min-width:0;overflow-wrap:anywhere}.request strong,.tokens strong{font-size:12px;font-weight:550}.request small,.tokens small,.time small{font-size:10px;color:var(--text-3)}.tokens .stream-warn{color:var(--amber)}
 .compact .tr{padding-block:9px}.compact .caller small,.compact .request small{display:none}
 @media(max-width:700px){.tr:not(.th){grid-template-columns:minmax(0,1fr) minmax(0,1fr) 42px;gap:10px}.tr.th{display:none}.tr .latency{grid-column:1}.tr .tokens{grid-column:2 / 4}.tr .time{grid-column:1 / -1;flex-direction:row;justify-content:flex-end}}
 @media(max-width:420px){.panel-heading{grid-template-columns:minmax(0,1fr)}.mode-switch{justify-self:start}}

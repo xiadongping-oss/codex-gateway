@@ -1115,11 +1115,16 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
     } catch {}
   }
   let callUsage = null
+  let streamFinished = false
   if (targetPath.startsWith('/v1/')) {
-    // 挂 close 而不是 finish：客户端中途断开时 finish 永远不触发，
-    // 于是「取消 / 中断」这类请求在调用日志里完全不可见 —— 排障时最想看的
-    // 恰恰是这些。close 在成功与中断两种路径下都会触发。
+    // finish 只在「响应头 + 响应体都写完」时触发；close 在成功与中断两条路径下都会触发。
+    // 两者配合才能把「Token 未返回」拆开：流被掐断（客户端提前断开 / 上游中断）
+    // 和流正常结束但上游没给 usage 是两种完全不同的故障，以前都塌成同一句
+    // 「未返回」，排障时经常被误读成「没生图」或「没扣费」。
+    res.once('finish', () => { streamFinished = true })
     res.once('close', () => {
+      const streamEnd = streamFinished ? 'normal' : 'interrupted'
+      const usageState = callUsage ? 'ok' : streamEnd === 'interrupted' ? 'interrupted' : 'no-usage'
       recordCallLog({ caller:req.__cgwCaller,
         method: req.method,
         endpoint: targetPath.split('?')[0],
@@ -1127,7 +1132,9 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
         status: res.statusCode || 0,
         latency: Date.now() - callT0,
         usage: callUsage,
-        tokens: callUsage ? callUsage.totalTokens : null
+        tokens: callUsage ? callUsage.totalTokens : null,
+        streamEnd,
+        usageState
       })
     })
   }
@@ -1147,12 +1154,25 @@ function pipeProxy(req, res, targetPath, keyId, bodyBuf) {
     if (output === tap) up.pipe(tap).pipe(res)
     else up.pipe(tap).pipe(output).pipe(res)
   }
+  const chatEndpoint = targetPath.split('?')[0] === '/v1/chat/completions'
   const prep = (base) => {
     const h = { ...base }
     delete h['content-length']
     delete h['transfer-encoding']
     if (bodyBuf) h['content-length'] = String(bodyBuf.length)
     if (hideChatUsage) h['accept-encoding'] = 'identity'
+    // 原生 image_generation 落盘后，bridge 会把图片写成 127.0.0.1:<bridge 端口> 链接，
+    // 局域网客户端拿到这个地址会指向它自己，永远打不开——表现为「报告已生成但没有图」。
+    // 只给「非回环的 chat 请求」注入网关对外 origin，bridge 据此生成
+    // /__gw/gen-images/ 链接（该路径在 LAN 模式下有放行例外）；本机请求行为不变。
+    // 客户端自带的同名头先删掉，避免伪造 origin 被写进 Markdown。
+    delete h['x-cgw-public-origin']
+    if (chatEndpoint && !isLoopbackReq(req)) {
+      const host = req.headers.host
+      if (typeof host === 'string' && /^[A-Za-z0-9._:-]+$/.test(host)) {
+        h['x-cgw-public-origin'] = `http://${host}`
+      }
+    }
     return h
   }
   const pump = (p) => {
@@ -2035,7 +2055,8 @@ const MCP_HTTP_TOOLS = [
     name: 'generate_image',
     description:
       '用 Codex 网关生成图片（OpenAI 图像模型，gpt-image 系）。' +
-      '适用于用户要求「画/生成/绘制图片」的任务。返回图片的 http 下载链接（携带当前 API Key 的 Bearer 请求头）与网关主机侧路径 local_path：' +
+      '只要用户要求画/生成/绘制图片，或多角度、多视角、系列图、变体、换风格、参考图重绘、透明底、蒙版编辑、扩图，就必须调用本工具并等到返回结果；只写方案文字或列计划不算完成。' +
+      '返回图片的 http 下载链接（携带当前 API Key 的 Bearer 请求头）与网关主机侧路径 local_path：' +
       '局域网客户端请携带 Key 下载，或在素材站输入 Key 查看；在网关主机本机可用 Read 直接查看 local_path。',
     inputSchema: {
       type: 'object',
