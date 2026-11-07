@@ -21,14 +21,22 @@ const subscriptionDate = computed(() => {
 })
 const account = computed(() => q.value?.account || null)
 
-// 订阅临期：<=3 天告警，已过期报错
+// 订阅临期：只对**手动登记**的到期日告警。
+// 凭据里的 chatgpt_subscription_active_until 是订阅周期快照，自动续费后不会
+// 及时更新（实测 11-07 刚签发的 id_token 里仍写着 11-05），日期过了只说明
+// 快照旧了，不能判定订阅失效——账号能否用请看连接状态和上游实时额度。
 const planUrgent = computed(() => {
   const d = plan.value?.expiresInDays
-  if (typeof d !== 'number') return ''
-  if (d < 0) return 'rose'
-  if (d <= 3) return 'amber'
-  return ''
+  if (typeof d !== 'number' || d < 0) return ''
+  if (plan.value?.expirySource !== 'manual') return ''
+  return d <= 3 ? 'amber' : ''
 })
+// 账号快照日期已过：给一个中性提示，解释为什么这个日期不能当作失效判据
+const expiryStale = computed(() =>
+  typeof plan.value?.expiresInDays === 'number' &&
+  plan.value.expiresInDays < 0 &&
+  plan.value?.expirySource === 'account'
+)
 
 const initial = computed(() => {
   const n = account.value?.name || account.value?.email || '?'
@@ -251,8 +259,9 @@ onUnmounted(() => {
             {{ account.name }}
             <span v-if="plan && plan.badge && plan.badge !== '—'" class="plan-badge">{{ plan.badge }}</span>
             <span v-if="planUrgent" class="expire-chip" :class="planUrgent">
-              {{ planUrgent === 'rose' ? '订阅已过期' : '订阅 ' + plan.expiresInText }}
+              {{ '订阅 ' + plan.expiresInText }}
             </span>
+            <span v-if="expiryStale" class="expire-chip neutral" title="这个日期来自登录凭据里的订阅周期快照，自动续费后不会及时更新。日期已过只说明快照需要更新，不代表订阅失效；账号是否可用请看上方连接状态与实时额度。">到期日待核验</span>
             <span v-if="q.source === 'realtime'" class="rt-chip" :title="'用量来自 Codex 上游限流头，仅在上游真实响应后更新（最近一次：' + (ageText || '未知') + '）'">实时同步<span v-if="ageText"> · {{ ageText }}</span></span>
             <span v-else-if="q.source === 'manual'" class="rt-chip manual" title="上游还没回过限流头，当前显示的是你手动填的值">手动填写</span>
             <span v-if="q.stale" class="stale-chip" title="超过 30 分钟没再观测到上游限流头，数字可能已经变了">可能已过期</span>
@@ -273,7 +282,7 @@ onUnmounted(() => {
         </div>
         <div class="meta-item">
           <span class="k">订阅到期</span>
-          <span class="v" :class="planUrgent">{{ subscriptionDate }}</span><span v-if="plan?.expiresAt" class="expiry-source" :title="plan.expirySource === 'account' ? '来自最近一次登录凭据中的订阅有效期' : '手动记录的日期'">{{ plan.expirySource === 'account' ? '账号信息' : '手动记录' }}</span>
+          <span class="v" :class="[planUrgent, { muted: expiryStale }]">{{ subscriptionDate }}</span><span v-if="plan?.expiresAt" class="expiry-source" :title="plan.expirySource === 'account' ? '登录凭据里的订阅周期快照，不代表自动续费日，也不代表账号是否可用' : '手动记录的日期'">{{ plan.expirySource === 'account' ? '账号快照' : '手动记录' }}</span>
         </div>
         <div class="meta-item">
           <span class="k">账号类型</span>
@@ -438,6 +447,7 @@ onUnmounted(() => {
   color: var(--amber); background: rgba(251, 191, 36, 0.14); border: 1px solid rgba(251, 191, 36, 0.35);
 }
 .expire-chip.rose { color: var(--rose); background: rgba(244, 63, 94, 0.14); border-color: rgba(244, 63, 94, 0.35); }
+.expire-chip.neutral { color: var(--text-3); background: var(--card-2); border-color: var(--border-strong); }
 
 /* 元信息 */
 .q-meta {
@@ -451,6 +461,7 @@ onUnmounted(() => {
 .meta-item .v { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta-item .v.amber { color: var(--amber); }
 .meta-item .v.rose { color: var(--rose); }
+.meta-item .v.muted { color: var(--text-3); }
 .mono { font-family: var(--mono); font-size: 11.5px; }
 .type-select {
   font-family: inherit; font-size: 12px; color: var(--text);

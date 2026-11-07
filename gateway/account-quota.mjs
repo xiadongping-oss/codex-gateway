@@ -65,11 +65,17 @@ export function countdownText(iso) {
   return `${m}分钟`
 }
 
+// 「到期日」是日历日，不是那个 UTC 瞬间。手动填的日期会落在本机 00:00，
+// 用 24h 整除的话，到期当天上午就得到 -0.x → Math.floor → -1（"已过期"）。
+// 按本地日历日比较，"今天到期"才是 0，不会提前一天误报。
 function daysUntil(iso) {
   if (!iso) return null
-  const ms = new Date(iso).getTime() - Date.now()
-  if (Number.isNaN(ms)) return null
-  return Math.floor(ms / 86400000)
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  const target = new Date(d.getFullYear(), d.getMonth(), d.getDate())
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  return Math.round((target - today) / 86400000)
 }
 
 // 剩余百分比决定颜色：越低越危险
@@ -356,6 +362,13 @@ export function realtimeQuotaFrom(headers = {}, at = 0) {
   }
 }
 
+// ⚠️ chatgpt_subscription_active_until 是**登录凭据里的订阅周期快照**，不是
+// 权威的订阅状态，更不是「账号是否还可用」的判据。
+// 实测（2026-11-07 09:35 本地）：一份 iat=09:35、刚刚签发的 id_token 里，
+// 这个字段仍写着 11-05 的旧周期结束日；而同一分钟上游限流头正常返回
+// PROLITE / 已用 58% / 11-12 重置，连接检测也是正常。自动续费不会（或明显滞后）
+// 刷新这个 claim。所以它只能用于展示「账号快照记录的周期日」——日期过了
+// 说明快照需要更新，绝不意味着订阅已过期。真正的可用性看上游响应与连接检测。
 export function subscriptionPlanFromClaims(claims = {}) {
   const auth = claims['https://api.openai.com/auth'] || {}
   const raw = auth.chatgpt_subscription_active_until
@@ -432,7 +445,10 @@ export async function getAccountQuota(gwConfig = {}) {
     models = (rt.models || []).map((m) => normalizeQuota(m))
   }
   const effPlan = { ...plan, ...(accountPlan.name ? { name: accountPlan.name } : {}), ...rt?.plan }
-  const expiresAt = accountPlan.expiresAt || plan.expiresAt || null
+  // 手动登记的到期日优先于凭据快照：反过来写的话，用户在「编辑」里改了日期，
+  // 下次读取仍被 accountPlan.expiresAt 盖掉，表现为「保存了但界面没变」。
+  const expiresAt = plan.expiresAt || accountPlan.expiresAt || null
+  const expirySource = plan.expiresAt ? 'manual' : accountPlan.expiresAt ? 'account' : 'unknown'
   const expiresInDays = daysUntil(expiresAt)
 
   const syncedAt = rt?.syncedAt || null
@@ -461,10 +477,15 @@ export async function getAccountQuota(gwConfig = {}) {
       multiplier: effPlan.multiplier || '',
       badge: effPlan.name && effPlan.multiplier ? `${effPlan.name} ${effPlan.multiplier}` : effPlan.name || '—',
       expiresAt,
-      expirySource: accountPlan.expiresAt ? 'account' : plan.expiresAt ? 'manual' : 'unknown',
+      expirySource,
       expiresInDays,
+      // 快照日期过了 ≠ 订阅失效。这里只描述「这份记录需要更新」，
+      // 不产出「已过期」这种会误导用户的强断言（账号可用性由连接检测判定）。
       expiresInText:
-        expiresInDays === null ? '上游未提供' : expiresInDays < 0 ? '已过期' : `剩余 ${expiresInDays} 天`
+        expiresInDays === null ? '上游未提供'
+          : expiresInDays < 0 ? (expirySource === 'account' ? '快照日期已过' : '已过登记日期')
+            : expiresInDays === 0 ? '今天到期'
+              : `剩余 ${expiresInDays} 天`
     },
     weekly,
     models,

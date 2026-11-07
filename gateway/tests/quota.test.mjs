@@ -393,3 +393,63 @@ test('从当前账号凭据获取订阅有效期，实时额度保留该日期',
  const b=await fakeBridge({'x-codex-primary-used-percent':'32','x-codex-plan-type':'pro'})
  try {const result=await q.getAccountQuota({bridgePort:b.port});assert.equal(result.plan.expiresAt,expiry);assert.equal(result.plan.expirySource,'account');assert.match(result.plan.expiresInText,/剩余/)} finally {b.srv.close();fs.unlinkSync(path.join(root,'accounts.json'));fs.unlinkSync(path.join(root,'accounts/sub-fixture.json'))}
 })
+
+// ---------- 订阅到期：凭据里的只是周期快照，不是订阅状态 ----------
+// 真实事故：2026-11-07 刚签发（iat 09:35）的 id_token 里仍写着 11-05 的旧周期日，
+// 同一分钟上游限流头正常返回 PROLITE / 已用 58%，界面却红字「订阅已过期」。
+
+function withAccountClaims(id, activeUntil) {
+  const root = process.env.CGW_DATA_DIR
+  const regPath = path.join(root, 'accounts.json')
+  const authPath = path.join(root, 'accounts', id + '.json')
+  fs.mkdirSync(path.join(root, 'accounts'), { recursive: true })
+  fs.writeFileSync(regPath, JSON.stringify({ activeId: id, accounts: [{ id, name: 'Fixture' }] }))
+  const claims = { 'https://api.openai.com/auth': { chatgpt_plan_type: 'prolite', chatgpt_subscription_active_until: activeUntil } }
+  fs.writeFileSync(authPath, JSON.stringify({ tokens: { id_token: 'e30.' + Buffer.from(JSON.stringify(claims)).toString('base64url') + '.fixture' } }))
+  const cleanup = () => { try { fs.unlinkSync(authPath) } catch {}; try { fs.unlinkSync(regPath) } catch {} }
+  return { cleanup }
+}
+
+test('快照日期已过但上游实时正常时，不得判定订阅过期', async () => {
+  reset()
+  const stale = new Date(Date.now() - 2 * 86400000).toISOString()
+  const { cleanup } = withAccountClaims('expiry-stale', stale)
+  const b = await fakeBridge({ 'x-codex-primary-used-percent': '58', 'x-codex-plan-type': 'prolite' })
+  try {
+    const r = await q.getAccountQuota({ bridgePort: b.port })
+    assert.equal(r.source, 'realtime', '上游刚回过限流头，这就是账号可用的事实')
+    assert.equal(r.weekly.usedPercent, 58)
+    assert.equal(r.plan.expirySource, 'account')
+    assert.ok(r.plan.expiresInDays < 0)
+    assert.doesNotMatch(r.plan.expiresInText, /过期/, '快照旧了不等于订阅失效')
+    assert.match(r.plan.expiresInText, /快照/)
+  } finally { b.srv.close(); cleanup() }
+})
+
+test('手动登记的到期日优先于凭据快照', async () => {
+  reset()
+  const stale = new Date(Date.now() - 2 * 86400000).toISOString()
+  const manual = new Date(Date.now() + 10 * 86400000).toISOString()
+  writeFile({ shared: { plan: { expiresAt: manual } } })
+  const { cleanup } = withAccountClaims('expiry-manual', stale)
+  const b = await fakeBridge({ 'x-codex-primary-used-percent': '10' })
+  try {
+    const r = await q.getAccountQuota({ bridgePort: b.port })
+    assert.equal(r.plan.expiresAt, manual, '用户在编辑里改的日期必须能生效')
+    assert.equal(r.plan.expirySource, 'manual')
+    assert.ok(r.plan.expiresInDays > 0)
+  } finally { b.srv.close(); cleanup() }
+})
+
+test('到期日按日历日比较，当天不算过期', async () => {
+  reset()
+  const now = new Date()
+  const todayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
+  writeFile({ shared: { plan: { expiresAt: todayLocal } } })
+  const b = await fakeBridge({ 'x-codex-primary-used-percent': '10' })
+  try {
+    const r = await q.getAccountQuota({ bridgePort: b.port })
+    assert.equal(r.plan.expiresInDays, 0, '本机 00:00 的到期日当天不能被 24h 整除算成 -1')
+    assert.match(r.plan.expiresInText, /今天到期/)
+  } finally { b.srv.close() }
+})
