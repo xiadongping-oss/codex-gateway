@@ -2,15 +2,16 @@
 
 桌面端签名更新包、`latest.json` 与在线更新发布流程见 [桌面端在线更新](DESKTOP-UPDATES.md)。
 
-> 普通用户不需要读本文件——拿到 zip 后看 `QUICK-START.md` 即可。
+> 普通用户不需要读本文件——Windows 桌面版请直接从 Releases 下载 `Setup.exe` 或 `preview.zip`；绿色版用户看 `QUICK-START.md`。
 
-本文记录现有 Windows ZIP 的发行流程，以及 F05 已实现的三目标桌面资源准备。Tauri 安装器与 macOS 正式发行见 [桌面版实施计划](DESKTOP-PLAN.md) 和 [任务清单](DESKTOP-TASKS.md)，不能将规划目标视为当前已支持的发行产物。
+本文记录绿色版 Windows ZIP 的自行构建流程，以及桌面资源准备。**当前对外发布的产物是 Windows 桌面版 5 件套**（`Setup.exe` / `.sig` / `preview.zip` / `latest.json` / `SHA256SUMS.txt`），打包与发布流程见 [桌面端在线更新](DESKTOP-UPDATES.md)。macOS 正式安装包仍需对应平台的签名、公证与真机验收，不能把 CI 构建成功当作验收。
 
 ## 产物
 
 | 文件 | 说明 |
 |---|---|
-| `release/codex-gateway-v<版本>-win64.zip` | 自包含绿色版：内置 Node 运行时、全部依赖、单文件控制台、服务启动器 |
+| `release/codex-gateway-v<版本>-win64.zip` | 自包含绿色版：内置 Node 运行时、全部依赖、单文件控制台、服务启动器。**仅本地构建；桌面版自 v1.14.0 起为唯一对外发布形态，不再上传 GitHub Release** |
+| `release/desktop-preview/win32-x64-<ts>/` | 当前对外发布的 Windows 桌面版 5 件套：`Setup.exe`、`.sig`、`preview.zip`、`latest.json`、`SHA256SUMS.txt`；由 `npm run desktop:package:windows -- --offline` 产出 |
 
 ## 构建步骤
 

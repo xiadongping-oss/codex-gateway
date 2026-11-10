@@ -1,8 +1,10 @@
-# Codex 网关 · 快速上手（普通用户版）
+# Codex 网关 · 快速上手（绿色版 / 普通用户版）
 
 > 3 分钟把你的 ChatGPT 订阅变成一个本地 API + 网页控制台。无需安装 Node、无需命令行。
 >
-> 本文针对 **Windows 版**。macOS / Linux 用户请见 `README.md` 的「运行平台」章节（`gateway/service-unix/`）。
+> ⚠️ **本文针对 Windows 绿色版**（`install.vbs` / `start-gateway.vbs`）。当前 GitHub Releases 只提供 Windows 桌面版 `Setup.exe` 与 `...-preview.zip`，**包里没有 `install.vbs`**；桌面版用户请直接看 [README 的「Windows 桌面版」](README.md#windows-桌面版)。绿色版已不在 Releases 提供（桌面版自 v1.14.0 起为唯一发布形态），仍可用源码 `node build-release.mjs` 自行构建。
+>
+> macOS / Linux 用户请见 `README.md` 的「运行平台」章节（`gateway/service-unix/`）。
 
 ## 这是什么
 

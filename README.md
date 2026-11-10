@@ -1,39 +1,44 @@
 # Codex Gateway
 
-**本地化的 ChatGPT / Codex 接入网关**：用你自己的 ChatGPT 订阅（OAuth 登录态），对外提供标准 **OpenAI 兼容 API**，覆盖**文本对话、图片生成、视觉理解**能力，并附带可视化管理控制台。
+**本地化的 ChatGPT / Codex 接入网关**：用你自己的 ChatGPT 订阅（OAuth 登录态），对外提供标准 **OpenAI 兼容 API**，覆盖**文本对话、工具调用、图片生成与编辑、视觉理解**能力，并附带可视化管理控制台与 Windows 桌面应用。
 
-- **开箱即用**：无需数据库、无需容器，Node.js 直接运行；Windows 发布包双击即用
-- **默认仅本机**：只监听 `127.0.0.1`；需要时一键开启局域网共享（分用户隔离）
-- **可视控制台**：账号登录与多账号切换、用量监控、模型管理、API Key 签发、调用日志、图片素材管理
+- **开箱即用**：Windows 桌面安装包内置 Node 运行时，双击即用；源码运行也只需 Node.js，无需数据库或容器
+- **默认仅本机**：只监听 `127.0.0.1`；需要时一键开启局域网共享（按 API Key 分用户隔离）
+- **可视控制台**：账号登录与多账号切换、用量监控、模型管理、API Key 签发、调用日志、图片素材库、客户端接入、签名校验的软件更新
+
+> 最新版本与更新日志见 [GitHub Releases](https://github.com/xiadongping-oss/codex-gateway/releases/latest)。
 
 | 你的角色 | 入口 |
 |---|---|
-| **宿主机**（自己用 / 给同事发 Key） | 本页[快速开始](#快速开始宿主机) |
-| **局域网用户**（用别人电脑上的网关） | 浏览器打开 `http://<宿主机IP>:4173/setup`，输入管理员发的 Key，按页面指引复制/下载配置即可（**零命令行**） |
-| **维护者**（构建发布包） | [`docs/RELEASE.md`](docs/RELEASE.md) |
-| **桌面版开发**（Windows 与 macOS） | [实施计划](docs/DESKTOP-PLAN.md) · [任务清单](docs/DESKTOP-TASKS.md) · [控制协议](docs/DESKTOP-CONTROL.md) · [数据目录](docs/DESKTOP-DATA.md)（Windows 桌面预览版） |
+| **宿主机**（自己用 / 给同事发 Key） | [Windows 桌面版](#windows-桌面版)（推荐）· 源码运行见[快速开始](#快速开始宿主机) |
+| **局域网用户**（用别人电脑上的网关） | 浏览器打开 `http://<宿主机IP>:4173/setup`，输入管理员发的 Key，按页面指引复制/下载配置即可（**零命令行**）；升级后请重连 MCP，见[图片生成](#图片生成) |
+| **维护者**（构建发布包 / 在线更新） | [`docs/RELEASE.md`](docs/RELEASE.md) · [桌面在线更新](docs/DESKTOP-UPDATES.md) |
+| **桌面版用户 / 进阶** | [素材库](docs/ASSET-LIBRARY.md) · [桌面使用说明](desktop/README.md) · [验收清单](docs/DESKTOP-ACCEPTANCE.md) |
 
 > 使用前请务必阅读[合规与使用须知](#合规与使用须知)。
 
-## Windows 桌面版 v1.14.1
+## Windows 桌面版
 
-从 [最新版本](https://github.com/xiadongping-oss/codex-gateway/releases/latest) 下载 Setup 安装包或免安装 ZIP。桌面版无需单独安装 Node；Setup 会在需要时安装 WebView2。
+从 [最新版本](https://github.com/xiadongping-oss/codex-gateway/releases/latest) 下载 `Setup.exe` 安装包（推荐）或 `...-preview.zip` 免安装目录；桌面版无需单独安装 Node，Setup 会在需要时安装 WebView2。Release 里的 `.sig`、`latest.json` 与 `SHA256SUMS.txt` 供在线更新签名校验和人工核对，不需要手动下载。
 
 - 在「局域网共享」中直接开启、关闭共享并设置端口，默认共享端口为 `4174`；本机管理端口为 `4173`。
 - 工作区、开发接入与管理页面共用一个原生窗口，页面切换不会重新弹出窗口。
 - 账号、配置与图片保存在 `%LOCALAPPDATA%\CodexGatewayWorkspace-v1`，旧版不兼容数据不再自动导入或阻止新账号配置。
 - 账号授权完成后提供完成状态和关闭入口，连接错误、账号额度与订阅到期信息统一展示。
 - 图片素材支持标题、收藏、提示词复用、标注草稿与关联版本，并提供集合、标签、批量整理、回收站和版本对比。客户端与侧栏共用数据，侧栏按 Key 隔离。详见[素材库说明](docs/ASSET-LIBRARY.md)。
-- 「客户端接入」集中提供经过验证的 API、MCP 与 Skill 配置；桌面设置新增签名校验的软件更新。旧版用户需手动安装一次新版以启用更新器。
+- 「客户端接入」集中提供经过验证的 API、MCP 与 Skill 配置；内置**签名校验的在线更新**；早期未内置更新器的版本需手动安装一次新版，详见[桌面在线更新](docs/DESKTOP-UPDATES.md)。
 
-当前安装包为未签名桌面预览版。关闭窗口后网关在托盘继续运行，退出应用请使用工作台或托盘的「退出应用」。
+安装包本身未做 Authenticode 签名（Windows 可能提示「已保护你的电脑」，选「更多信息 → 仍要运行」），但在线更新包有独立的 minisign 签名校验，校验不通过不会安装。关闭窗口后网关在托盘继续运行，退出应用请使用工作台或托盘的「退出应用」。
+
+> macOS / Linux 暂不提供正式安装包：桌面正式包需要对应平台的签名、公证与真机验收。这两个平台请用[源码运行](#运行平台)方式。
 
 ## 功能总览
 
-- **OpenAI 兼容 API**：`/v1/chat/completions`、`/v1/responses`、`/v1/models`、`/v1/images/generations`——任意 OpenAI 兼容客户端（WorkBuddy、ChatBox、Open WebUI、curl 等）填地址 + Key 即用
-- **图片生成**：API 直接生图，或以 **MCP 工具**供任意支持 Function Calling 的模型 / Agent 调用；生成结果自动进入**分用户网页素材站**（预览 / 复制链接 / 下载 / 删除）
+- **OpenAI 兼容 API**：`/v1/chat/completions`（含 `tools` / `tool_choice` 工具调用）、`/v1/responses`、`/v1/models`、`/v1/images/generations`、`/v1/images/edits`——任意 OpenAI 兼容客户端（WorkBuddy、ChatBox、Open WebUI、curl 等）填地址 + Key 即用
+- **Agent 工具链**：网关把 Chat Completions 的 function tools 与多轮 `function_call` 历史转换成上游 Responses 协议，Agent 可直接调用工具；上游不接受的参数（`temperature`、`top_p`）会自动剔除
+- **图片生成与编辑**：API 直接生图，或以 **HTTP MCP 工具**供任意 Agent 调用；支持参考图（最多 8 张）、蒙版编辑、扩图、透明背景、输出格式与压缩。生成结果自动进入**分用户网页素材站**（预览 / 复制链接 / 下载 / 删除 / 版本对比）
 - **局域网共享**：桌面端直接管理共享，命令行版也可通过启动参数开放；每个成员使用独立 API Key，调用与图片素材按 Key 隔离
-- **多账号登录**：控制台内完成 OAuth 授权，支持多账号保存与切换；可配置出网代理适配受限网络；本机装过 Codex CLI 时可**一键导入 `~/.codex/auth.json` 的现有登录态**（无需再走浏览器授权）
+- **多账号登录**：控制台内完成浏览器 OAuth / 设备码授权，支持多账号保存与切换、429/401 自动换账号重放；可配置出网代理适配受限网络；本机装过 Codex CLI 时可**一键导入 `~/.codex/auth.json` 的现有登录态**
 
 ## 架构一览
 
@@ -64,7 +69,7 @@ flowchart LR
 
 ## 快速开始（宿主机）
 
-前置：本机已安装 **Node.js 18+**（Windows 绿色版发布包用户无需本节，解压后按 `QUICK-START.md` 双击启动）。
+前置：本机已安装 **Node.js 18+**。本节面向源码运行与自行构建的绿色版；**Windows 桌面安装包用户请看[上一节](#windows-桌面版)，无需本节**。绿色版的使用说明见 [`QUICK-START.md`](QUICK-START.md)。
 
 ```bash
 npm run setup   # 首次：安装依赖并准备 bridge 补丁
@@ -111,10 +116,26 @@ flowchart LR
 ```
 
 - **API 方式**：`POST /v1/images/generations`（标准 images 协议），`size` / `quality` 原样传给上游，未指定时使用 `size=auto`、`quality=high`。实际尺寸可能与请求不同；bridge 模式响应的 `data[0].cgw_image_size` 提供请求尺寸、从 PNG 文件头读取的实际尺寸和是否匹配，MCP 结果同步提示。无法识别时明确标为未知；网关保留原图，不自动缩放。
-- **MCP 方式**：HTTP MCP 提供 `generate_image` / `list_generated_images` / `delete_generated_image` 三个工具，列表、鉴权下载和删除按调用 Key 隔离。本机 stdio 提供生图与图库列表，列表读取宿主机完整图库；两种接入方式可并存。
+- **MCP 方式**：HTTP MCP 提供 `generate_image` / `list_generated_images` / `delete_generated_image` 三个工具，列表、鉴权下载和删除按调用 Key 隔离。本机 stdio 提供生图与图库列表，列表读取宿主机完整图库；两种接入方式可并存。`generate_image` 还支持参考图（最多 8 张）、蒙版编辑、扩图、透明背景与输出格式控制，编辑请求走 `/v1/images/edits`。
 - 生成结果自动落盘并进入素材站，响应附带可直接打开的 `url` 与本机 `local_path`。
 
 带 Key 生图及图库列表会额外返回 `download_url`：请求此地址时携带同一个 `Authorization: Bearer <API Key>`，无需管理控制台会话。MCP 使用该下载地址；浏览器用户可在 `/gallery` 输入 Key 预览和下载。原有 `url` 字段保留兼容，访问规则不变。
+
+> ⚠️ **生图 MCP 连接必须设置 `timeout`**：WorkBuddy 等客户端的 MCP 工具请求默认只有 60 秒固定超时，且不会随网关的进度通知重置；一次生图常需数分钟，超时后客户端会取消请求并显示「用户已取消」。`/setup` 生成的配置与 LAN 一键脚本已写入 `"timeout": 420000`，已有连接请补齐该值并重新加载 MCP（**升级网关后也要重连一次**）：
+>
+> ```json
+> {
+>   "mcpServers": {
+>     "codex-gateway-lan": {
+>       "url": "http://<宿主机IP>:<端口>/mcp",
+>       "timeout": 420000,
+>       "headers": { "Authorization": "Bearer cgw-..." }
+>     }
+>   }
+> }
+> ```
+>
+> 网关侧在客户端断开后会继续完成生图并落盘到个人图库，调用日志标注「客户端已断开 · 生图继续执行」；遇到「超时 / 已取消」先查图库再决定是否重试，不要重复提交。
 
 > 说明：图片能力由对话模型 + 内置图像工具渲染，`gpt-image-2.5-*` 仅为客户端填写的入口名称；响应中的 `model` 字段会回写真实渲染模型。
 
@@ -146,6 +167,22 @@ WorkBuddy 模型配置示例（`workbuddy-models-codex-gateway.json`）：
 }
 ```
 
+生图走 MCP 时还要在 `~/.workbuddy/mcp.json`（或你客户端的 MCP 配置）里单独配一条连接，**API Key 与对话模型配置是两处独立凭据，换 Key 要同步改**：
+
+```json
+{
+  "mcpServers": {
+    "codex-gateway": {
+      "url": "http://127.0.0.1:4173/mcp",
+      "timeout": 420000,
+      "headers": { "Authorization": "Bearer cgw-..." }
+    }
+  }
+}
+```
+
+`timeout` 不能省：默认 60 秒会让生图被客户端取消（详见[图片生成](#图片生成)）。最省事的做法是直接打开 `/setup`，复制页面生成的完整配置。
+
 ## 局域网共享
 
 默认仅本机可用。让同一局域网的成员/设备接入：
@@ -171,6 +208,7 @@ sequenceDiagram
 1. **宿主机**：控制台「API Key」页为每位成员创建独立 Key，点该 Key 的**「接入」**按钮，把复制出的邀请信息发给成员
 2. **成员**：浏览器打开 `http://<宿主机IP>:4173/setup`，输入 Key → 页面自动生成全部配置，逐项复制/下载即可
 3. **素材站**：`http://<宿主机IP>:4173/gallery`（首次输入自己的 Key 后浏览器记住；只显示/只能删除**自己**生成的图）
+4. **升级后重连 MCP**：网关升级不会自动改客户端配置，成员需重新复制一次 `/setup` 生成的 MCP 配置，或在 `mcp.json` 里补 `"timeout": 420000` 后重新加载连接器，否则生图仍会在 60 秒被客户端取消
 
 命令行与 Agent 自动化方式（可选）：见 [`docs/lan-kit/INSTALL.md`](docs/lan-kit/INSTALL.md)（含一键脚本与可直接粘贴给 Agent 的 Prompt）。
 
@@ -190,12 +228,15 @@ http://100.122.232.106:4173/v1   (Tailscale)                    ← 仅 Tailscal
 
 | 部分 | 支持 |
 |---|---|
-| Windows 发布包 | 仅 Windows x64（内含 node 运行时）。推荐双击解压后**顶层**的 `install.vbs` 一键安装（程序进 `%LOCALAPPDATA%\Programs`、数据进 `%LOCALAPPDATA%\CodexGateway`、开始菜单 + 可卸载）；也可双击 `gateway\service\start-gateway.vbs` 以绿色版运行（数据长在解压目录内） |
+| **Windows 桌面版（当前主发布形态）** | Windows x64：[Releases](https://github.com/xiadongping-oss/codex-gateway/releases/latest) 提供 `Setup.exe` 安装包与 `...-preview.zip` 免安装目录，内置 Node 运行时、控制台与网关资源，并带签名校验的在线更新。数据默认在 `%LOCALAPPDATA%\CodexGatewayWorkspace-v1` |
+| **Windows 绿色版（自行构建）** | 源码 `node build-release.mjs` 可产出 `codex-gateway-v<版本>-win64.zip`，内含 `install.vbs` 一键安装与 `gateway\service\start-gateway.vbs` 绿色运行；**当前 GitHub Releases 不再提供绿色版 ZIP**（桌面版自 v1.14.0 起就是唯一对外发布形态），说明见 [`QUICK-START.md`](QUICK-START.md) |
 | 网关源码运行 | 跨平台：macOS / Linux 装 Node.js 20+ 后 `gateway/start-unix.sh` 直接跑 |
-| 开机自启 | Windows：`gateway/service/install-autostart.vbs`（计划任务）；macOS：launchd；Linux：systemd `--user`。unix 侧见下 |
+| 开机自启 | 桌面版：应用偏好里设置；绿色版（Windows）：`gateway/service/install-autostart.vbs`（计划任务）；macOS：launchd；Linux：systemd `--user`。unix 侧见下 |
 | 局域网客户端接入 | 跨平台：接入页任意浏览器可用；脚本任意 Node.js 16+ 系统可用 |
 
 #### 数据目录（CGW_DATA_DIR）
+
+> 本节是**绿色版 / 源码运行**的行为；桌面版使用独立工作区 `%LOCALAPPDATA%\CodexGatewayWorkspace-v1`，由桌面应用管理，不通过下面的环境变量调整。
 
 账号凭据、API Key、配置、调用日志、参考图默认长在程序目录里（绿色版行为）。
 设置环境变量 `CGW_DATA_DIR`（install-app.vbs 会写进 `gateway\service\installed.env`，
@@ -237,12 +278,14 @@ cd <解压目录>/gateway/service-unix
 
 ## 登录与账号
 
-控制台「账号」页支持四种方式：
+控制台「账号」页支持以下登录方式（除最后一项外都使用 ChatGPT 订阅额度）：
 
 | 方式 | 说明 |
 |---|---|
-| **OAuth 授权**（推荐） | 设备流授权，浏览器输入用户码即完成；使用 ChatGPT 订阅额度 |
-| **导入 / 粘贴 Token** | 导入 `auth.json` 登录态文件 |
+| **浏览器授权**（推荐） | 打开官方登录页完成 OAuth，回调后自动导入凭据；Google 账号在官方页面选「Continue with Google」 |
+| **设备授权** | 复制授权链接 + 用户码，在浏览器输入完成；浏览器授权不可用时用这个 |
+| **官方客户端临时登录** | 六步向导：临时拉起官方 Codex 客户端登录，关闭后读取凭据并导入 |
+| **导入本机登录态 / 粘贴 Token** | 一键读取 `~/.codex/auth.json`，或直接粘贴 Token / `auth.json` 内容 |
 | **API Key 模式** | 填 OpenAI 官方 API Key 直连官方接口（按 API 计费，非订阅额度） |
 
 - 支持多账号保存与一键切换。
@@ -372,6 +415,8 @@ CGW_ALLOWED_HOSTS=gw.example.com ./start-gateway.sh
 - **留下指纹**：包内 `BUILD-INFO.json` 记录版本、git commit、运行时哈希（刻意不含绝对路径与主机名）。
 
 验证方式：`node build-release.mjs --verify-build` 做「包内声明 ↔ 实物 ↔ 锁文件」三方核对。构建细节见 [`docs/RELEASE.md`](docs/RELEASE.md)。
+
+以上是**绿色版 ZIP** 的可复现方案。桌面安装包另有一套资源校验：包内 `DESKTOP-RESOURCES.json` 记录每个资源文件的字节数与 sha256，启动时与 exe 内嵌清单逐项比对，任一不符即 `RESOURCES_INVALID` 拒绝启动——安装版资源不允许手工热改。详见 [桌面在线更新](docs/DESKTOP-UPDATES.md)。
 
 ## 合规与使用须知（重要）
 
