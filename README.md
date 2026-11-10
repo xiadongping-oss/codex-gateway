@@ -55,17 +55,31 @@ flowchart LR
 
 ## 界面速览
 
-| 概览 · 用量 | 账号 · 登录态 |
-|---|---|
-| <img src="docs/img/ui-overview.png" width="100%"/> | <img src="docs/img/ui-account.png" width="100%"/> |
+> 截图取自 **v1.14.17**，界面数据全部为脱敏示例（示例账号、`192.0.2.10`、`cgw-demo-…`），不代表真实额度或用量。
 
-| 图片素材 · 生成图库 | API Key 管理 |
-|---|---|
-| <img src="docs/img/ui-images.png" width="100%"/> | <img src="docs/img/ui-apikeys.png" width="100%"/> |
+Windows 桌面工作台是推荐的日常入口：分组导航把工作区、开发接入与管理分开，「关于与更新」可检查带签名校验的在线更新。
 
-| 局域网接入页 `/setup`（成员零配置入口） | 分用户素材站 `/gallery` |
+<img src="docs/img/desktop-workspace.png" width="100%" alt="Windows 桌面工作台 · 关于与更新"/>
+
+浏览器控制台（`http://127.0.0.1:4173`）与局域网用户页面：
+
+| 概览 · 用量 | 账号管理 · 登录态 |
 |---|---|
-| <img src="docs/img/page-setup.png" width="100%"/> | <img src="docs/img/page-gallery.png" width="100%"/> |
+| <img src="docs/img/ui-overview.png" width="100%" alt="网关概览"/> | <img src="docs/img/ui-account.png" width="100%" alt="账号管理"/> |
+
+| 图片素材 · 生成图库 | 客户端接入 · Agent 配置 |
+|---|---|
+| <img src="docs/img/ui-images.png" width="100%" alt="图片素材库"/> | <img src="docs/img/ui-access.png" width="100%" alt="客户端接入"/> |
+
+| 局域网共享（默认端口 4174） | API Key 管理 |
+|---|---|
+| <img src="docs/img/ui-lan.png" width="100%" alt="局域网共享"/> | <img src="docs/img/ui-apikeys.png" width="100%" alt="API Key 管理"/> |
+
+| 局域网接入页 `/setup`（成员零命令行入口） | 分用户素材站 `/gallery` |
+|---|---|
+| <img src="docs/img/page-setup.png" width="100%" alt="客户端接入页"/> | <img src="docs/img/page-gallery.png" width="100%" alt="分用户素材站"/> |
+
+`/setup` 会为每位成员生成带 `"timeout": 420000` 的 MCP 配置，以及首次配置 / 更新 / 换 Key / 完全卸载四种 Prompt；升级后请按[图片生成](#图片生成)重连一次 MCP。
 
 ## 快速开始（宿主机）
 
