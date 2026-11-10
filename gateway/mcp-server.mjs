@@ -87,7 +87,9 @@ async function generateImage(args) {
         ...(CGW_API_KEY ? { Authorization: 'Bearer ' + CGW_API_KEY } : {})
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(300000)
+      // 与网关内部 /mcp 生图及 bridge 的 400s 上限对齐；客户端 MCP 连接需配置
+      // 420000ms 的 timeout，否则 60s 默认超时会把生图误报成「用户已取消」。
+      signal: AbortSignal.timeout(400000)
     })
     j = await res.json().catch(() => null)
   } catch (e) {

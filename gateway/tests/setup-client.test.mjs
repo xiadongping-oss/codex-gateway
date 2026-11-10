@@ -55,6 +55,29 @@ test('新建 mcp.json：条目指向 <host>:<port>/mcp，带 Bearer Key', () => 
   assert.ok(entry, '应写入默认名称 codex-gateway-lan')
   assert.equal(entry.url, `http://${HOST}:4173/mcp`)
   assert.equal(entry.headers.Authorization, `Bearer ${KEY}`)
+  assert.equal(entry.timeout, 420000, 'MCP 工具请求默认 60s 会掐断生图，必须写入长超时')
+})
+
+test('已有连接配了更长的生图超时：覆盖配置时保留，不回退到 420000', () => {
+  const home = tmpdir()
+  const mcpJson = path.join(home, 'mcp.json')
+  fs.writeFileSync(mcpJson, JSON.stringify({ mcpServers: { 'codex-gateway-lan': { url: `http://${HOST}:4173/mcp`, timeout: 600000, headers: { Authorization: 'Bearer old-key' } } } }))
+  const r = run(['--host', HOST, '--key', KEY, '--mcp-json', mcpJson, '--no-skill', '--no-model-config'], { home })
+  assert.equal(r.code, 0, r.out)
+  const entry = JSON.parse(fs.readFileSync(mcpJson, 'utf8')).mcpServers['codex-gateway-lan']
+  assert.equal(entry.timeout, 600000)
+  assert.equal(entry.headers.Authorization, `Bearer ${KEY}`)
+})
+
+test('已有连接的自定义请求头在覆盖时保留：设备名不丢', () => {
+  const home = tmpdir()
+  const mcpJson = path.join(home, 'mcp.json')
+  fs.writeFileSync(mcpJson, JSON.stringify({ mcpServers: { 'codex-gateway-lan': { url: `http://${HOST}:4173/mcp`, timeout: 420000, headers: { Authorization: 'Bearer old-key', 'X-CGW-Device-Name': 'design-pc' } } } }))
+  const r = run(['--host', HOST, '--key', KEY, '--mcp-json', mcpJson, '--no-skill', '--no-model-config'], { home })
+  assert.equal(r.code, 0, r.out)
+  const entry = JSON.parse(fs.readFileSync(mcpJson, 'utf8')).mcpServers['codex-gateway-lan']
+  assert.equal(entry.headers['X-CGW-Device-Name'], 'design-pc')
+  assert.equal(entry.headers.Authorization, `Bearer ${KEY}`)
 })
 
 test('幂等：重复执行覆盖同名条目，不产生第二份', () => {

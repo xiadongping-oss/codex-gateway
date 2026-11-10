@@ -70,7 +70,7 @@ const statusClass = (s) => (s === 200 ? 's-200' : s === 429 ? 's-429' : s === 40
           <span class="caller" :title="l.caller?.keyId || ''"><strong>{{l.caller?.device || l.caller?.ip || '历史记录'}}</strong><small v-if="l.caller?.device">{{l.caller.ip}} · 自报设备</small><small>{{l.caller?.keyName || (l.caller?.keyId ? '已验证密钥' : l.status === 401 ? '认证未通过' : l.caller ? '未携带 API Key' : '未记录来源')}}<template v-if="l.caller?.keyId"> · {{l.caller.keyId.slice(-8)}}</template></small></span>
           <span class="mono" :class="statusClass(l.status)">{{ l.status }}</span>
           <span v-if="!management" class="latency mono">{{ l.latency }}ms</span>
-          <span v-if="!management" class="tokens"><strong class="mono">{{ callTokenText(l) }}</strong><small v-if="detail && l.usage">输入 {{l.usage.promptTokens}} · 输出 {{l.usage.completionTokens}}</small><small v-if="detail && l.streamEnd === 'interrupted'" class="stream-warn">响应流中断（客户端断开或上游掐断）</small><small v-else-if="detail && l.usageState === 'no-usage'">流已结束，上游未给 usage</small></span>
+          <span v-if="!management" class="tokens"><strong class="mono">{{ callTokenText(l) }}</strong><small v-if="detail && l.clientDisconnected" class="stream-warn">客户端已断开 · 生图继续执行，结果见个人图库</small><small v-if="detail && l.usage">输入 {{l.usage.promptTokens}} · 输出 {{l.usage.completionTokens}}</small><small v-if="detail && l.streamEnd === 'interrupted'" class="stream-warn">响应流中断（客户端断开或上游掐断）</small><small v-else-if="detail && l.usageState === 'no-usage'">流已结束，上游未给 usage</small></span>
           <span class="mono time"><small v-if="detail">{{new Date(l.at).toLocaleDateString()}}</small><small>{{ fmtTime(l.at) }}</small></span>
         </div>
       </div>

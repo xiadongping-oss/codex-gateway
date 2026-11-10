@@ -34,6 +34,10 @@ const has = (f) => argv.includes(f)
 const EMBEDDED_HOST = ''
 const EMBEDDED_PORT = ''
 
+// MCP 工具请求等待上限（毫秒）。客户端默认 60000ms 的固定超时会在生图途中
+// 取消请求，用户端显示「用户已取消」。网关内部生图上限 400000ms，这里留 20s 余量。
+const MCP_IMAGE_TIMEOUT_MS = 420000
+
 function die(msg) {
   console.error('✗ ' + msg)
   process.exit(1)
@@ -88,11 +92,18 @@ async function main() {
     console.log('· mcp.json 不存在，将新建。')
   }
   const existed = !!mcp.mcpServers[name]
+  const previous = existed && mcp.mcpServers[name] && typeof mcp.mcpServers[name] === 'object' ? mcp.mcpServers[name] : {}
+  const priorTimeout = Number(previous.timeout)
+  const timeout = Number.isFinite(priorTimeout) && priorTimeout > MCP_IMAGE_TIMEOUT_MS ? priorTimeout : MCP_IMAGE_TIMEOUT_MS
   mcp.mcpServers[name] = {
     url: `${base}/mcp`,
-    headers: { Authorization: `Bearer ${key}` }
+    timeout,
+    headers: {
+      ...(previous.headers && typeof previous.headers === 'object' && !Array.isArray(previous.headers) ? previous.headers : {}),
+      Authorization: `Bearer ${key}`
+    }
   }
-  console.log(`${existed ? '↑' : '+'} mcpServers["${name}"] → ${base}/mcp ${existed ? '（覆盖旧条目）' : '（新增）'}`)
+  console.log(`${existed ? '↑' : '+'} mcpServers["${name}"] → ${base}/mcp（timeout ${timeout}ms）${existed ? '（覆盖旧条目）' : '（新增）'}`)
   const others = Object.keys(mcp.mcpServers).filter((k) => k !== name)
   if (others.length) console.log(`  保留其他条目：${others.join(', ')}`)
   if (!dryRun) {

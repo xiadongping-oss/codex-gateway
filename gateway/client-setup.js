@@ -1,6 +1,25 @@
 // Shared by the public setup page and desktop client. Never persist credentials here.
 (function(root) {
 'use strict'
+  // MCP 工具请求的等待上限（毫秒）。
+  //
+  // WorkBuddy 等客户端的 MCP 请求默认只有 60000ms 的**固定总超时**，且调用时
+  // 没有开启 resetTimeoutOnProgress —— 网关每 10 秒发的进度通知 / SSE 心跳并不会
+  // 重置它。一次生图常要 1～4 分钟，于是客户端先在 60s 取消请求，Agent 把取消
+  // 显示成「用户已取消」，而后台只看到一次中断。唯一的客户端侧解法是把连接配置
+  // 里的 timeout 调大；网关内部生图上限是 400000ms，这里留 20s 余量。
+  // 文本对话不走 MCP，所以默认 60s 对 /v1/chat/completions 完全没有影响。
+  const MCP_IMAGE_TIMEOUT_MS = 420000
+
+  // 生成给 Agent 的硬性要求：首次配置、普通更新、换 Key 都要带上，防止 Agent
+  // 在「合并配置」时把 timeout 字段精简掉，也便于已装用户补齐旧连接。
+  function mcpTimeoutRequirement() {
+    return '生图等待上限（必做）：' +
+      'MCP 客户端默认只有 60000ms 的固定工具请求超时，且不随进度通知重置；一次生图常需数分钟，' +
+      '超时后客户端会取消请求并显示「用户已取消」，不是用户主动停止。' +
+      '匹配的 MCP 连接必须保留或补齐 "timeout": ' + MCP_IMAGE_TIMEOUT_MS + '（毫秒，至少 300000）；' +
+      '已有更大的值不要改小，HTTP 连接与旧 stdio 连接同样适用。改动后重新连接 MCP 才生效。'
+  }
   function isLoopbackBase(base) {
     return /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?)$/i.test(new URL(base).hostname)
   }
@@ -17,7 +36,7 @@
     return [
       '本网关的凭据可能同时存在多处，核对身份时必须逐处覆盖：',
       '  A. 对话模型配置：url / baseUrl 指向 ' + base + '/v1 或 ' + base + '/v1/chat/completions 的条目（常见文件名 workbuddy-models-codex-gateway*.json，或客户端模型设置里的自定义模型），字段 apiKey / OPENAI_API_KEY。',
-      '  B. 生图 MCP：mcp.json 中 url 指向 ' + base + '/mcp 的条目（常见名 codex-gateway / codex-gateway-lan），字段 headers.Authorization；旧 stdio 为 env.CGW_API_KEY。',
+      '  B. 生图 MCP：mcp.json 中 url 指向 ' + base + '/mcp 的条目（常见名 codex-gateway / codex-gateway-lan），字段 headers.Authorization；旧 stdio 为 env.CGW_API_KEY。连接还要保留 timeout 生图等待上限。',
       '  C. 记录与脚本：cgw-client-assets.json、setup-client.mjs 生成的模型配置 JSON、Skill 文件内被手工填入的 Key。',
       '  D. 浏览器素材站：' + base + '/gallery 的 localStorage（键 cgw_gallery_key），Agent 不得代改，需提示用户在网页右上「换 Key」手动更新。'
     ]
@@ -36,7 +55,7 @@
     if (!['http:','https:'].includes(url.protocol) || url.username || url.password || ['0.0.0.0','[::]'].includes(url.hostname)) throw new Error('请使用可访问的网关地址，不能使用监听通配地址或带凭据的 URL。')
     if (options.target === 'remote' && isLoopbackBase(url.origin)) throw new Error('其他设备不能连接 127.0.0.1 / localhost，请选择网关主机的共享地址。')
     var name = isLoopbackBase(url.origin) ? 'codex-gateway' : 'codex-gateway-lan'
-    return {mcpServers:{[name]:{url:url.origin+'/mcp',headers:{Authorization:'Bearer '+options.key,...(options.device?.trim() ? {'X-CGW-Device-Name':encodeURIComponent(options.device.trim().slice(0,80))} : {})}}}}
+    return {mcpServers:{[name]:{url:url.origin+'/mcp',timeout:MCP_IMAGE_TIMEOUT_MS,headers:{Authorization:'Bearer '+options.key,...(options.device?.trim() ? {'X-CGW-Device-Name':encodeURIComponent(options.device.trim().slice(0,80))} : {})}}}}
   }
   function buildUpdatePrompt(base) {
     return [
@@ -49,6 +68,7 @@
       '素材页：' + base + '/gallery',
       '1. 先识别实际客户端、读取现有连接器与 cgw-client-assets.json；只处理地址匹配的连接，不重复新增。多个匹配连接时让用户指定连接器，不按名称猜测。没有现有连接、缺少凭据或配置损坏时停止并说明，不能用管理员页面所选 Key、其他连接器 Key 或示例值代替。',
       '2. 更新前备份；保留现有凭据、连接器名称、网关地址、设备名、其他 MCP、自定义 Skill 内容和模型设置。只从匹配连接器的私有配置或凭据存储读取原 Key；HTTP 使用原 Authorization，旧 stdio 使用原 env.CGW_API_KEY。密钥不写入 Skill、URL、日志、回复或哈希记录。',
+      mcpTimeoutRequirement(),
       '3. 使用原 Key 调用 /v1/gen-images/me，记录原 keyId；获取更新清单并按内容哈希比较，清单获取失败时停止更新并保留现有配置。401/403 不更换 Key、不猜测其他凭据，向用户说明需要恢复原凭据或明确执行“更换 API Key”。',
       '4. WorkBuddy 使用 ~/.workbuddy/mcp.json 和 ~/.workbuddy/skills/gpt-image/SKILL.md；其他客户端按其实际配置位置操作。Skill 名称 gpt-image，中文名 GPT 图片生成。旧 codex-gateway-image 先备份到 Skill 发现目录之外再迁移，保留用户修改；自定义内容冲突时保留两份并说明差异。',
       '5. HTTP MCP 服务端随网关升级，无需下载服务端；只重新连接并 tools/list 验证。旧 stdio 需迁移时，保留原连接名称与原 Key，将原 CGW_BASE 对应地址转换为 HTTP /mcp 与 Authorization，不使用其他新 Key。',
@@ -69,8 +89,8 @@
       '```json', JSON.stringify(config, null, 2), '```',
       '本次要求：对话模型与生图 MCP 必须使用同一个新 Key。此前出现过只换了 MCP、模型侧仍留旧 Key 的情况，调用日志会显示同一 IP 两个 keyId，个人图库也随之分裂。',
       '1. 先核对范围限制：若目标网关是 127.0.0.1 / localhost 而 Agent 不在网关这台电脑上，立即停止并要求用共享地址重新生成，不得按端口猜测或改写地址。再识别实际客户端与已有连接器，按目标网关地址（协议、主机、端口）完全一致匹配；多个匹配连接时让用户指定；没有匹配连接时停止说明，不能另行安装或覆盖其他连接。',
-      '2. 修改前备份。保留连接器名称、地址、设备名、其他请求头、其他 MCP、Skill 和模型设置。'
-    ].concat(credentialSites(base), [
+      '2. 修改前备份。保留连接器名称、地址、设备名、其他请求头、timeout 生图等待上限、其他 MCP、Skill 和模型设置。'
+    ].concat([mcpTimeoutRequirement()], credentialSites(base), [
       '3. 逐处枚举 A/B/C，分别报告当前凭据属于哪个 keyId（用 /v1/gen-images/me 查询）与掩码，不要显示明文。只处理接口地址指向目标网关 origin 且凭据为 cgw- 前缀的条目；指向其他网关、其他端口或其他供应商的配置一律不动。多个匹配时让用户指定，不按名称猜测。',
       '4. 把 A 与 B 两处凭据统一替换为本次新 Key（HTTP 替换 apiKey / Authorization；旧 stdio 替换 env.CGW_API_KEY，不顺带迁移传输方式）。C 中若发现明文旧 Key，改为与新 Key 一致或删除该副本。找不到模型配置文件、无权修改或无法确定归属时，停止该处并给出需要用户手动更新的具体文件与字段，不能声称已全量更换。',
       '5. 写入前用新 Key 只读检查 ' + base + '/v1/gen-images/me，确认新 keyId 和 keyName；旧 Key 可用时也检查原身份并说明变化。若新 Key 无效则停止且保留旧配置。不要把明文 Key 写入 Skill、URL、日志、最终回复或 cgw-client-assets.json。',
@@ -133,6 +153,7 @@
       '0. 写配置前先核实连接目标。若用户在其他电脑使用，而地址是 127.0.0.1 / localhost，先索取网关主机的共享地址和端口，再统一替换 MCP、Skill、素材页及更新清单地址；不要建议在用户电脑安装或启动网关，也不要猜测 IP。连接被拒绝（10061）只证明所连接地址无监听，不能证明远程网关停机。远程地址不可达时检查主机共享、网络互通与共享端口；401/403 应检查 API Key 或访问权限，不能当成端口未启动。/health 返回带 JSON 的 503 表示网关可达但上游未就绪。',
       '1. 识别我实际使用的 Agent 客户端、现有用户配置位置和支持的 MCP 格式。WorkBuddy 使用 ~/.workbuddy/mcp.json；其他客户端按其实际格式配置，不要误写到 WorkBuddy 目录。如果无法确定目标客户端，只询问客户端名称。',
       '2. 修改前备份已有配置；合并上面的连接器，保留其他连接器、偏好和已有模型配置。本机 codex-gateway 与远程 codex-gateway-lan 可以共存。同名条目若指向不同网关，保留原条目，为新连接器选唯一名称，不要直接覆盖。配置损坏时保留原文件并报告具体原因。',
+      mcpTimeoutRequirement(),
       '3. 从上面的 Skill 地址下载内容，检查为带 YAML frontmatter 的有效 SKILL.md；根据目标客户端的用户 Skill 目录安装。WorkBuddy 路径是 ~/.workbuddy/skills/gpt-image/SKILL.md。Skill 名称为 gpt-image，中文名为 GPT 图片生成。旧 codex-gateway-image 先备份到 Skill 发现目录之外，再迁移名称，保留用户修改并避免重复启用。已有文件不同则先备份，不丢弃用户修改；客户端不支持 Skill 时明确说明，但继续验证 MCP。',
       '4. API Key 只保存到本机客户端的私有配置或凭据存储；不要写进项目仓库、Skill、下载网址、日志或最终回复。最终只显示掩码 Key。不要更改网关账号、共享设置或系统防火墙。',
       '5. 用这个 Key 的 Bearer 请求头分别检查 ' + base + '/v1/models 和 ' + base + '/v1/gen-images/me；再向 ' + base + '/mcp 发送 JSON-RPC tools/list（Accept 同时声明 application/json 和 text/event-stream），确认 generate_image、list_generated_images、delete_generated_image。正确解析 JSON 或 SSE 响应；不要仅凭 HTTP 200 判定通过。另检查 ' + base + '/health，单独报告上游状态，不将连接通过等同于真实出图已验证。',
@@ -150,5 +171,5 @@
     return lines.join('\n')
   }
 
-root.CGWClientSetup = { buildClientPrompt, buildMcpConfig, isLoopbackBase };
+root.CGWClientSetup = { buildClientPrompt, buildMcpConfig, isLoopbackBase, mcpTimeoutRequirement, MCP_IMAGE_TIMEOUT_MS };
 })(globalThis);

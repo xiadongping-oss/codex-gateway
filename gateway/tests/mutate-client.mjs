@@ -38,8 +38,9 @@ const MUTANTS = [
   },
   {
     id: 'MC3', desc: '--dry-run 也写盘（预览变成了真改）',
-    from: '  if (!dryRun) {\n    fs.mkdirSync(path.dirname(mcpJsonPath), { recursive: true })',
-    to: '  if (true) {\n    fs.mkdirSync(path.dirname(mcpJsonPath), { recursive: true })'
+    // 工作区可能是 CRLF，锚点里不要嵌换行，否则 replace 永远打不中
+    from: '  if (!dryRun) {',
+    to: '  if (true) {'
   },
   {
     id: 'MC4', desc: '非交互终端缺 --host 时不再报错（静默用默认地址装错机器）',
@@ -50,6 +51,26 @@ const MUTANTS = [
     id: 'MC5', desc: 'EMBEDDED_HOST 锚点被改成双引号（网关注入会静默失效）',
     from: "const EMBEDDED_HOST = ''",
     to: 'const EMBEDDED_HOST = ""'
+  },
+  {
+    id: 'MC6', desc: 'MCP 生图超时退回 60 秒（客户端又会把生图误报成用户取消）',
+    from: 'const MCP_IMAGE_TIMEOUT_MS = 420000',
+    to: 'const MCP_IMAGE_TIMEOUT_MS = 60000'
+  },
+  {
+    id: 'MC7', desc: '写入 mcp.json 时丢掉 timeout 字段',
+    from: '    timeout,',
+    to: ''
+  },
+  {
+    id: 'MC8', desc: '覆盖同名连接时把用户自定义的长超时改回默认值',
+    from: '  const timeout = Number.isFinite(priorTimeout) && priorTimeout > MCP_IMAGE_TIMEOUT_MS ? priorTimeout : MCP_IMAGE_TIMEOUT_MS',
+    to: '  const timeout = MCP_IMAGE_TIMEOUT_MS'
+  },
+  {
+    id: 'MC9', desc: '覆盖同名连接时丢掉设备名等自定义请求头',
+    from: '      ...(previous.headers && typeof previous.headers === \'object\' && !Array.isArray(previous.headers) ? previous.headers : {}),',
+    to: '      ...(null || {}),'
   }
 ]
 
@@ -85,7 +106,7 @@ if (!runTests(baseline.script)) {
   fs.rmSync(baseline.dir, { recursive: true, force: true })
   process.exit(1)
 }
-console.log(`${C.g}✓ 基线通过${C.x}  （未变异的脚本 14 例全绿）\n`)
+console.log(`${C.g}✓ 基线通过${C.x}  （未变异的脚本全部用例通过）\n`)
 fs.rmSync(baseline.dir, { recursive: true, force: true })
 
 const rows = []

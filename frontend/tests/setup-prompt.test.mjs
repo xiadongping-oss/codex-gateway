@@ -32,7 +32,10 @@ test('verified local prompt preserves address/port, configures MCP and Skill, an
   const prompt=p.copied[0]
   assert.match(prompt,/http:\/\/127\.0\.0\.1:4173\/mcp/)
   assert.match(prompt,/http:\/\/127\.0\.0\.1:4173\/lan-kit\/skills\/codex-gateway-image\/SKILL.md/)
-  assert.equal(JSON.parse(prompt.match(/```json\n([\s\S]*?)\n```/)[1]).mcpServers['codex-gateway'].headers.Authorization,'Bearer '+KEY_A)
+  const localConfig = JSON.parse(prompt.match(/```json\n([\s\S]*?)\n```/)[1])
+  assert.equal(localConfig.mcpServers['codex-gateway'].headers.Authorization,'Bearer '+KEY_A)
+  assert.equal(localConfig.mcpServers['codex-gateway'].timeout,420000,'生图连接必须带足够长的工具请求超时')
+  assert.match(prompt,/生图等待上限（必做）/)
   for(const text of ['备份','保留其他连接器','同名条目','私有配置','不调用 generate_image','当前会话工具已加载','保留现有的其他模型设置','不要静默留下'])assert.ok(prompt.includes(text),text)
   assert.deepEqual(p.requests.map(r=>r.url),['/v1/gen-images/me'])
 })
@@ -42,6 +45,8 @@ test('LAN prompt and HTTP clipboard fallback retain actual shared port and LAN c
   const prompt=p.copied[0]
   const config=JSON.parse(prompt.match(/```json\n([\s\S]*?)\n```/)[1])
   assert.equal(config.mcpServers['codex-gateway-lan'].url,'http://192.0.2.5:5199/mcp')
+  assert.equal(config.mcpServers['codex-gateway-lan'].timeout,420000,'LAN 用户同样需要 420000ms 生图超时')
+  assert.match(prompt,/不随进度通知重置/)
   assert.match(prompt,/http:\/\/192\.0\.2\.5:5199\/gallery/)
   assert.match(prompt,/不需要安装 Codex Gateway、Node.js/)
   assert.match(p.node('connectionHint').textContent,/局域网用户/)
@@ -77,7 +82,7 @@ test('update Prompt preserves credentials and user settings, verifies hashes, re
   const p=page('http://192.0.2.5:5199')
   await p.verify(KEY_A);p.node('btnCopyUpdatePrompt').click()
   const prompt=p.copied[0]
-  for(const text of ['请更新','范围限制','仅端口相同不算匹配','/client-assets.json','SHA-256','保留现有凭据','tools/list','不重复新增','当前会话已重新加载','Skill 发现目录之外','skills/gpt-image/SKILL.md','GPT 图片生成'])assert.ok(prompt.includes(text),text)
+  for(const text of ['请更新','范围限制','仅端口相同不算匹配','/client-assets.json','SHA-256','保留现有凭据','tools/list','不重复新增','当前会话已重新加载','Skill 发现目录之外','skills/gpt-image/SKILL.md','GPT 图片生成','生图等待上限（必做）','420000'])assert.ok(prompt.includes(text),text)
   assert.ok(!prompt.includes(KEY_A))
   assert.ok(!prompt.includes('Authorization":'))
   assert.ok(!p.node('agentPromptPreview').value.includes(KEY_A))
@@ -137,6 +142,8 @@ test('public setup separates secret-free updates from explicit Key replacement',
   await p.verify('cgw-fixture-B');p.node('btnCopyUpdatePrompt').click();assert.equal(p.copied.at(-1),updateA)
   p.node('btnCopySwitchKeyPrompt').click();const replacement=p.copied.at(-1)
   assert.match(replacement,/Bearer cgw-fixture-B/);assert.ok(!replacement.includes(KEY_A))
+  assert.equal(JSON.parse(replacement.match(/```json\n([\s\S]*?)\n```/)[1]).mcpServers['codex-gateway-lan'].timeout,420000)
+  assert.match(replacement,/生图等待上限（必做）/)
   assert.match(replacement,/旧图不会自动迁移/);assert.match(replacement,/当前会话尚未切换/)
   assert.match(replacement,/范围限制/);assert.match(replacement,/仅端口相同不算匹配/)
   assert.match(replacement,/指定连接器：codex-gateway-lan/)

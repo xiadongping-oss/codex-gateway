@@ -2108,9 +2108,19 @@ function mcpSse(res, obj, headers = {}) {
   res.end('event: message\ndata: ' + JSON.stringify(obj) + '\n\n')
 }
 
+// MCP 生图的内部请求上限：与 vendored bridge 的 400s 请求超时对齐。
+// 客户端 MCP 连接应配置 420000ms（见 client-setup.js 的 MCP_IMAGE_TIMEOUT_MS），
+// 比这里宽 20s，先超时的永远是网关而不是客户端。
+const MCP_IMAGE_TIMEOUT_MS = 400000
+
 // 生图：内部走 /v1/images/generations，完整复用鉴权 / 按 key 账号热切 / b64 落盘 / 调用日志。
 // 唯一补充：把响应里的 127.0.0.1 链接改写成调用方 Host，局域网客户端拿到可携带当前 Key 下载的地址。
-async function mcpGenerateImage(args, req, signal) {
+//
+// 这里**不接受外部 signal**：客户端（如 WorkBuddy）有 60s 的固定 MCP 工具超时，
+// 超时会直接断开连接；若把它的断开当成取消去 abort 内部请求，上游可能已经受理，
+// 图片既拿不到也不会落盘，用户端还会被误报成「用户已取消」。断开后让它跑完并
+// 入个人图库，用户可用 list_generated_images 找回，再决定是否需要重出。
+async function mcpGenerateImage(args, req) {
   let body, endpoint
   try { ({body,endpoint} = imageToolRequest(args)) } catch (error) { return {ok:false,error:error.message} }
   let r, j
@@ -2123,7 +2133,7 @@ async function mcpGenerateImage(args, req, signal) {
         ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
       },
       body: JSON.stringify(body),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(300000)]) : AbortSignal.timeout(300000)
+      signal: AbortSignal.timeout(MCP_IMAGE_TIMEOUT_MS)
     })
     j = await r.json().catch(() => null)
   } catch (e) {
@@ -2281,15 +2291,24 @@ async function handleMcpEndpoint(req, res) {
           res.flushHeaders()
         }
         res.write(': generating image\n\n')
-        const controller = new AbortController()
+        let disconnected = false
         const stopProgress = startMcpProgress(params,
           notification => { if (!res.destroyed) res.write('event: message\ndata: ' + JSON.stringify(notification) + '\n\n') },
           { heartbeat: () => { if (!res.destroyed) res.write(': generating image\n\n') } })
-        const onClose = () => { stopProgress(); controller.abort() }
+        // 客户端断开只停心跳，**不中止内部生图**。WorkBuddy 等客户端有 60s 的
+        // 固定 MCP 工具超时（进度通知不会重置它），超时后直接掐连接；以前这里
+        // controller.abort()，上游可能已经受理的请求随之作废，图片不落盘，
+        // 后台只看到一次中断，用户端被误报成「用户已取消」。改成分离：
+        // 生成继续跑完并进入按 Key 隔离的图库，断开本身单独记一笔调用日志。
+        const onClose = () => { disconnected = true; stopProgress() }
         res.once('close', onClose)
-        try { r = await mcpGenerateImage(args, req, controller.signal) }
+        try { r = await mcpGenerateImage(args, req) }
         finally { stopProgress(); res.off('close', onClose) }
-        if (res.destroyed) return
+        if (disconnected || res.destroyed) {
+          recordCallLog({ caller:req.__cgwCaller, method: 'POST', endpoint: '/mcp:' + name, model: IMAGE_MODEL,
+            status: r.ok ? 200 : 500, latency: Date.now() - t0, tokens: null, clientDisconnected: true })
+          return
+        }
       }
       else if (name === 'list_generated_images') r = mcpListImages(args, req, caller)
       else if (name === 'delete_generated_image') r = mcpDeleteImage(args, req, caller)

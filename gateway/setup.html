@@ -104,6 +104,7 @@
     <h3><span class="no">1</span>接入 MCP（生图等工具能力，推荐）</h3>
     <div class="desc">把下面的 JSON 合并进 <code class="path" id="mcpPath">~/.workbuddy/mcp.json</code> 的 <code>mcpServers</code> 对象里（其他条目保留），重新加载连接器，并启用 <b id="mcpName">codex-gateway-lan</b>。</div>
     <pre class="json" id="mcpJson"></pre>
+    <p class="desc" style="margin:8px 0 0">配置里的 <code>timeout</code> 是生图等待上限（420000 毫秒）。客户端 MCP 默认只有 60 秒固定超时，删掉或改小会让生成中的图片被取消、用户端显示「用户已取消」；文本对话不受影响。已有连接若缺这个字段，请复制上方「更新 Prompt」补齐后重新加载连接器。</p>
     <div class="acts"><button class="primary" id="btnCopyMcp">复制 MCP JSON</button><span class="ok-note" id="mcpOk"></span></div>
   </div>
 
